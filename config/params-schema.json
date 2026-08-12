@@ -1,0 +1,538 @@
+{
+  "schema_version": 1,
+  "updated": "2026-08-12",
+  "source": "llama-cpp-turboquant-experts-laguna (fork of ggml-org/llama.cpp + TheTom/llama-cpp-turboquant + leoustc/llama.cpp-moe + deepseek-v4 + Laguna)",
+  "purpose": "Machine-readable catalogue of every tunable parameter the LlamaDock GUI should expose. The frontend renders groups/params from this file; the core maps each param's 'flags' to a llama-server argument. Add future flags (e.g. --spec-type draft-dspark) as one new row + a flags template - no engine rewrite needed.",
+  "param_fields": {
+    "id": "unique key; also used in per-model memory (config/models-config.json) and memory-presets overrides",
+    "type": "select | int | num | text | bool",
+    "allowed": "only for type=select: allowed values",
+    "allow_custom": "true => free-text/int allowed beyond the pick list",
+    "default": "default value",
+    "flags": "llama-server flag(s) this parameter produces",
+    "flag_value": "optional template rendering the value into the flag",
+    "per_model": "true => value remembered per model",
+    "advanced": "true => hidden behind an Advanced disclosure",
+    "help": "plain-language explanation shown in the UI"
+  },
+  "groups": [
+    {
+      "id": "engine",
+      "label": "Engine & Workflow",
+      "params": [
+        {
+          "id": "engine",
+          "label": "Runtime engine",
+          "type": "select",
+          "allowed": ["Auto", "AtomicBot", "TurboTan", "PrismBonsai", "ExpertsLaguna", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4"],
+          "default": "Auto",
+          "flags": [],
+          "per_model": true,
+          "advanced": false,
+          "help": "Which llama.cpp fork launches the model. Auto infers from model name (TQ3->TurboTan, Ternary/Bonsai->PrismBonsai, Laguna/Expert->ExpertsLaguna, etc.)."
+        },
+        {
+          "id": "preset",
+          "label": "Workflow preset",
+          "type": "select",
+          "allowed": ["Manual", "ClineCoding", "OpenCodeCoding", "OpenCodeHarness", "OpenClaudeCoding", "LlamaAgentResearch", "DeepResearchLight", "DeepResearchStandard", "DeepResearchHeavy", "WebUIChat"],
+          "default": "Manual",
+          "flags": [],
+          "per_model": true,
+          "advanced": false,
+          "help": "Workflow target: chooses the client workspace and sensible defaults for many parameters below."
+        },
+        {
+          "id": "research_depth",
+          "label": "Deep research depth",
+          "type": "select",
+          "allowed": [
+            { "value": "1", "label": "Light (2 rounds / 4 angles / 24 searches / 10 pages)" },
+            { "value": "2", "label": "Standard (3 rounds / 6 angles / 48 searches / 24 pages)" },
+            { "value": "3", "label": "Heavy (4 rounds / 8 angles / 80 searches / 40 pages)" }
+          ],
+          "default": "2",
+          "flags": [],
+          "per_model": false,
+          "advanced": true,
+          "help": "Used by LlamaAgentResearch / DeepResearch workspaces."
+        }
+      ]
+    }
+,
+    {
+      "id": "load",
+      "label": "Model / Context / Offload",
+      "params": [
+        {
+          "id": "context_tokens",
+          "label": "Context window",
+          "type": "int",
+          "allowed": [16384, 32768, 49152, 65536, 98304, 131072],
+          "allow_custom": true,
+          "default": 32768,
+          "flags": ["-c"],
+          "min": 512,
+          "per_model": true,
+          "advanced": false,
+          "help": "Context (KV) size in tokens. Larger uses more RAM/VRAM; RAM overrun is blocked before launch."
+        },
+        {
+          "id": "cache_ram_mib",
+          "label": "Prompt cache RAM (MiB)",
+          "type": "int",
+          "default": 8192,
+          "flags": ["--cache-ram"],
+          "min": 0,
+          "per_model": true,
+          "advanced": true,
+          "help": "--cache-ram: RAM reserved for the prompt/KV cache. Lower = lighter on RAM."
+        },
+        {
+          "id": "offload_mode",
+          "label": "GPU offload mode",
+          "type": "select",
+          "allowed": ["Prompt", "Auto", "All", "CPU", "Custom"],
+          "default": "Prompt",
+          "flags": [],
+          "per_model": true,
+          "advanced": false,
+          "help": "Prompt = ask; Auto = fit to VRAM; All = all GPU; CPU = none GPU; Custom = use gpu_layers."
+        },
+        {
+          "id": "gpu_layers",
+          "label": "GPU layers (-ngl)",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-ngl", "--gpu-layers", "--n-gpu-layers"],
+          "min": 0,
+          "per_model": true,
+          "advanced": false,
+          "help": "Transformer layers offloaded to GPU. Core knob for the CPU/GPU split."
+        },
+        {
+          "id": "cache_type_k",
+          "label": "KV cache type K",
+          "type": "select",
+          "allowed": ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "turbo3", "tq3_0", "tq4_0", "auto"],
+          "default": "q8_0",
+          "flags": ["-ctk", "--cache-type-k"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Key cache quantization. Lower (q4/q8) = lighter; higher (f16/bf16) = quality/VRAM."
+        },
+        {
+          "id": "cache_type_v",
+          "label": "KV cache type V",
+          "type": "select",
+          "allowed": ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "turbo3", "tq3_0", "tq4_0", "auto"],
+          "default": "q8_0",
+          "flags": ["-ctv", "--cache-type-v"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Value cache quantization. Asymmetric KV (K=q8_0, V=q4_0) is a common light-memory profile."
+        },
+        {
+          "id": "flash_attn",
+          "label": "Flash attention",
+          "type": "select",
+          "allowed": ["on", "off", "auto"],
+          "default": "on",
+          "flags": ["-fa", "--flash-attn"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Faster attention, lower memory. ROCm may crash on SWA layers - set off if that happens."
+        },
+        {
+          "id": "threads",
+          "label": "CPU threads",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-t", "--threads"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Threads for generation/backfill."
+        },
+        {
+          "id": "threads_batch",
+          "label": "CPU threads (batch)",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-tb", "--threads-batch"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Threads for prompt processing/batching."
+        }
+      ]
+    }
+,
+    {
+      "id": "moe",
+      "label": "MoE / Expert placement",
+      "params": [
+        {
+          "id": "moe_expert_placement",
+          "label": "Expert placement",
+          "type": "select",
+          "allowed": ["all-gpu", "frequency", "cpu-moe", "map"],
+          "default": "all-gpu",
+          "flags": ["--moe-expert-placement"],
+          "per_model": true,
+          "advanced": false,
+          "help": "all-gpu = every expert on GPU; frequency = keep frequently-picked ('hot') experts on GPU and the rest on CPU (great for light memory); cpu-moe = all experts on CPU; map = use expert_map.json."
+        },
+        {
+          "id": "moe_gpu_expert_ratio",
+          "label": "GPU expert ratio (hot ratio)",
+          "type": "num",
+          "default": 1.0,
+          "flags": ["--moe-gpu-expert-ratio"],
+          "min": 0.0,
+          "max": 1.0,
+          "per_model": true,
+          "advanced": false,
+          "help": "For 'frequency' placement: ratio of experts held 'hot' on the GPU. 0.2-0.5 is a conservative light-memory start."
+        },
+        {
+          "id": "moe_gpu_expert_slot_num",
+          "label": "GPU expert slots",
+          "type": "int",
+          "default": -1,
+          "flags": ["--moe-gpu-expert-slot-num"],
+          "min": -1,
+          "per_model": true,
+          "advanced": true,
+          "help": "GPU-resident MoE expert slots for router-aware expert paging (-1 = disabled; 0 = active_expert_count)."
+        },
+        {
+          "id": "cpu_moe",
+          "label": "Keep all MoE on CPU",
+          "type": "bool",
+          "default": false,
+          "flags": ["-cmoe", "--cpu-moe"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Keep every MoE weight in CPU (aggressive saving for large MoE models)."
+        },
+        {
+          "id": "n_cpu_moe",
+          "label": "CPU MoE layers (--n-cpu-moe)",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-ncmoe", "--n-cpu-moe"],
+          "min": 0,
+          "per_model": true,
+          "advanced": false,
+          "help": "Number of MoE layers kept in CPU. Higher = lighter GPU/VRAM."
+        },
+        {
+          "id": "moe_experts_count",
+          "label": "Active experts count",
+          "type": "int",
+          "default": "auto",
+          "flags": ["--override-kv"],
+          "flag_value": "--override-kv llama.expert_used_count=int:{value}",
+          "min": 1,
+          "per_model": true,
+          "advanced": true,
+          "help": "llama.expert_used_count override. 2 is a common fast MoE setting; try 3 after a clean boot."
+        },
+        {
+          "id": "moe_expert_map_path",
+          "label": "Expert map path",
+          "type": "text",
+          "default": "",
+          "flags": ["--moe-expert-map-path"],
+          "per_model": false,
+          "advanced": true,
+          "help": "Path to expert_map.json for explicit 'map' placement."
+        }
+      ]
+    }
+,
+    {
+      "id": "spec",
+      "label": "Speculative decoding (draft)",
+      "params": [
+        {
+          "id": "spec_type",
+          "label": "Spec type",
+          "type": "select",
+          "allowed": [
+            { "value": "off", "label": "Off" },
+            { "value": "simple", "label": "Simple draft model" },
+            { "value": "eagle3", "label": "Eagle3" },
+            { "value": "mtp", "label": "MTP (needs combined *_MTP.gguf)" },
+            { "value": "draft-dspark", "label": "DSpark (future; DeepSeek V4 Flash/Pro DSpark checkpoints)" }
+          ],
+          "default": "off",
+          "flags": ["--spec-type"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Speculative decoding mode. MTP uses the model's built-in MTP head (combined *_MTP.gguf). DSpark is a planned draft mode from DeepSeek (DeepSpec) - add the fork flag when available."
+        },
+        {
+          "id": "spec_draft_model",
+          "label": "Draft model path",
+          "type": "text",
+          "default": "",
+          "flags": ["-md", "--spec-draft-model", "--model-draft"],
+          "per_model": true,
+          "advanced": true,
+          "help": "Path to the draft model (simple/eagle3). Blank = auto-discover an MTP head next to the -hf model."
+        },
+        {
+          "id": "spec_draft_ngl",
+          "label": "Draft GPU layers",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-ngld", "--spec-draft-ngl", "--gpu-layers-draft"],
+          "min": 0,
+          "per_model": true,
+          "advanced": true,
+          "help": "GPU layers for the draft model."
+        },
+        {
+          "id": "spec_draft_cache_k",
+          "label": "Draft KV cache type K",
+          "type": "select",
+          "allowed": ["f16", "bf16", "q8_0", "q4_0", "auto"],
+          "default": "auto",
+          "flags": ["-ctkd", "--spec-draft-type-k", "--cache-type-k-draft"],
+          "per_model": true,
+          "advanced": true,
+          "help": "Key cache type for the draft model."
+        },
+        {
+          "id": "spec_draft_cache_v",
+          "label": "Draft KV cache type V",
+          "type": "select",
+          "allowed": ["f16", "bf16", "q8_0", "q4_0", "auto"],
+          "default": "auto",
+          "flags": ["-ctvd", "--spec-draft-type-v", "--cache-type-v-draft"],
+          "per_model": true,
+          "advanced": true,
+          "help": "Value cache type for the draft model."
+        },
+        {
+          "id": "spec_draft_n_max",
+          "label": "Draft max candidates",
+          "type": "int",
+          "default": 2,
+          "flags": ["--spec-draft-n-max"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Max draft tokens accepted per step."
+        },
+        {
+          "id": "spec_draft_n_min",
+          "label": "Draft min candidates",
+          "type": "int",
+          "default": 1,
+          "flags": ["--spec-draft-n-min"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Min draft tokens accepted per step."
+        },
+        {
+          "id": "spec_draft_threads",
+          "label": "Draft threads",
+          "type": "int",
+          "default": "auto",
+          "flags": ["-td", "--spec-draft-threads", "--threads-draft"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Threads for the draft model."
+        },
+        {
+          "id": "spec_draft_p_split",
+          "label": "Draft P split",
+          "type": "num",
+          "default": "auto",
+          "flags": ["--spec-draft-p-split", "--draft-p-split"],
+          "min": 0.0,
+          "max": 1.0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Draft-model acceptance split probability."
+        },
+        {
+          "id": "spec_draft_p_min",
+          "label": "Draft P min",
+          "type": "num",
+          "default": "auto",
+          "flags": ["--spec-draft-p-min", "--draft-p-min"],
+          "min": 0.0,
+          "max": 1.0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Draft-model minimum acceptance probability."
+        },
+        {
+          "id": "spec_draft_backend_sampling",
+          "label": "Draft backend sampling",
+          "type": "bool",
+          "default": false,
+          "flags": ["--spec-draft-backend-sampling"],
+          "per_model": false,
+          "advanced": true,
+          "help": "Sample in the draft backend instead of host."
+        },
+        {
+          "id": "spec_draft_cpu_moe",
+          "label": "Keep draft MoE on CPU",
+          "type": "bool",
+          "default": false,
+          "flags": ["--spec-draft-cpu-moe"],
+          "per_model": false,
+          "advanced": true,
+          "help": "Keep the draft model's MoE weights in CPU."
+        },
+        {
+          "id": "spec_draft_n_cpu_moe",
+          "label": "Draft CPU MoE layers",
+          "type": "int",
+          "default": "auto",
+          "flags": ["--spec-draft-ncmoe", "--spec-draft-n-cpu-moe", "-ncmoed"],
+          "min": 0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Number of draft MoE layers kept in CPU."
+        }
+      ]
+    }
+,
+    {
+      "id": "inference",
+      "label": "Inference / Template / Tools",
+      "params": [
+        {
+          "id": "reasoning_mode",
+          "label": "Reasoning mode",
+          "type": "select",
+          "allowed": ["off", "on", "auto"],
+          "default": "auto",
+          "flags": ["--reasoning"],
+          "per_model": true,
+          "advanced": false,
+          "help": "Thinking/reasoning enablement. off = fastest for interactive work; on = full reasoning."
+        },
+        {
+          "id": "override_kv",
+          "label": "KV overrides",
+          "type": "text",
+          "default": "",
+          "flags": ["--override-kv"],
+          "per_model": true,
+          "advanced": true,
+          "help": "Additional --override-kv entries (newline/comma separated). e.g. llama.expert_used_count=int:2"
+        },
+        {
+          "id": "chat_template_kwargs",
+          "label": "Chat template kwargs (JSON)",
+          "type": "text",
+          "default": "",
+          "flags": [],
+          "flag_value": "env LLAMA_ARG_CHAT_TEMPLATE_KWARGS={value}",
+          "per_model": true,
+          "advanced": true,
+          "help": "JSON passed to the chat template (e.g. {\"enable_thinking\":false})."
+        },
+        {
+          "id": "tools",
+          "label": "Server tools (WebUI)",
+          "type": "select",
+          "allowed": ["auto", "all", "none"],
+          "default": "auto",
+          "flags": ["--tools"],
+          "per_model": true,
+          "advanced": true,
+          "help": "--tools all enables tool calling for the Open WebUI / Computer workspace."
+        },
+        {
+          "id": "mcp_mode",
+          "label": "MCP mode",
+          "type": "select",
+          "allowed": ["Prompt", "None", "Light"],
+          "default": "Prompt",
+          "flags": [],
+          "per_model": true,
+          "advanced": false,
+          "help": "Whether to attach MCP helper servers for this run."
+        },
+        {
+          "id": "frequency_penalty",
+          "label": "Frequency penalty",
+          "type": "num",
+          "default": 0.0,
+          "flags": ["--frequency-penalty"],
+          "min": 0.0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Repeat alpha frequency penalty (0.0 = disabled)."
+        }
+      ]
+    }
+,
+    {
+      "id": "sampling",
+      "label": "Sampling (server defaults)",
+      "params": [
+        {
+          "id": "temperature",
+          "label": "Temperature",
+          "type": "num",
+          "default": 0.7,
+          "flags": ["--temp"],
+          "min": 0.0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Server-side default sampling temperature."
+        },
+        {
+          "id": "seed",
+          "label": "Seed",
+          "type": "int",
+          "default": -1,
+          "flags": ["--seed"],
+          "per_model": false,
+          "advanced": true,
+          "help": "Sampling seed (-1 = random)."
+        },
+        {
+          "id": "top_p",
+          "label": "Top-p",
+          "type": "num",
+          "default": 0.95,
+          "flags": ["--top-p"],
+          "min": 0.0,
+          "max": 1.0,
+          "per_model": false,
+          "advanced": true,
+          "help": "Nucleus sampling."
+        },
+        {
+          "id": "top_k",
+          "label": "Top-k",
+          "type": "int",
+          "default": 40,
+          "flags": ["--top-k"],
+          "min": 1,
+          "per_model": false,
+          "advanced": true,
+          "help": "Top-k sampling."
+        }
+      ]
+    }
+  ]
+}
+
+
+
+
+

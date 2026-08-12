@@ -99,10 +99,24 @@
 ├── mcp-server.js              # MCP サーバー本体
 ├── mcp-*.bat                  # MCP 起動ヘルパー
 ├── model-notes.json           # モデル別メモ（推奨プリセット等）
-├── config/                    # プロファイル / OpenCode 設定
-├── docs/                      # 設計・運用ドキュメント
+├── config/                    # プロファイル / パラメータスキーマ / プリセット / OpenCode 設定
+│   ├── params-schema.json     # 全パラメータの機械可読カタログ（GUI設定パネルの定義）
+│   └── memory-presets.json    # 省メモリ／速度プリセット（1クリック適用用）
+├── docs/                      # 設計・運用・パラメータカタログ
 └── tools/                     # 調査ハーネス・ランタイムヘルパー・検証スクリプト
 ```
+
+## パラメータカタログとプリセット
+
+`config/params-schema.json` に、ランタイムエンジン・GPU/CPU配分・KVキャッシュ種・MoEエキスパート配置
+（ホットエキスパート＝`--moe-expert-placement frequency`）・投機的デコード（MTP/Eagle3/将来のDSpark）など
+**42項目の全パラメータ**を機械可読で定義しています。GUI の設定パネルはこのスキーマから自動生成します。
+
+`config/memory-presets.json` には **省メモリ／速度プリセット**（very-light / light / balanced / full /
+moe-cpu-first / spec-mtp / spec-eagle3 / spec-off）を定義。1クリックで適用できます。
+
+次に実装する Web GUI の設計・引き継ぎは **`docs/PARAMETER-CATALOG.md`** を参照してください。
+
 
 ## 検証
 
