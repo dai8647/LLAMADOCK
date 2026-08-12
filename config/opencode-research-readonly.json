@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "research-readonly",
+  "share": "disabled",
+  "shell": "pwsh",
+  "permission": { "edit": "deny", "bash": "deny", "webfetch": "allow" },
+  "tools": { "write": false, "edit": false, "bash": false },
+  "agent": {
+    "research-readonly": {
+      "description": "Read-only web research agent; never edit files or run shell commands",
+      "prompt": "Research using web evidence and return cited findings. Do not modify files, run shell commands, or claim unverified facts.",
+      "tools": { "write": false, "edit": false, "bash": false, "webfetch": true }
+    }
+  },
+  "mcp": {
+    "web_search": {
+      "type": "remote",
+      "url": "http://127.0.0.1:3100/mcp",
+      "enabled": true
+    }
+  }
+}

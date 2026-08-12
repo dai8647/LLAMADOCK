@@ -1,0 +1,448 @@
+param(
+    [switch]$SkipDryRun,
+    [switch]$RunUtf8Smoke
+)
+
+$root = Split-Path $PSScriptRoot -Parent
+$launcher = Join-Path $root "select-model.ps1"
+$notes = Join-Path $root "model-notes.json"
+$openWebUIBootstrap = Join-Path $root "tools\open-webui-bootstrap.py"
+$openWebUIStart = Join-Path $root "tools\open-webui-start.ps1"
+$computerStart = Join-Path $root "tools\computer-start.ps1"
+$computerConfigure = Join-Path $root "tools\computer-configure-local.ps1"
+$computerConfigurePy = Join-Path $root "tools\computer-configure-local.py"
+$runtimeInventory = Join-Path $root "tools\runtime-inventory.ps1"
+$benchScript = Join-Path $root "tools\llamadock-bench.ps1"
+$utf8Helper = Join-Path $root "tools\llamadock-utf8.ps1"
+$utf8Smoke = Join-Path $root "tools\utf8-smoke.py"
+$utf8PowerShellSmoke = Join-Path $root "tools\utf8-powershell-smoke.ps1"
+$clientShell = Join-Path $root "tools\llamadock-client-shell.ps1"
+$gateway = Join-Path $root "tools\llamadock-proxy.mjs"
+$supervisor = Join-Path $root "tools\llamadock-server-supervisor.ps1"
+$profiles = Join-Path $root "config\profiles.json"
+$harness = Join-Path $root "tools\llamadock-opencode-harness.ps1"
+
+& (Join-Path $PSScriptRoot "check-style.ps1") -Path $launcher
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$modelNotes = Get-Content -LiteralPath $notes -Raw -Encoding UTF8 | ConvertFrom-Json
+$profileData = Get-Content -LiteralPath $profiles -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($profileData.schema_version -ne 1 -or -not $profileData.profiles -or $profileData.policy.docker -ne $false -or $profileData.policy.wsl -ne $false) {
+    Write-Host "profiles.json policy/schema check failed" -ForegroundColor Red
+    exit 1
+}
+Write-Host "profiles.json OK"
+$validPresets = @(
+    "Manual",
+    "ClineCoding",
+    "OpenCodeCoding",
+    "OpenCodeHarness",
+    "OpenClaudeCoding",
+    "LlamaAgentResearch",
+    "DeepResearchLight",
+    "DeepResearchStandard",
+    "DeepResearchHeavy",
+    "WebUIChat"
+)
+foreach ($note in $modelNotes) {
+    if ($note.recommended_preset -and $note.recommended_preset -notin $validPresets) {
+        Write-Host "model-notes.json has an unknown recommended_preset: $($note.recommended_preset)" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "model-notes.json OK"
+
+$nodeTools = @(
+    (Join-Path $root "tools\web-research.mjs"),
+    (Join-Path $root "tools\deep-research-harness.mjs"),
+    $gateway
+)
+foreach ($nodeTool in $nodeTools) {
+    node --check $nodeTool | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Node syntax check failed: $nodeTool" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Node tools syntax OK"
+$gatewaySource = Get-Content -LiteralPath $gateway -Raw -Encoding UTF8
+foreach ($check in @("isClineToolSet", "compactClineTool", "original_tool_bytes", "client_disconnect", "expect")) {
+    if ($gatewaySource -notmatch [regex]::Escape($check)) {
+        Write-Host "LlamaDock gateway check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "LlamaDock gateway checks OK"
+
+$secretPatterns = @(
+    ("194" + "b059"),
+    "sk-[A-Za-z0-9]{12,}",
+    "github_pat_[A-Za-z0-9_]{20,}",
+    "hf_[A-Za-z0-9]{20,}",
+    "bearer\s+[A-Za-z0-9._-]{12,}"
+)
+$secretHits = rg -n -i ($secretPatterns -join "|") $root -g "!data/**" -g "!logs/**" -g "!.git/**" -g "!node_modules/**"
+if ($LASTEXITCODE -gt 1) {
+    Write-Host "Secret scan failed to run." -ForegroundColor Red
+    exit 1
+}
+if ($LASTEXITCODE -eq 0 -and $secretHits) {
+    Write-Host "Secret scan found suspicious values:" -ForegroundColor Red
+    $secretHits
+    exit 1
+}
+Write-Host "Secret scan OK"
+
+foreach ($path in @($openWebUIBootstrap, $openWebUIStart, $computerStart, $computerConfigure, $computerConfigurePy, $runtimeInventory, $benchScript, $utf8Helper, $utf8Smoke, $utf8PowerShellSmoke, $clientShell, $gateway, $supervisor, $profiles, $harness)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Host "Open WebUI launcher file missing: $path" -ForegroundColor Red
+        exit 1
+    }
+}
+$pythonCheck = & py -3.11 -c "compile(open(r'$openWebUIBootstrap', encoding='utf-8').read(), r'$openWebUIBootstrap', 'exec')" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Open WebUI bootstrap syntax check failed" -ForegroundColor Red
+    $pythonCheck
+    exit 1
+}
+$openWebUISite = Join-Path $root "mcp-data\open-webui-venv\Lib\site-packages"
+if (-not (Test-Path (Join-Path $openWebUISite "open_webui\__init__.py"))) {
+    Write-Host "Open WebUI package is not installed: $openWebUISite" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Open WebUI files/package OK"
+$openWebUISource = Get-Content -LiteralPath $openWebUIBootstrap -Raw -Encoding UTF8
+foreach ($check in @("OPENAI_API_BASE_URLS", "openai.api_base_urls", "recovery gateway")) {
+    if ($openWebUISource -notmatch [regex]::Escape($check)) {
+        Write-Host "Open WebUI endpoint sync check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Open WebUI endpoint sync OK"
+$openWebUIStartSource = Get-Content -LiteralPath $openWebUIStart -Raw -Encoding UTF8
+foreach ($check in @("ENABLE_SEARCH_QUERY_GENERATION", "explicit search uses the user's text")) {
+    if ($openWebUIStartSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Open WebUI search fallback check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Open WebUI search fallback OK"
+$utf8SmokeCheck = & py -3.11 -c "compile(open(r'$utf8Smoke', encoding='utf-8').read(), r'$utf8Smoke', 'exec')" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "UTF-8 smoke syntax check failed" -ForegroundColor Red
+    $utf8SmokeCheck
+    exit 1
+}
+$utf8Source = Get-Content -LiteralPath $utf8Helper -Raw -Encoding UTF8
+foreach ($check in @("ByteArrayContent", "application/json", "charset", "Set-LlamaDockUtf8Environment")) {
+    if ($utf8Source -notmatch [regex]::Escape($check)) {
+        Write-Host "UTF-8 helper check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+if ($utf8Source -notmatch "PYTHONUTF8" -or $utf8Source -notmatch "PYTHONIOENCODING") {
+    Write-Host "UTF-8 helper does not configure child CLI encoding" -ForegroundColor Red
+    exit 1
+}
+Write-Host "UTF-8 transport files OK"
+$computerPythonCheck = & py -3.11 -c "compile(open(r'$computerConfigurePy', encoding='utf-8').read(), r'$computerConfigurePy', 'exec')" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Computer configuration Python syntax check failed" -ForegroundColor Red
+    $computerPythonCheck
+    exit 1
+}
+Write-Host "Computer configuration files OK"
+$utf8PowerShellSource = Get-Content -LiteralPath $utf8PowerShellSmoke -Raw -Encoding UTF8
+try {
+    [scriptblock]::Create($utf8PowerShellSource) | Out-Null
+}
+catch {
+    Write-Host "PowerShell UTF-8 smoke syntax check failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "PowerShell UTF-8 smoke syntax OK"
+$clientShellSource = Get-Content -LiteralPath $clientShell -Raw -Encoding UTF8
+try {
+    [scriptblock]::Create($clientShellSource) | Out-Null
+}
+catch {
+    Write-Host "Client UTF-8 shell syntax check failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Client UTF-8 shell syntax OK"
+$supervisorSource = Get-Content -LiteralPath $supervisor -Raw -Encoding UTF8
+try {
+    [scriptblock]::Create($supervisorSource) | Out-Null
+}
+catch {
+    Write-Host "LlamaDock supervisor syntax check failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "LlamaDock supervisor syntax OK"
+foreach ($check in @("WindowStyle Normal", "control surface", "finally", "AutoRestartServer", "automatic restart is disabled")) {
+    if ($supervisorSource -notmatch [regex]::Escape($check)) {
+        Write-Host "LlamaDock visible-console check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "LlamaDock visible-console checks OK"
+
+# --- Agent harness checks ---
+$harnessSource = Get-Content -LiteralPath $harness -Raw -Encoding UTF8
+try {
+    [scriptblock]::Create($harnessSource) | Out-Null
+}
+catch {
+    Write-Host "Agent harness syntax check failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Agent harness syntax OK"
+foreach ($check in @("SelfTest", "DryRun", "MaxMinutes", "MaxResumes", "StallSeconds", "Compute-Fingerprint", "Test-GatewayReady", "Save-State", "Record-Event", "loop", "fingerprint", "mcp-data\agent-harness", "--dir", "Parse-OpenCodeEvent", "continuation", "PSCommandPath", "System.Diagnostics.Process", "BeginOutputReadLine", "OutputDataReceived", "ErrorDataReceived", "ConcurrentQueue", "Unregister-Event", "TryDequeue", "sess-realtime-001")) {
+    if ($harnessSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Agent harness check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+# Verify Root default does NOT use PSScriptRoot in param block
+if ($harnessSource -match '\$Root\s*=\s*\(Split-Path\s+-Parent\s+\$PSScriptRoot\)') {
+    Write-Host "Agent harness check failed: Root default must not use PSScriptRoot" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Agent harness design checks OK"
+
+# --- Gateway status endpoint checks ---
+foreach ($check in @("/llamadock/status", "GATEWAY_STARTED_AT", "activeRequestCount", "computeFingerprint", "trackFingerprint", "possibleRetryLoops", "recordResult", "checkUpstreamHealth", "FINGERPRINT_MAX_ENTRIES", "upstreamOk", "possible_retry_loop")) {
+    if ($gatewaySource -notmatch [regex]::Escape($check)) {
+        Write-Host "Gateway status check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Gateway status endpoint checks OK"
+
+# --- Supervisor circuit breaker checks ---
+foreach ($check in @("CIRCUIT_BREAKER_WINDOW", "CIRCUIT_BREAKER_LIMIT", "Save-SupervisorStatus", "Get-BackoffDelay", "Test-CircuitBreaker", "Record-SupervisorEvent", "requested_restart", "unexpected_exit", "status.json", "breaker_open", "backoffSeconds", "PSCommandPath")) {
+    if ($supervisorSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Supervisor circuit breaker check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+# Verify supervisor uses script: scope for breaker/backoff vars
+foreach ($scriptVar in @('$script:restartCount', '$script:breakerOpen', '$script:backoffIndex', '$script:backoffSeconds', '$script:restartTimestamps', '$script:CIRCUIT_BREAKER_WINDOW', '$script:CIRCUIT_BREAKER_LIMIT')) {
+    if ($supervisorSource -notmatch [regex]::Escape($scriptVar)) {
+        Write-Host "Supervisor script-scope check failed: $scriptVar" -ForegroundColor Red
+        exit 1
+    }
+}
+# Verify supervisor does NOT reference unassigned $script:server or $script:gateway
+# (live process objects are stored in script-scope $server/$gateway without qualifier)
+if ($supervisorSource -match '\$script:server\b' -or $supervisorSource -match '\$script:gateway\b') {
+    Write-Host "Supervisor must use `$server and `$gateway (not `$script:server/`$script:gateway) for live process objects" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Supervisor circuit breaker checks OK"
+
+# --- Client shell harness switch check ---
+foreach ($check in @("-Harness", "harnessPath", "llamadock-opencode-harness.ps1", "-Prompt", "harnessArgs", "Root = Split-Path")) {
+    if ($clientShellSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Client shell harness switch check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+# Verify Root is NOT set to PSScriptRoot directly (must use Split-Path -Parent)
+if ($clientShellSource -match 'Root\s*=\s*\$PSScriptRoot\b') {
+    Write-Host "Client shell harness switch check failed: Root must use Split-Path -Parent, not bare PSScriptRoot" -ForegroundColor Red
+    exit 1
+}
+# Verify client-shell Harness mode uses Read-Host when Prompt is blank
+if ($clientShellSource -notmatch 'Read-Host') {
+    Write-Host "Client shell harness switch check failed: missing Read-Host fallback for blank prompt" -ForegroundColor Red
+    exit 1
+}
+if ($clientShellSource -notmatch 'throw.*Prompt is required for harness mode') {
+    Write-Host "Client shell harness switch check failed: missing throw when Read-Host returns blank" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Client shell harness switch checks OK"
+$launcherSource = Get-Content -LiteralPath $launcher -Raw -Encoding UTF8
+foreach ($check in @("LlamaDock session", "Change workspace, keep this model loaded", "Change model - stop this server and return to selector", "Leave server running and exit", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
+    if ($launcherSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Managed session check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Managed session checks OK"
+foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline defaults", "OpenCodeHarness", "Code - OpenCode + Harness", "OpenClaudeCoding", "Code - OpenClaude", "Select preset (1-10)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
+    if ($launcherSource -notmatch [regex]::Escape($check)) {
+        Write-Host "Launcher check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+if ($launcherSource -match "(?i)Hy3Rocm|Get-Hy3|LLAMADOCK_HY3|hy3-rocm") {
+    Write-Host "Launcher still contains removed Hy3 integration" -ForegroundColor Red
+    exit 1
+}
+foreach ($check in @("llamadock-client-shell.ps1", "CLINE_DATA_DIR", "CLINE_MCP_SETTINGS_PATH")) {
+    if ($launcherSource -notmatch [regex]::Escape($check) -and (Get-Content -LiteralPath $clientShell -Raw -Encoding UTF8) -notmatch [regex]::Escape($check)) {
+        Write-Host "Client UTF-8 shell check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "Launcher checks OK"
+
+# --- ComfyUI workspace checks ---
+foreach ($check in @("Open-ComfyUIClient", "MiniMax-H3 native nodes", "MiniMaxH3ImageToVideo", "MiniMaxH3SigmaShift", "EmptyMiniMaxH3LatentAV", "comfyUrl", "8188", "$comfyUrl/system_stats", "$comfyUrl/object_info")) {
+    if ($launcherSource -notmatch [regex]::Escape($check)) {
+        Write-Host "ComfyUI workspace check failed: $check" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "ComfyUI workspace checks OK"
+
+# ComfyUI branch must be reachable even when llama-server is already up
+if ($launcherSource -notmatch '(?s)\$ExistingServerMode\s*-eq\s*"UseExisting".{0,2000}ClientMode\s*-eq\s*"ComfyUI"') {
+    Write-Host "ComfyUI UseExisting branch missing in launcher" -ForegroundColor Red
+    exit 1
+}
+Write-Host "ComfyUI UseExisting branch OK"
+
+if (-not $SkipDryRun) {
+    $presets = $validPresets
+
+    foreach ($preset in $presets) {
+        $modelIndex = 3
+        $kIndex = 1
+        $vIndex = 6
+        if ($preset -eq "DeepResearchHeavy") {
+            $modelIndex = 1
+            $vIndex = 9
+        }
+
+        $extra = @()
+        if ($preset -eq "Manual") {
+            $extra = @(
+                "-ClientMode", "WebUI",
+                "-ContextIndex", "1",
+                "-OffloadMode", "Auto",
+                "-MoeExpertsMode", "Auto",
+                "-FlashAttentionMode", "On",
+                "-SpecMode", "Off",
+                "-McpMode", "None"
+            )
+        }
+
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher -DryRun -PresetMode $preset -ModelIndex $modelIndex -KCacheIndex $kIndex -VCacheIndex $vIndex -ExistingServerMode Quit @extra 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Dry run failed: $preset" -ForegroundColor Red
+            $out | Select-Object -Last 80
+            exit 1
+        }
+
+        $joined = $out -join "`n"
+        if ($joined -notmatch "DRY RUN: llama-server would start with:") {
+            Write-Host "Dry run did not produce command: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -eq "Manual" -and ($joined -notmatch "Hardware estimate:" -or $joined -notmatch "Runtime availability:")) {
+            Write-Host "Advanced dry run did not show hardware/runtime diagnostics: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -in @("WebUIChat", "OpenCodeCoding", "OpenCodeHarness", "DeepResearchStandard") -and $joined -notmatch "READY TO LAUNCH") {
+            Write-Host "Quick launch did not show the compact launch card: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -notin @("WebUIChat", "OpenCodeCoding", "OpenCodeHarness", "DeepResearchStandard") -and $joined -notmatch "GPU offload estimate:") {
+            Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($joined -notmatch "--no-ui") {
+            Write-Host "llama-server UI was not disabled: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($joined -notmatch "-ngl auto") {
+            Write-Host "Auto GPU offload did not reach llama-server: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($joined -match "--no-warmup") {
+            Write-Host "Deprecated no-warmup flag still present: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($joined -notmatch "--cache-ram") {
+            Write-Host "Explicit prompt-cache RAM flag missing: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -eq "WebUIChat" -and $joined -notmatch "native Computer") {
+            Write-Host "WebUI preset did not identify native Computer: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if (($preset -like "DeepResearch*" -or $preset -eq "LlamaAgentResearch") -and $joined -notmatch 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS=\{"enable_thinking":false\}') {
+            Write-Host "Deep Research preset did not disable thinking: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -in @("OpenCodeCoding", "OpenCodeHarness") -and $joined -notmatch "llamadock/") {
+            Write-Host "OpenCode preset did not pass the selected model." -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -eq "OpenClaudeCoding" -and $joined -notmatch "OPENAI_BASE_URL=http://127.0.0.1:8090/v1") {
+            Write-Host "OpenClaude preset did not pass the local endpoint." -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "Dry run OK: $preset"
+    }
+
+    # ComfyUI does not consume the selected llama model, so it has its own
+    # dry-run path that does not emit llama-server command lines.
+    $comfyDryRun = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher -DryRun -ClientMode ComfyUI -ExistingServerMode Quit 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ComfyUI dry run failed." -ForegroundColor Red
+        $comfyDryRun | Select-Object -Last 40
+        exit 1
+    }
+    $comfyJoined = $comfyDryRun -join "`n"
+    if ($comfyJoined -notmatch "DRY RUN: ComfyUI would start on:" -or $comfyJoined -notmatch "8188") {
+        Write-Host "ComfyUI dry run did not show its launch message." -ForegroundColor Red
+        $comfyDryRun | Select-Object -Last 40
+        exit 1
+    }
+    Write-Host "ComfyUI dry run OK"
+}
+
+if ($RunUtf8Smoke) {
+    Write-Host "Running live UTF-8 smoke tests against the current local model server..." -ForegroundColor Cyan
+    $utf8SmokeOutput = & py -3 $utf8Smoke --output-path (Join-Path $root "mcp-data\utf8-smoke-results.jsonl") 2>&1
+    $utf8SmokeOutput
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Live UTF-8 smoke test failed." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Running the Windows PowerShell 5.1 byte-boundary smoke tests..." -ForegroundColor Cyan
+    $utf8PowerShellOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $utf8PowerShellSmoke 2>&1
+    $utf8PowerShellOutput
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "PowerShell UTF-8 smoke test failed." -ForegroundColor Red
+        exit 1
+    }
+}
+
+# --- Agent harness SelfTest ---
+Write-Host "Running agent harness self-test (no model)..." -ForegroundColor Cyan
+$harnessSelfTest = & powershell -NoProfile -ExecutionPolicy Bypass -File $harness -Workspace $root -ModelName "test-model" -Root $root -SelfTest 2>&1
+$harnessSelfTest
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Agent harness self-test failed." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Agent harness self-test OK"
+
+# Verify Root default resolves from PSCommandPath (no -Root passed)
+Write-Host "Running agent harness self-test without -Root (PSCommandPath fallback)..." -ForegroundColor Cyan
+$harnessSelfTestNoRoot = & powershell -NoProfile -ExecutionPolicy Bypass -File $harness -Workspace $root -ModelName "test-model" -SelfTest 2>&1
+$harnessSelfTestNoRoot
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Agent harness self-test (no -Root) failed." -ForegroundColor Red
+    exit 1
+}
+Write-Host "Agent harness self-test (no -Root) OK"
+Write-Host "Agent harness self-test OK"
+
+Write-Host "All launcher tests OK"
