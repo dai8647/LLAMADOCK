@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "default_profile", "profiles", "policy"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "default_profile": { "type": "string" },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["label", "preset", "client", "context_tokens", "kv", "gpu_offload", "flash_attention", "mcp"],
+        "properties": {
+          "label": { "type": "string" },
+          "preset": { "type": "string" },
+          "client": { "type": "string" },
+          "context_tokens": { "type": "integer", "minimum": 4096 },
+          "kv": {
+            "type": "object",
+            "required": ["k", "v"],
+            "properties": { "k": { "type": "string" }, "v": { "type": "string" } }
+          },
+          "gpu_offload": { "type": "string" },
+          "flash_attention": { "type": "string", "enum": ["On", "Off"] },
+          "mcp": { "type": "string", "enum": ["None", "Light"] }
+        }
+      }
+    },
+    "policy": { "type": "object" }
+  }
+}

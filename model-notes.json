@@ -1,0 +1,45 @@
+[
+  {
+    "pattern": "(?i)Qwen3[.]5-122B-A10B-Uncensored-APEX-Compact",
+    "note": "Qwen3.5 122B A10B APEX I-Compact MoE: about 59.2 GB (55.1 GiB) for the text GGUF. Use the ROCm llama.cpp runtime with GPU offload Auto first; keep K at Q8 for coding/search and use V Q4 only when RAM or context pressure requires it. The model card recommends Jinja and enable_thinking=false for fast interactive work.",
+    "warning": "The optional mmproj file is not needed for coding or web search. Thinking mode can greatly increase latency; the first interactive smoke test should use a bounded max_tokens value.",
+    "recommended_preset": "OpenCodeCoding"
+  },
+  {
+    "pattern": "(?i)ROCMFPX",
+    "note": "ROCMFPX GGUF type may be unsupported by the current AtomicBot/TurboTan builds.",
+    "warning": "Previously failed with invalid ggml type 103. Prefer normal Q4_K_M/Q5_K_M/Q6_K/Q8_0 GGUF instead.",
+    "recommended_preset": "Manual"
+  },
+  {
+    "pattern": "(?i)Ternary|Bonsai",
+    "note": "Ternary/Q2_0 (group 128) Bonsai model: requires the PrismML-Eng/llama.cpp fork (PrismBonsai engine). Mainline llama.cpp cannot load Q2_0_g128. Use q8_0 K cache, q4_0 V cache (asymmetric), FlashAttention On. Skip the mmproj file unless using multimodal. On 16 GB VRAM (RX 7800 XT, gfx1101) the 27B Q2_0 model is tight when paired with the deep-research harness and llama-agent running back-to-back against a single np=1 slot. Prefer context_tokens=16384 and cache_ram_mib=4096 for DeepResearch / LlamaAgent to leave headroom so warmup does not overflow VRAM before the first client request.",
+    "warning": "Do NOT run these with AtomicBot/TurboTan/Official* engines; loading fails with invalid ggml type. Use the complete matching build from the PrismML-Eng fork (HIP build-rocm71 on RX 7800 XT). If llama-server crashes right after printing 'server is listening on http://127.0.0.1:8080', lower cache_ram_mib before retrying; a ghost gateway PID left on 8090 will keep returning TypeError: fetch failed until Stop-LlamaDockSupervisor clears it.",
+    "recommended_preset": "OpenCodeCoding"
+  },
+  {
+    "pattern": "(?i)TQ3_4S|TQ3",
+    "note": "TQ3 model: use TurboTan, K=q8_0, V=tq3_0. Thinking is disabled by default so Odysseus receives normal content.",
+    "recommended_preset": "DeepResearchStandard"
+  },
+  {
+    "pattern": "(?i)MTP",
+    "note": "MTP model: Speculative MTP/NextN can be tested with draft-mtp when the model actually includes MTP heads.",
+    "recommended_preset": "ClineCoding"
+  },
+  {
+    "pattern": "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert",
+    "note": "MoE model: keep MoE experts on Auto first. Try 2 or 3 manually after the model boots cleanly.",
+    "recommended_preset": "WebUIChat"
+  },
+  {
+    "pattern": "(?i)Gemma",
+    "note": "Gemma-family model: good lightweight fallback. Use Flash Attention on and keep Deep Research extraction concurrency modest.",
+    "recommended_preset": "DeepResearchLight"
+  },
+  {
+    "pattern": "(?i)Qwen.*Coder|Coder.*Qwen",
+    "note": "Coder model: better suited for Cline/coding than prose-heavy Deep Research.",
+    "recommended_preset": "ClineCoding"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "coding",
+  "share": "disabled",
+  "shell": "pwsh",
+  "permission": { "edit": "allow", "bash": "ask", "webfetch": "ask" },
+  "tools": { "write": true, "edit": true, "bash": true },
+  "agent": {
+    "coding": {
+      "description": "LlamaDock coding agent with user-approved shell operations",
+      "prompt": "Work on the local project. Explain changes, keep edits scoped, and ask before destructive shell commands.",
+      "tools": { "write": true, "edit": true, "bash": true }
+    }
+  }
+}
