@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "updated": "2026-08-12",
+  "based_on": "config/params-schema.json",
+  "target_engine": "llama-cpp-turboquant-experts-laguna",
+  "purpose": "Named memory-preset profiles. Each 'overrides' maps params-schema ids -> values and is applied on top of the base config before launch. The GUI offers these as one-click presets next to the parameter panel; the core applies them by rendering each param's 'flags'. Add new presets as one row here - no code change.",
+  "notes": [
+    "Light-memory tools available in this fork: asymmetric KV (cache_type_v=q4_0), moe_expert_placement=frequency (hot experts), moe_gpu_expert_ratio, cpu_moe / n_cpu_moe, moe_gpu_expert_slot_num, shorter context.",
+    "frequency placement = keep the frequently-picked ('hot') experts on GPU and the rest on CPU. Lower moe_gpu_expert_ratio = lighter on VRAM."
+  ],
+  "presets": [
+    {
+      "id": "very-light",
+      "label": "Very light (tiny VRAM)",
+      "description": "Extreme memory saving: asymmetric KV, short context, hot-expert frequency placement at 20%, minimal prompt cache.",
+      "tags": ["light", "low-vram", "moE"],
+      "overrides": {
+        "context_tokens": 16384,
+        "cache_ram_mib": 2048,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q4_0",
+        "flash_attn": "on",
+        "gpu_layers": "auto",
+        "moe_expert_placement": "frequency",
+        "moe_gpu_expert_ratio": 0.2,
+        "n_cpu_moe": "auto"
+      }
+    },
+    {
+      "id": "light",
+      "label": "Light (balanced saving)",
+      "description": "Moderate memory saving: asymmetric KV, hot-expert ratio 50%, medium context.",
+      "tags": ["light", "balanced"],
+      "overrides": {
+        "context_tokens": 32768,
+        "cache_ram_mib": 4096,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q4_0",
+        "flash_attn": "on",
+        "gpu_layers": "auto",
+        "moe_expert_placement": "frequency",
+        "moe_gpu_expert_ratio": 0.5
+      }
+    },
+    {
+      "id": "balanced",
+      "label": "Balanced (default)",
+      "description": "Good default: q8_0 KV, all experts on GPU, auto offload, standard context.",
+      "tags": ["default", "balanced"],
+      "overrides": {
+        "context_tokens": 32768,
+        "cache_ram_mib": 8192,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "flash_attn": "on",
+        "gpu_layers": "auto",
+        "moe_expert_placement": "all-gpu"
+      }
+    },
+    {
+      "id": "full",
+      "label": "Full quality",
+      "description": "Maximum quality: high-precision KV, all experts on GPU, larger context, flash attention on.",
+      "tags": ["quality", "high-vram"],
+      "overrides": {
+        "context_tokens": 65536,
+        "cache_ram_mib": 8192,
+        "cache_type_k": "f16",
+        "cache_type_v": "f16",
+        "flash_attn": "on",
+        "gpu_layers": "all",
+        "moe_expert_placement": "all-gpu"
+      }
+    },
+    {
+      "id": "moe-cpu-first",
+      "label": "MoE on CPU (big model)",
+      "description": "For very large MoE models: keep MoE weights in CPU and use routing-aware slots to limit GPU memory.",
+      "tags": ["light", "moE", "big-model"],
+      "overrides": {
+        "context_tokens": 16384,
+        "cache_ram_mib": 2048,
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q4_0",
+        "flash_attn": "on",
+        "cpu_moe": true,
+        "n_cpu_moe": "auto",
+        "moe_expert_placement": "cpu-moe",
+        "moe_gpu_expert_slot_num": 0
+      }
+    },
+    {
+      "id": "spec-mtp",
+      "label": "Spec decode: MTP",
+      "description": "Enable speculative decoding with the model's built-in MTP head (needs a combined *_MTP.gguf).",
+      "tags": ["speed", "spec"],
+      "overrides": {
+        "spec_type": "mtp",
+        "spec_draft_n_max": 2,
+        "spec_draft_n_min": 1,
+        "spec_draft_cache_k": "q8_0",
+        "spec_draft_cache_v": "q8_0"
+      }
+    },
+    {
+      "id": "spec-eagle3",
+      "label": "Spec decode: Eagle3",
+      "description": "Enable Eagle3 speculative decoding with an external draft model.",
+      "tags": ["speed", "spec"],
+      "overrides": {
+        "spec_type": "eagle3",
+        "spec_draft_n_max": 2,
+        "spec_draft_n_min": 1
+      }
+    },
+    {
+      "id": "spec-off",
+      "label": "Spec decode: Off",
+      "description": "Disable speculative decoding (lowest memory, simplest).",
+      "tags": ["light", "spec"],
+      "overrides": {
+        "spec_type": "off"
+      }
+    }
+  ]
+}
