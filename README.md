@@ -66,7 +66,7 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 
 モデル名から実行ランタイムを自動選択します。
 
-- 通常の GGUF: **AtomicBot TurboQuant** runtime
+- `DeepSeek`系およびその他のGGUF: **ExpertsLaguna** runtime
 - `TQ3` / `TQ3_4S` を含むモデル: **TurboTan** runtime
 - `Ternary` / `Bonsai` を含むモデル: **PrismBonsai** runtime（PrismML-Eng/llama.cpp fork）
 - 手動指定時のみ: Official llama.cpp **Vulkan / HIP / CPU** runtime
