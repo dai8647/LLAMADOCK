@@ -29,7 +29,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna")]
+    [ValidateSet("Auto", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -41,15 +41,7 @@ $utf8Helper = Join-Path $PSScriptRoot "tools\llamadock-utf8.ps1"
 if (Test-Path -LiteralPath $utf8Helper) {
     . $utf8Helper
 }
-$AtomicBotServerPath = if ($env:LLAMA_TQ3_ATOMICBOT_SERVER) {
-    $env:LLAMA_TQ3_ATOMICBOT_SERVER
-}
-elseif (Test-Path "C:\llama-tq3\build-rocm71\bin\llama-server.exe") {
-    "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
-}
-else {
-    "C:\llama-tq3\build\bin\llama-server.exe"
-}
+
 $TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
     $env:LLAMA_TQ3_TURBOTAN_SERVER
 }
@@ -62,7 +54,7 @@ elseif (Test-Path "C:\llama-tq3-turbotan\build\bin\llama-server.exe") {
 else {
     "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm\bin\llama-server.exe"
 }
-$ServerPath = $AtomicBotServerPath
+$ServerPath = $null
 $OfficialVulkanServerPath = if ($env:LLAMADOCK_OFFICIAL_VULKAN_SERVER) {
     $env:LLAMADOCK_OFFICIAL_VULKAN_SERVER
 }
@@ -593,28 +585,24 @@ function Get-RequiredEngine {
     param([object]$Model)
 
     $modelText = "$($Model.Name) $($Model.FullName)"
-    if ($modelText -match "(?i)DeepSeek[-_ ]?V4[-_ ]?Flash.*REAP|ds4-compact|REAP[-_ ]?K128") {
-        # DeepSeek V4 Flash REAP GGUF is served by the native llama.cpp fork
-        # (experts-laguna), not the WSL ds4-server. Keep WSL/DS4 disabled.
-        return "ExpertsLaguna"
-    }
-
     # Ternary/Bonsai Q2_0 (group 128) GGUF: needs PrismML-Eng/llama.cpp fork.
-    # Mainline llama.cpp cannot load these. Match before TQ3 (no overlap).
+    # Mainline llama.cpp cannot load these. Match before DeepSeek/TQ3.
     if ($modelText -match "(?i)Ternary|Bonsai") {
         return "PrismBonsai"
+    }
+
+    # DeepSeek-family GGUFs use the native experts-laguna fork. This includes
+    # REAP and MXFP4 variants; do not let a TQ3 marker route them to TurboTan.
+    if ($modelText -match "(?i)DeepSeek|ds4-compact|REAP[-_ ]?K128|Laguna") {
+        return "ExpertsLaguna"
     }
 
     if ($modelText -match "(?i)TQ3_4S|TQ3") {
         return "TurboTan"
     }
 
-    # Laguna models need experts-first fork with laguna arch support
-    if ($modelText -match "(?i)Laguna") {
-        return "ExpertsLaguna"
-    }
-
-    return "AtomicBot"
+    # Other GGUFs use the Laguna fork as the automatic fallback.
+    return "ExpertsLaguna"
 }
 
 function Get-ModelNote {
@@ -1882,7 +1870,6 @@ Show-LlamaDockBanner
 $hardware = Get-HardwareEstimate
 
 $runtimeCandidates = @(
-    [PSCustomObject]@{ Name = "AtomicBot"; Path = $AtomicBotServerPath },
     [PSCustomObject]@{ Name = "TurboTan"; Path = $TurboTanServerPath },
     [PSCustomObject]@{ Name = "PrismBonsai"; Path = $PrismBonsaiServerPath },
     [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
@@ -1939,22 +1926,7 @@ $models = @()
 foreach ($f in $allFiles) {
     if ($f.Name -notmatch "mmproj") {
         $isTQ3 = $f.Name -match "TQ3"
-        $modelText = "$($f.Name) $($f.FullName)"
-        $engine = if ($modelText -match "(?i)DeepSeek[-_ ]?V4[-_ ]?Flash.*REAP|ds4-compact|REAP[-_ ]?K128") {
-            "ExpertsLaguna"
-        }
-        elseif ($modelText -match "(?i)Ternary|Bonsai") {
-            "PrismBonsai"
-        }
-        elseif ($modelText -match "(?i)TQ3_4S|TQ3") {
-            "TurboTan"
-        }
-        elseif ($modelText -match "(?i)Laguna") {
-            "ExpertsLaguna"
-        }
-        else {
-            "AtomicBot"
-        }
+        $engine = Get-RequiredEngine -Model $f
         $models += [PSCustomObject]@{
             Name = $f.Name
             FullName = $f.FullName
@@ -2036,7 +2008,7 @@ elseif ($requiredEngine -eq "DeepSeekDS4") {
     $ServerPath = $Ds4ServerPath
 }
 else {
-    $ServerPath = $AtomicBotServerPath
+    $ServerPath = $null
 }
 
 $isDs4Engine = $requiredEngine -eq "DeepSeekDS4"
@@ -2874,7 +2846,7 @@ if ($SpecMode -eq "MtpNextN" -and $selected.Name -notmatch "(?i)MTP") {
 
 if ($SpecMode -eq "MtpNextN" -and $requiredEngine -eq "TurboTan") {
     Write-Host "ERROR: TurboTan TQ3_4S engine mode is not used for MTP/NextN in this launcher." -ForegroundColor Red
-    Write-Host "Use AtomicBot engine with a combined *_MTP.gguf model." -ForegroundColor Red
+    Write-Host "Use a non-TurboTan engine with a combined *_MTP.gguf model." -ForegroundColor Red
     exit 1
 }
 
