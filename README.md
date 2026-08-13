@@ -28,6 +28,14 @@
 
 互換用エントリポイントとして `llama-tq3-chat.bat` も残しています（中身は `llamadock.bat` を呼び出します）。
 
+ComfyUIだけを起動する場合は、モデル選択を省略できます。
+
+```powershell
+.\comfyui.bat
+```
+
+`llamadock.bat` を起動した場合も、最初に LLM workspace と ComfyUI を選択できます。
+
 ### 基本フロー
 
 1. モデルを選択

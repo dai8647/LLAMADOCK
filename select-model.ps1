@@ -1891,6 +1891,44 @@ $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "DeepSeekDS4"; Path = $Ds4ServerPath }
 )
 
+# ComfyUI is a model-independent workspace. Keep it at the front door so a
+# ComfyUI launch never makes the user pick an unrelated GGUF or start a
+# llama-server first.
+$comfyOnly = $ClientMode -eq "ComfyUI"
+if (-not $comfyOnly -and $ClientMode -eq "Prompt") {
+    Write-Host "Launch target:" -ForegroundColor Green
+    Write-Host " [1] LLM workspace - select a model and client"
+    Write-Host " [2] ComfyUI - video/audio workspace (no GGUF selection)"
+    Write-Host ""
+    do {
+        $targetInput = Read-Host "Select launch target (1-2), or press Enter for LLM"
+        if ([string]::IsNullOrWhiteSpace($targetInput)) {
+            $targetSelection = 1
+            $targetValid = $true
+        }
+        else {
+            $targetSelection = 0
+            $targetValid = [int]::TryParse($targetInput, [ref]$targetSelection)
+        }
+    } while (-not $targetValid -or $targetSelection -lt 1 -or $targetSelection -gt 2)
+
+    if ($targetSelection -eq 2) {
+        $ClientMode = "ComfyUI"
+        $comfyOnly = $true
+    }
+}
+
+if ($comfyOnly) {
+    if ($DryRun) {
+        Write-Host "DRY RUN: ComfyUI-only launch; model selection and llama-server will be skipped." -ForegroundColor Yellow
+        Write-Host "DRY RUN: ComfyUI would start on http://127.0.0.1:8188" -ForegroundColor Yellow
+        exit 0
+    }
+
+    $null = Open-ComfyUIClient
+    exit 0
+}
+
 # Find all supported GGUF files. Retired Hy3/hy_v3 files stay on disk for
 # optional manual cleanup, but must not be offered to a different runtime.
 $allFiles = Get-ChildItem -Path $ModelsBase -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
