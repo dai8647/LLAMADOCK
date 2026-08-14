@@ -20,7 +20,7 @@ param(
     [string]$McpMode = "Prompt",
     [ValidateSet("Prompt", "On", "Off")]
     [string]$FlashAttentionMode = "Prompt",
-    [ValidateSet("Prompt", "Off", "MtpNextN")]
+    [ValidateSet("Prompt", "Off", "MtpNextN", "DSpark")]
     [string]$SpecMode = "Prompt",
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
@@ -108,6 +108,9 @@ else {
 }
 $ExpertsLagunaServerPath = if ($env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER) {
     $env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER
+}
+elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-hip\bin\llama-server.exe") {
+    "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-hip\bin\llama-server.exe"
 }
 elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe") {
     "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe"
@@ -1989,7 +1992,8 @@ $selected = $models[$selection - 1]
 $selectedModelSizeGB = [math]::Round($selected.SizeMB / 1024, 1)
 $requiredEngine = Get-RequiredEngine -Model $selected
 $selectedModelText = "$($selected.Name) $($selected.FullName)"
-$isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert"
+$isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert|DeepSeek|Laguna"
+$isDeepSeek = $selectedModelText -match "(?i)DeepSeek"
 if ($EngineMode -ne "Auto") {
     $requiredEngine = $EngineMode
 }
@@ -2228,7 +2232,11 @@ if ($isDs4Engine) {
     )
 }
 else {
-    $recommendedDefaultTokens = if ($selectedModelSizeGB -ge 40) {
+    $recommendedDefaultTokens = if ($isDeepSeek) {
+        # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
+        16384
+    }
+    elseif ($selectedModelSizeGB -ge 40) {
         16384
     }
     elseif ($selectedModelSizeGB -ge 24) {
@@ -2355,7 +2363,7 @@ else {
     if ($requiredEngine -eq "TurboTan") {
         $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
     }
-    elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "ExpertsLaguna") {
+elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
         $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
         if (-not $isQuickLaunch) {
             Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
@@ -2382,11 +2390,14 @@ else {
             exit 1
         }
     }
-    else {
+else {
+        $defaultKType = if ($isDeepSeek) { "turbo4" } else { "q8_0" }
         do {
-            $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for Q8"
+            $defaultKLabel = $defaultKType
+            $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for $defaultKLabel"
             if ([string]::IsNullOrWhiteSpace($kInput)) {
-                $kSelection = 1
+                $kSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultKType) + 1
+                if ($kSelection -le 0) { $kSelection = 1 }
                 $kValid = $true
             }
             else {
@@ -2403,7 +2414,7 @@ else {
         Write-Host ""
     }
 
-    if (-not $isQuickLaunch) {
+if (-not $isQuickLaunch) {
         Write-Host "KV cache V type:" -ForegroundColor Green
         for ($i = 0; $i -lt $kvOptions.Count; $i++) {
             $kv = $kvOptions[$i]
@@ -2412,38 +2423,50 @@ else {
         Write-Host ""
     }
 
-    if ($VCacheIndex -eq 0 -and $KvIndex -gt 0) {
-        $VCacheIndex = $KvIndex
-    }
-
-    if ($VCacheIndex -gt 0) {
-        $vSelection = $VCacheIndex
-        if ($vSelection -lt 1 -or $vSelection -gt $kvOptions.Count) {
-            Write-Host "ERROR: VCacheIndex out of range" -ForegroundColor Red
-            exit 1
+    if ($isDeepSeek) {
+        # DeepSeek V4 Flash (this fork) requires symmetric K/V cache types:
+        # "model does not support different K and V cache types". V follows K.
+        $selectedVCache = $selectedKCache
+        if (-not $isQuickLaunch) {
+            Write-Host ""
+            Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type)) (symmetric - DeepSeek requires K==V)" -ForegroundColor Green
+            Write-Host ""
         }
     }
     else {
-        $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
-        do {
-            $defaultVLabel = $defaultVType
-            $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
-            if ([string]::IsNullOrWhiteSpace($vInput)) {
-                $vSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
-                $vValid = $true
-            }
-            else {
-                $vSelection = 0
-                $vValid = [int]::TryParse($vInput, [ref]$vSelection)
-            }
-        } while (-not $vValid -or $vSelection -lt 1 -or $vSelection -gt $kvOptions.Count)
-    }
+        if ($VCacheIndex -eq 0 -and $KvIndex -gt 0) {
+            $VCacheIndex = $KvIndex
+        }
 
-    $selectedVCache = $kvOptions[$vSelection - 1]
-    if (-not $isQuickLaunch) {
-        Write-Host ""
-        Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
-        Write-Host ""
+        if ($VCacheIndex -gt 0) {
+            $vSelection = $VCacheIndex
+            if ($vSelection -lt 1 -or $vSelection -gt $kvOptions.Count) {
+                Write-Host "ERROR: VCacheIndex out of range" -ForegroundColor Red
+                exit 1
+            }
+        }
+        else {
+            $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
+            do {
+                $defaultVLabel = $defaultVType
+                $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
+                if ([string]::IsNullOrWhiteSpace($vInput)) {
+                    $vSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
+                    $vValid = $true
+                }
+                else {
+                    $vSelection = 0
+                    $vValid = [int]::TryParse($vInput, [ref]$vSelection)
+                }
+            } while (-not $vValid -or $vSelection -lt 1 -or $vSelection -gt $kvOptions.Count)
+        }
+
+        $selectedVCache = $kvOptions[$vSelection - 1]
+        if (-not $isQuickLaunch) {
+            Write-Host ""
+            Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
+            Write-Host ""
+        }
     }
 }
 
@@ -2662,10 +2685,12 @@ if ($isLikelyMoeModel -and $MoeExpertsMode -ne "Prompt") {
         }
         Write-Host ""
 
-        do {
-            $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for Auto"
+do {
+            $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
+            $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
+            $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
             if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
-                $cpuMoeSelection = 1
+                $cpuMoeSelection = $defaultCpuMoeIndex
                 $cpuMoeValid = $true
             }
             else {
@@ -2688,12 +2713,21 @@ if ($isLikelyMoeModel -and $MoeExpertsMode -ne "Prompt") {
         if ($env:HIP_PATH -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "ExpertsLaguna") {
             $vramGB = 16  # RX 7800 XT
         }
-        if ($modelSizeGB -gt $vramGB) {
+if ($modelSizeGB -gt $vramGB) {
             # Model doesn't fit in VRAM - offload excess layers to CPU
-            $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
-            $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
-            if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto ($selectedCpuMoe) - model ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
+            # DeepSeek 150B: fastest measured config uses --cpu-moe (all experts on CPU)
+            if ($isDeepSeek) {
+                $selectedCpuMoe = "99"
+                if (-not $isQuickLaunch) {
+                    Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
+                }
+            }
+            else {
+                $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
+                $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
+                if (-not $isQuickLaunch) {
+                    Write-Host "CPU MoE layers: Auto ($selectedCpuMoe) - model ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
+                }
             }
         }
         else {
@@ -2795,8 +2829,9 @@ if ($FlashAttentionMode -eq "Prompt") {
 if ($FlashAttentionMode -eq "Off") { $flashAttention = "off" }
 else { $flashAttention = "on" }
 
-# ExpertsLaguna: force FA off (ROCm SWA layer crash)
-if ($requiredEngine -eq "ExpertsLaguna") {
+# ExpertsLaguna: force FA off (ROCm SWA layer crash) for non-DeepSeek models.
+# DeepSeek V4 Flash runs FA on with turbo4/Q4 KV on this fork (verified 11 tps).
+if ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek) {
     if ($flashAttention -eq "on") {
         Write-Host "ExpertsLaguna: Flash Attention forced OFF (ROCm SWA compatibility)" -ForegroundColor Yellow
         $flashAttention = "off"
@@ -2820,29 +2855,33 @@ if (-not $isDs4Engine -and $requiredEngine -ne "ExpertsLaguna" -and $flashAttent
 }
 
 if ($SpecMode -eq "Prompt") {
-    Write-Host "Speculative MTP/NextN:" -ForegroundColor Green
+    Write-Host "Speculative decoding mode:" -ForegroundColor Green
     Write-Host " [1] Off - normal decoding"
     Write-Host " [2] MTP/NextN - for combined *_MTP.gguf models"
+    Write-Host " [3] DSpark - DeepSeek V4 Flash fast draft"
     Write-Host ""
 
     do {
-        $specInput = Read-Host "Select speculative mode (1-2), or press Enter for Off"
+        $defaultSpecChoice = if ($isDeepSeek) { 3 } else { 1 }
+        $defaultSpecLabel = if ($isDeepSeek) { "DSpark" } else { "Off" }
+        $specInput = Read-Host "Select speculative mode (1-3), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
-            $specSelection = 1
+            $specSelection = $defaultSpecChoice
             $specValid = $true
         }
         else {
             $specSelection = 0
             $specValid = [int]::TryParse($specInput, [ref]$specSelection)
         }
-    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt 2)
+    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt 3)
 
     if ($specSelection -eq 1) { $SpecMode = "Off" }
-    else { $SpecMode = "MtpNextN" }
+    elseif ($specSelection -eq 2) { $SpecMode = "MtpNextN" }
+    else { $SpecMode = "DSpark" }
 }
 
 if (-not $isQuickLaunch) {
-    Write-Host "Speculative MTP/NextN: $SpecMode" -ForegroundColor Green
+    Write-Host "Speculative decoding mode: $SpecMode" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -2964,6 +3003,10 @@ else {
         $args += @("--n-cpu-moe", "$selectedCpuMoe")
     }
 
+    if ($isDeepSeek) {
+        $args += "--no-mmap"
+    }
+
     if ($SpecMode -eq "MtpNextN") {
         $args += @(
             "-md", $selected.FullName,
@@ -2973,6 +3016,15 @@ else {
             "-ngld", "$serverOffload",
             "-ctkd", "$effectiveKCacheType",
             "-ctvd", "$effectiveVCacheType"
+        )
+    }
+
+    if ($SpecMode -eq "DSpark") {
+        $args += @(
+            "--spec-type", "draft-dspark",
+            "--spec-draft-model", "C:\Users\dai86\.lmstudio\models\ggml-org\DeepSeek-V4-Flash-0731-GGUF\dspark-DeepSeek-V4-Flash-0731-MXFP4.gguf",
+            "--spec-draft-n-max", "5",
+            "-ngld", "99"
         )
     }
 
