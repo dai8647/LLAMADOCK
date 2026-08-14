@@ -24,6 +24,7 @@ mcp-data/
 mcp-share/
 mcp-browser-output/
 logs/
+.freebuff/
 local-deep-research-test/
 
 # --- Test output ---

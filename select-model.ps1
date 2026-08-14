@@ -33,7 +33,8 @@ param(
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
-    [switch]$SkipOpenBrowser
+    [switch]$SkipOpenBrowser,
+    [string]$ComfyUIFlags = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -1376,6 +1377,137 @@ function Open-OpenWebUIClient {
     return $process
 }
 
+$script:ComfyProfileChoice = $null
+$script:ComfyFlagsChoice = ""
+
+function Get-ComfyUITritonVersion {
+    # Returns the triton version installed in the ComfyUI venv, or $null.
+    # comfy-kitchen's ROCm INT8 Triton kernels need triton >= 3.7; older HIP
+    # builds (e.g. triton-windows 3.5.1) hard-crash ComfyUI when
+    # --enable-triton-backend forces them on (missing libdevice.rint /
+    # register allocation errors). Gates the `triton` profile accordingly.
+    try {
+        $comfyPython = "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.exe"
+        $v = & $comfyPython -c "import triton; print(triton.__version__)" 2>$null
+        if ($v -match '^(\d+)\.(\d+)') {
+            return [version]("$($Matches[1]).$($Matches[2])")
+        }
+    }
+    catch {
+    }
+    return $null
+}
+
+function Get-ComfyUILaunchArgs {
+    # Researched MiniMax H3 / ROCm tuning for the ComfyUI workspace. Sources and
+    # the reasoning behind each profile live in docs/MiniMax-H3-Tuning.md.
+    #
+    # Precedence: -ComfyUIFlags parameter > $env:LLAMADOCK_COMFY_FLAGS >
+    #             interactive picker (custom flags) > profile
+    #             (env LLAMADOCK_COMFY_PROFILE > interactive picker > default).
+    #
+    # Profiles:
+    #   default - reserve 1 GB VRAM for the OS/desktop and let DynamicVRAM fill
+    #             the rest of the card. No --lowvram: it forces the text encoder
+    #             onto the CPU and offloads the DiT unnecessarily.
+    #   fast    - default + --fast fp16_accumulation --force-non-blocking. The
+    #             flags are marked "untested / quality deteriorating" upstream;
+    #             benchmark against default before adopting.
+    #   triton  - default + --enable-triton-backend so comfy-kitchen can run its
+    #             INT8 Triton kernels (the H3 DiT is int8). Only useful after
+    #             installing triton into the ComfyUI venv; see comfyui-tune.ps1.
+    #   ck      - default + --use-ck-attention (comfy-kitchen attention, needs
+    #             ComfyUI >= 0.33.0). Works on ROCm/hip; big win for H3 DiT.
+    #   bench   - no extras; pair with LLAMADOCK_COMFY_FLAGS for A/B runs.
+    param([int]$Port = 8188)
+    $base = @("main.py", "--port", "$Port", "--listen", "127.0.0.1")
+    $profile = "default"
+    if ($env:LLAMADOCK_COMFY_PROFILE) {
+        $profile = $env:LLAMADOCK_COMFY_PROFILE
+    }
+    elseif ($script:ComfyProfileChoice) {
+        $profile = $script:ComfyProfileChoice
+    }
+    switch ($profile.ToLowerInvariant()) {
+        "fast" { $extra = @("--reserve-vram", "1.0", "--fast", "fp16_accumulation", "--force-non-blocking") }
+        "triton" {
+            $extra = @("--reserve-vram", "1.0")
+            $tritonVersion = Get-ComfyUITritonVersion
+            if ($null -ne $tritonVersion -and $tritonVersion -ge [version]"3.7") {
+                $extra += "--enable-triton-backend"
+            }
+            elseif ($null -ne $tritonVersion) {
+                Write-Host ("WARNING: triton {0} is too old for comfy-kitchen's ROCm INT8 path (needs >= 3.7);" -f $tritonVersion) -ForegroundColor Yellow
+                Write-Host "         --enable-triton-backend omitted (older HIP builds crash ComfyUI)." -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "WARNING: triton is not installed in the ComfyUI venv; --enable-triton-backend omitted." -ForegroundColor Yellow
+            }
+        }
+        "ck" { $extra = @("--reserve-vram", "1.0", "--use-ck-attention") }
+        "bench" { $extra = @() }
+        default { $extra = @("--reserve-vram", "1.0") }
+    }
+    $override = ""
+    if (-not [string]::IsNullOrWhiteSpace($ComfyUIFlags)) {
+        $override = $ComfyUIFlags
+    }
+    elseif ($env:LLAMADOCK_COMFY_FLAGS) {
+        $override = $env:LLAMADOCK_COMFY_FLAGS
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($script:ComfyFlagsChoice)) {
+        $override = $script:ComfyFlagsChoice
+    }
+    if (-not [string]::IsNullOrWhiteSpace($override)) {
+        $extra = @($override -split "\s+" | Where-Object { $_ })
+    }
+    return @($base + $extra)
+}
+
+function Select-ComfyUITuning {
+    # Interactive tuning picker for the ComfyUI workspace (MiniMax H3). Shown
+    # only when ComfyUI is about to start and the flags were not pinned through
+    # -ComfyUIFlags / LLAMADOCK_COMFY_FLAGS / LLAMADOCK_COMFY_PROFILE. Skipped
+    # when stdin is redirected so scripted/bench launches keep working.
+    if (-not [string]::IsNullOrWhiteSpace($ComfyUIFlags) -or $env:LLAMADOCK_COMFY_FLAGS -or $env:LLAMADOCK_COMFY_PROFILE) {
+        return
+    }
+    if ([Console]::IsInputRedirected) {
+        return
+    }
+    Write-Host ""
+    Write-Host "ComfyUI tuning (MiniMax H3), fastest first:" -ForegroundColor Green
+    Write-Host " [1] ck      - default + --use-ck-attention (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
+    Write-Host " [2] fast    - default + --fast fp16_accumulation --force-non-blocking (untested; quality risk, benchmark first)"
+    Write-Host " [3] default - --reserve-vram 1.0 (measured baseline 19m26s; 1GB stays free for the desktop)"
+    Write-Host " [4] bench   - no extra flags (A/B baseline)"
+    Write-Host " [5] triton  - default + --enable-triton-backend (needs triton >= 3.7 in venv; older builds auto-fallback)"
+    Write-Host " [6] custom  - type raw ComfyUI flags"
+    Write-Host ""
+    do {
+        $tuningInput = Read-Host "Select ComfyUI tuning (1-6), or press Enter for default"
+        $tuningValid = $true
+        if ([string]::IsNullOrWhiteSpace($tuningInput)) {
+            $script:ComfyProfileChoice = "default"
+        }
+        else {
+            switch ($tuningInput) {
+                "1" { $script:ComfyProfileChoice = "ck" }
+                "2" { $script:ComfyProfileChoice = "fast" }
+                "3" { $script:ComfyProfileChoice = "default" }
+                "4" { $script:ComfyProfileChoice = "bench" }
+                "5" { $script:ComfyProfileChoice = "triton" }
+                "6" {
+                    $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
+                    $script:ComfyProfileChoice = "custom"
+                    $script:ComfyFlagsChoice = $rawFlags
+                }
+                default { $tuningValid = $false }
+            }
+        }
+    } while (-not $tuningValid)
+}
+
 function Open-ComfyUIClient {
     # ComfyUI workspace: local ComfyUI server for MiniMax H3 video/audio gen.
     # Runs from Documents\ComfyUI (venv + extra_model_paths.yaml point at
@@ -1403,8 +1535,11 @@ function Open-ComfyUIClient {
     }
     catch {
     }
+    Select-ComfyUITuning
     Write-Host "Starting ComfyUI on $comfyUrl..." -ForegroundColor Cyan
-    $process = Start-Process -FilePath $comfyPython -ArgumentList @("main.py", "--port", "$comfyPort", "--listen", "127.0.0.1") -WorkingDirectory $comfyRoot -PassThru
+    $comfyArgs = Get-ComfyUILaunchArgs -Port $comfyPort
+    Write-Host ("ComfyUI flags: {0}" -f ($comfyArgs -join " ")) -ForegroundColor DarkGray
+    $process = Start-Process -FilePath $comfyPython -ArgumentList $comfyArgs -WorkingDirectory $comfyRoot -PassThru
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Seconds 1
@@ -1911,7 +2046,7 @@ $runtimeCandidates = @(
 # ComfyUI launch never makes the user pick an unrelated GGUF or start a
 # llama-server first.
 $comfyOnly = $ClientMode -eq "ComfyUI"
-if (-not $comfyOnly -and $ClientMode -eq "Prompt") {
+if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
     Write-Host "Launch target:" -ForegroundColor Green
     Write-Host " [1] LLM workspace - select a model and client"
     Write-Host " [2] ComfyUI - video/audio workspace (no GGUF selection)"
@@ -1936,8 +2071,10 @@ if (-not $comfyOnly -and $ClientMode -eq "Prompt") {
 
 if ($comfyOnly) {
     if ($DryRun) {
+        $comfyArgs = Get-ComfyUILaunchArgs -Port 8188
         Write-Host "DRY RUN: ComfyUI-only launch; model selection and llama-server will be skipped." -ForegroundColor Yellow
         Write-Host "DRY RUN: ComfyUI would start on http://127.0.0.1:8188" -ForegroundColor Yellow
+        Write-Host ("DRY RUN: ComfyUI flags: {0}" -f ($comfyArgs -join " ")) -ForegroundColor Yellow
         exit 0
     }
 
@@ -2384,7 +2521,7 @@ else {
     if ($requiredEngine -eq "TurboTan") {
         $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
     }
-elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
+    elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
         $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
         if (-not $isQuickLaunch) {
             Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
@@ -2411,7 +2548,7 @@ elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHI
             exit 1
         }
     }
-else {
+    else {
         $defaultKType = if ($isDeepSeek) { "turbo4" } else { "q8_0" }
         do {
             $defaultKLabel = $defaultKType
@@ -2435,7 +2572,7 @@ else {
         Write-Host ""
     }
 
-if (-not $isQuickLaunch) {
+    if (-not $isQuickLaunch) {
         Write-Host "KV cache V type:" -ForegroundColor Green
         for ($i = 0; $i -lt $kvOptions.Count; $i++) {
             $kv = $kvOptions[$i]
@@ -2706,7 +2843,7 @@ if ($isLikelyMoeModel -and $MoeExpertsMode -ne "Prompt") {
         }
         Write-Host ""
 
-do {
+        do {
             $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
             $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
             $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
@@ -2734,7 +2871,7 @@ do {
         if ($env:HIP_PATH -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "ExpertsLaguna") {
             $vramGB = 16  # RX 7800 XT
         }
-if ($modelSizeGB -gt $vramGB) {
+        if ($modelSizeGB -gt $vramGB) {
             # Model doesn't fit in VRAM - offload excess layers to CPU
             # DeepSeek 150B: fastest measured config uses --cpu-moe (all experts on CPU)
             if ($isDeepSeek) {
@@ -2998,7 +3135,7 @@ else {
         "--port", "8080",
         "-ngl", "$serverOffload",
         "-c", "$($selectedContext.Tokens)",
-"-np", "1",
+        "-np", "1",
         "-ctk", "$effectiveKCacheType",
         "-ctv", "$effectiveVCacheType",
         "-fa", "$flashAttention",
