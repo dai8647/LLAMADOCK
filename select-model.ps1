@@ -29,7 +29,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna", "LongCat")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -117,6 +117,17 @@ elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-serve
 }
 else {
     "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe"
+}
+# InquiringMinds-AI llama.cpp fork (longcat-flash-ngram branch) for
+# LongCat-Flash / LongCat-Flash-Lite GGUF models (arch longcat-flash-ngram).
+$LongCatServerPath = if ($env:LLAMA_TQ3_LONGCAT_SERVER) {
+    $env:LLAMA_TQ3_LONGCAT_SERVER
+}
+elseif (Test-Path "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\llama-server.exe") {
+    "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\llama-server.exe"
+}
+else {
+    "C:\Users\dai86\Downloads\longcat-llama.cpp\build\bin\llama-server.exe"
 }
 $ModelsBase = "C:\Users\dai86\.lmstudio\models"
 $ServerBaseUrl = "http://127.0.0.1:8080"
@@ -611,6 +622,13 @@ function Get-RequiredEngine {
     if ($modelText -match "(?i)TQ3_4S|TQ3") {
         return "TurboTan"
     }
+
+    # LongCat-Flash / LongCat-Flash-Lite GGUF: needs InquiringMinds-AI longcat
+    # fork (arch longcat-flash-ngram); mainline/AtomicBot cannot load these.
+    if ($modelText -match "(?i)LongCat") {
+        return "LongCat"
+    }
+
     # Default non-special GGUFs use the AtomicBot TurboQuant runtime.
     return "AtomicBot"
 }
@@ -2007,6 +2025,9 @@ elseif ($requiredEngine -eq "PrismBonsai") {
 elseif ($requiredEngine -eq "ExpertsLaguna") {
     $ServerPath = $ExpertsLagunaServerPath
 }
+elseif ($requiredEngine -eq "LongCat") {
+    $ServerPath = $LongCatServerPath
+}
 elseif ($requiredEngine -eq "OfficialVulkan") {
     $ServerPath = $OfficialVulkanServerPath
 }
@@ -2363,7 +2384,7 @@ else {
     if ($requiredEngine -eq "TurboTan") {
         $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
     }
-elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
+elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
         $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
         if (-not $isQuickLaunch) {
             Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
@@ -2446,7 +2467,7 @@ if (-not $isQuickLaunch) {
             }
         }
         else {
-            $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
+            $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna" -or $requiredEngine -eq "LongCat") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
             do {
                 $defaultVLabel = $defaultVType
                 $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
@@ -2977,13 +2998,17 @@ else {
         "--port", "8080",
         "-ngl", "$serverOffload",
         "-c", "$($selectedContext.Tokens)",
-        "-np", "1",
+"-np", "1",
         "-ctk", "$effectiveKCacheType",
         "-ctv", "$effectiveVCacheType",
         "-fa", "$flashAttention",
-        "--jinja",
-        "--no-ui"
+        "--jinja"
     )
+
+    # The LongCat fork's server does not accept --no-ui.
+    if ($requiredEngine -ne "LongCat") {
+        $args += "--no-ui"
+    }
 
     if ($effectiveReasoningMode) {
         $args += @("--reasoning", $effectiveReasoningMode)
