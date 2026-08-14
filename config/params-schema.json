@@ -24,7 +24,7 @@
           "id": "engine",
           "label": "Runtime engine",
           "type": "select",
-          "allowed": ["Auto", "TurboTan", "PrismBonsai", "ExpertsLaguna", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4"],
+          "allowed": ["Auto", "AtomicBot", "TurboTan", "PrismBonsai", "ExpertsLaguna", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4"],
           "default": "Auto",
           "flags": [],
           "per_model": true,
