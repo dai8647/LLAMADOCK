@@ -29,7 +29,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -42,7 +42,15 @@ if (Test-Path -LiteralPath $utf8Helper) {
     . $utf8Helper
 }
 
-$TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
+$AtomicBotServerPath = if ($env:LLAMA_TQ3_ATOMICBOT_SERVER) {
+    $env:LLAMA_TQ3_ATOMICBOT_SERVER
+}
+elseif (Test-Path "C:\llama-tq3\build-rocm71\bin\llama-server.exe") {
+    "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
+}
+else {
+    "C:\llama-tq3\build\bin\llama-server.exe"
+}$TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
     $env:LLAMA_TQ3_TURBOTAN_SERVER
 }
 elseif (Test-Path "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe") {
@@ -54,7 +62,7 @@ elseif (Test-Path "C:\llama-tq3-turbotan\build\bin\llama-server.exe") {
 else {
     "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm\bin\llama-server.exe"
 }
-$ServerPath = $null
+$ServerPath = $AtomicBotServerPath
 $OfficialVulkanServerPath = if ($env:LLAMADOCK_OFFICIAL_VULKAN_SERVER) {
     $env:LLAMADOCK_OFFICIAL_VULKAN_SERVER
 }
@@ -600,9 +608,8 @@ function Get-RequiredEngine {
     if ($modelText -match "(?i)TQ3_4S|TQ3") {
         return "TurboTan"
     }
-
-    # Other GGUFs use the Laguna fork as the automatic fallback.
-    return "ExpertsLaguna"
+    # Default non-special GGUFs use the AtomicBot TurboQuant runtime.
+    return "AtomicBot"
 }
 
 function Get-ModelNote {
@@ -1870,6 +1877,7 @@ Show-LlamaDockBanner
 $hardware = Get-HardwareEstimate
 
 $runtimeCandidates = @(
+    [PSCustomObject]@{ Name = "AtomicBot"; Path = $AtomicBotServerPath }
     [PSCustomObject]@{ Name = "TurboTan"; Path = $TurboTanServerPath },
     [PSCustomObject]@{ Name = "PrismBonsai"; Path = $PrismBonsaiServerPath },
     [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
@@ -2008,7 +2016,7 @@ elseif ($requiredEngine -eq "DeepSeekDS4") {
     $ServerPath = $Ds4ServerPath
 }
 else {
-    $ServerPath = $null
+    $ServerPath = $AtomicBotServerPath
 }
 
 $isDs4Engine = $requiredEngine -eq "DeepSeekDS4"
