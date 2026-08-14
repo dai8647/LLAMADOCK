@@ -12,7 +12,9 @@ if (-not $module) {
 }
 
 Import-Module PSScriptAnalyzer -ErrorAction Stop
-$source = Get-Content -LiteralPath $Path -Raw
+# Read as UTF-8: on a Japanese-locale Windows PowerShell 5.1 the default (ANSI)
+# read mis-decodes UTF-8 bytes and would corrupt non-ASCII comments on write.
+$source = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
 $settings = @{
     IncludeRules = @("PSPlaceOpenBrace", "PSPlaceCloseBrace", "PSUseConsistentIndentation")
     Rules = @{

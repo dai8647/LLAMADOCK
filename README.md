@@ -36,6 +36,22 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 
 `llamadock.bat` を起動した場合も、最初に LLM workspace と ComfyUI を選択できます。
 
+### MiniMax H3 の高速化
+
+ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`、`--lowvram` なし）が自動適用されます。
+起動時に「ComfyUI tuning」メニュー（**速い順**: ck / fast / default / bench / triton / custom）で対話的に切り替えられるほか、
+プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=fast|triton|ck|bench`、
+`LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
+**ComfyUI 0.33.0 以上**）で、この機（RX 7800 XT）で有効化を確認済み。
+
+MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
+`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` 含む）の
+調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
+```
+
 ### 基本フロー
 
 1. モデルを選択
