@@ -81,12 +81,34 @@ $secretPatterns = @(
     "hf_[A-Za-z0-9]{20,}",
     "bearer\s+[A-Za-z0-9._-]{12,}"
 )
-$secretHits = rg -n -i ($secretPatterns -join "|") $root -g "!data/**" -g "!logs/**" -g "!.git/**" -g "!node_modules/**"
-if ($LASTEXITCODE -gt 1) {
+$secretHits = @()
+$scanFailed = $false
+$rgCmd = Get-Command rg -ErrorAction SilentlyContinue
+if ($rgCmd) {
+    $secretHits = @(& $rgCmd.Source -n -i ($secretPatterns -join "|") $root -g "!data/**" -g "!logs/**" -g "!.git/**" -g "!node_modules/**" 2>$null)
+    if ($LASTEXITCODE -gt 1) {
+        $scanFailed = $true
+    }
+}
+else {
+    Write-Host "rg not found; using Select-String fallback for the secret scan." -ForegroundColor Yellow
+    # Mirror rg defaults: skip node_modules and any hidden (dot-prefixed) path
+    # segment.  Select-String does not skip hidden entries by itself.
+    $scanFiles = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $rel = $_.FullName.Substring($root.Length)
+            $rel -notmatch "\\(data|logs|node_modules)(\\|$)" -and
+            $rel -notmatch "\\(\.[^\\/]+)(\\|$)" -and
+            $_.Name -notmatch "^\.[^\\/]+"
+        }
+    $secretHits = @($scanFiles | Select-String -Pattern ($secretPatterns -join "|") -List -ErrorAction SilentlyContinue |
+            ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line.Trim())" })
+}
+if ($scanFailed) {
     Write-Host "Secret scan failed to run." -ForegroundColor Red
     exit 1
 }
-if ($LASTEXITCODE -eq 0 -and $secretHits) {
+if ($secretHits.Count -gt 0) {
     Write-Host "Secret scan found suspicious values:" -ForegroundColor Red
     $secretHits
     exit 1
@@ -106,11 +128,15 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 $openWebUISite = Join-Path $root "mcp-data\open-webui-venv\Lib\site-packages"
-if (-not (Test-Path (Join-Path $openWebUISite "open_webui\__init__.py"))) {
-    Write-Host "Open WebUI package is not installed: $openWebUISite" -ForegroundColor Red
-    exit 1
+if (Test-Path (Join-Path $openWebUISite "open_webui\__init__.py")) {
+    Write-Host "Open WebUI files/package OK"
 }
-Write-Host "Open WebUI files/package OK"
+else {
+    # The Python Open WebUI venv is a rollback-only path (the standard WebUI
+    # entry is native Computer). A clean machine may not have it; warn instead
+    # of blocking the whole suite.
+    Write-Host "WARNING: Open WebUI package is not installed: $openWebUISite (rollback UI only; standard entry is Computer)." -ForegroundColor Yellow
+}
 $openWebUISource = Get-Content -LiteralPath $openWebUIBootstrap -Raw -Encoding UTF8
 foreach ($check in @("OPENAI_API_BASE_URLS", "openai.api_base_urls", "recovery gateway")) {
     if ($openWebUISource -notmatch [regex]::Escape($check)) {
@@ -354,8 +380,12 @@ if (-not $SkipDryRun) {
             Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($joined -notmatch "--no-ui") {
+        if ($joined -notmatch "--no-ui" -and $joined -notmatch "Engine: LongCat") {
             Write-Host "llama-server UI was not disabled: $preset" -ForegroundColor Red
+            exit 1
+        }
+        if ($joined -match "--no-ui" -and $joined -match "Engine: LongCat") {
+            Write-Host "LongCat must not receive --no-ui (fork server rejects it): $preset" -ForegroundColor Red
             exit 1
         }
         if ($joined -notmatch "-ngl auto") {
@@ -399,7 +429,7 @@ if (-not $SkipDryRun) {
         exit 1
     }
     $comfyJoined = $comfyDryRun -join "`n"
-    if ($comfyJoined -notmatch "DRY RUN: ComfyUI would start on:" -or $comfyJoined -notmatch "8188") {
+    if ($comfyJoined -notmatch "DRY RUN: ComfyUI would start on http" -or $comfyJoined -notmatch "8188") {
         Write-Host "ComfyUI dry run did not show its launch message." -ForegroundColor Red
         $comfyDryRun | Select-Object -Last 40
         exit 1
