@@ -54,7 +54,7 @@ main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0
 
 | 方法 | 内容 |
 | --- | --- |
-| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**速い順**: `[1] super` / `[2] ck` / `[3] fast` / `[4] default` / `[5] bench` / `[6] triton` / `[7] custom`（生フラグ入力）。Enter で default。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ |
+| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**速い順**: `[1] super` / `[2] ck` / `[3] fast` / `[4] default` / `[5] bench` / `[6] custom`（生フラグ入力。triton は 2026-08-16 にアンインストール済みのためメニューから削除）。Enter で default。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ |
 | `LLAMADOCK_COMFY_PROFILE=fast` | 上記 + `--fast fp16_accumulation --force-non-blocking`（AMD でも有効な項目のみ。ComfyUI は「未テスト・品質劣化の可能性」と明記 → **ベンチしてから採用**）。設定すると起動時メニューはスキップ |
 | `LLAMADOCK_COMFY_PROFILE=triton` | 上記 + `--enable-triton-backend`。**デフォルト無効**: triton 3.7.x でもこの GPU の H3 INT8 経路はクラッシュするため、`LLAMADOCK_COMFY_TRITON=1` のときだけ付与（詳細は triton 節） |
 | `LLAMADOCK_COMFY_PROFILE=super` | 上記 + `--use-ck-attention`。triton は同じく opt-in なので、**この機では ck 相当にフォールバック**（動作中の最速構成）。ワークフローは `h3_workflow_super.json`（Turbo LoRA + ClipProj・8step）と組むと全部載せ |
@@ -129,7 +129,7 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **`h3_workflow_super.json`**: Turbo LoRA（strength 1.2）+ ClipProj（4B）を**同時適用**した全部載せ版
   （8step・res_multistep・σ video 12 / audio 6）。`h3_workflow_super_short.json` は 512x320・16f・fps12 の確認用。
 - **`super` プロファイル**（`Get-ComfyUILaunchArgs`）: `--use-ck-attention` + `--enable-triton-backend` の同時付与。
-  選択メニューを**速い順**に並べ替え: `[1] super / [2] ck / [3] fast / [4] default / [5] bench / [6] triton / [7] custom`。
+  選択メニューを**速い順**に並べ替え: `[1] super / [2] ck / [3] fast / [4] default / [5] bench / [6] custom`（triton 削除に伴い更新）。
 
 ### triton 3.7.1 実機検証の結果（→ デフォルト無効化に修正）
 

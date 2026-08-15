@@ -39,7 +39,7 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 ### MiniMax H3 の高速化
 
 ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`、`--lowvram` なし）が自動適用されます。
-起動時に「ComfyUI tuning」メニュー（**速い順**: super / ck / fast / default / bench / triton / custom）で対話的に切り替えられるほか、
+起動時に「ComfyUI tuning」メニュー（**速い順**: super / ck / fast / default / bench / custom。triton はアンインストール済みのため削除）で対話的に切り替えられるほか、
 プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=super|ck|fast|bench|triton`、
 `LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
 **ComfyUI 0.33.0 以上**）で、この機（RX 7800 XT）で有効化を確認済み。`super` は ck + triton の
