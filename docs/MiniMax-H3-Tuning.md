@@ -151,6 +151,21 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
 ただし相対傾向は明確: **super（8step 全部載せ）が最速**で、20step 構成の約 1/5。
 フル解像度（1344x768・48f・音声付き）での本計測は次の一手。
 
+### Heretic（uncensored）テキストエンコーダへ差替（2026-08-15）
+
+- **導入**: `sakamakismile/Qwen3-VL-32B-Heretic-MiniMax-H3-NVFP4` の
+  `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors`（15.7GB、NVFP4）を
+  `text_encoders/Qwen3-VL-32B-Instruct/` に配置。Comfy-Org の nvfp4_awq と**同サイズのドロップイン置換**
+  （`CLIPLoader` type: `minimax` のまま）。拒否の主因は Qwen3-VL-32B エンコーダのアラインメント層で、
+  Heretic 系はそれをバイパス（ethanfel の Ultra-Heretic の NVFP4 再量子化）。16GB カードで実測ピーク ~9.9GB。
+- **差替範囲**: 32B エンコーダを参照する 7 ワークフロー全部（bench / bench_short_audio / fast / src /
+  turbo / turbo_short / turbo_short_audio）の `clip_name` を Heretic に変更。
+  4B（ClipProj 系: clipproj / super）は対象外。
+- **動作確認（短尺）**: `h3_workflow_turbo_short_audio.json`（Heretic）が成功
+  （`Prompt executed in 80.33s`、h3_turbo_audio_00002_.mp4、AAC 音声付き）。
+- **旧エンコーダ削除**: `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`（15.6GB）を削除（15.6GB 解放）。
+  出所メモは `TEXT_ENCODER_SOURCES.txt` に追記済み。
+
 ## 2026-08-14 後半: ComfyUI 更新 + Turbo LoRA + ClipProj（3 並行タスク）
 
 ### ComfyUI 0.31.0 → 0.33.0（git pull、依存更新済み）
