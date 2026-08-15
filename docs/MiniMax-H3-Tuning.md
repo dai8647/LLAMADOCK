@@ -54,9 +54,10 @@ main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0
 
 | 方法 | 内容 |
 | --- | --- |
-| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**速い順**: `[1] ck` / `[2] fast` / `[3] default` / `[4] bench` / `[5] triton` / `[6] custom`（生フラグ入力）。Enter で default。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ |
+| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**速い順**: `[1] super` / `[2] ck` / `[3] fast` / `[4] default` / `[5] bench` / `[6] triton` / `[7] custom`（生フラグ入力）。Enter で default。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ |
 | `LLAMADOCK_COMFY_PROFILE=fast` | 上記 + `--fast fp16_accumulation --force-non-blocking`（AMD でも有効な項目のみ。ComfyUI は「未テスト・品質劣化の可能性」と明記 → **ベンチしてから採用**）。設定すると起動時メニューはスキップ |
-| `LLAMADOCK_COMFY_PROFILE=triton` | 上記 + `--enable-triton-backend`（comfy-kitchen の INT8 Triton カーネルを有効化。**venv に triton >= 3.7 が前提**。ランチャーがバージョンを確認し、古い・未導入ならフラグを省略して警告のみ） |
+| `LLAMADOCK_COMFY_PROFILE=triton` | 上記 + `--enable-triton-backend`。**デフォルト無効**: triton 3.7.x でもこの GPU の H3 INT8 経路はクラッシュするため、`LLAMADOCK_COMFY_TRITON=1` のときだけ付与（詳細は triton 節） |
+| `LLAMADOCK_COMFY_PROFILE=super` | 上記 + `--use-ck-attention`。triton は同じく opt-in なので、**この機では ck 相当にフォールバック**（動作中の最速構成）。ワークフローは `h3_workflow_super.json`（Turbo LoRA + ClipProj・8step）と組むと全部載せ |
 | `LLAMADOCK_COMFY_PROFILE=ck` | 上記 + `--use-ck-attention`（comfy-kitchen attention。**ComfyUI 0.33.0 以上が必要**。この機で有効化確認済み） |
 | `LLAMADOCK_COMFY_PROFILE=bench` | 追加フラグなし（A/B 用） |
 | `LLAMADOCK_COMFY_FLAGS="--reserve-vram 0.5 --force-non-blocking"` | **完全上書き**（プロファイル/メニューより優先） |
@@ -79,13 +80,13 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
   （libdevice.rint 欠落でクラッシュ）」と**既にバージョンガード済み**。ただし
   `if args.enable_triton_backend or triton_version >= (3, 7)` のため、`--enable-triton-backend` を
   **明示指定するとガードが無効化**され、3.5.1 のまま有効化 → クラッシュしていた。
-- **対策**: ランチャー（`Get-ComfyUILaunchArgs` の `triton` プロファイル）が venv の triton バージョンを確認し、
-  **>= 3.7 のときだけ** `--enable-triton-backend` を付ける。古い・未導入なら警告のみで省略（HIP int8 は triton 無しでも動作）。
-- **3.7.1 はこの環境で動作確認済み（2026-08-14）**: `triton-windows==3.7.1.post27` を導入し、
-  import + gfx1101 の HIP カーネルコンパイル・実行（PASS）。**torch 2.9.1 のまま使える**
-  （旧メモ「3.6 系は torch >= 2.10 が必須」は誤り。wheel は torch 非依存で実測動作）。
-- **残タスク**: `--enable-triton-backend` でのフルベンチ（h3_workflow_bench.json）による実機検証は未実施。
-  nvfp4 AWQ エンコーダ経路が 3.7.1 で通るかは次回の起動時に確認する。
+- **対策（最終形）**: 単体カーネルテストは通るが実ワークフローではクラッシュするため、ランチャーは
+  **デフォルトで `--enable-triton-backend` を付けない**（HIP バックエンドが正常動作する実用パス）。
+  どうしても試す場合は `LLAMADOCK_COMFY_TRITON=1` で opt-in（`triton` / `super` プロファイル両対応）。
+- **3.7.1 実機検証の結果（2026-08-15）**: import・単体 HIP カーネルコンパイルは PASS するが、
+  `--enable-triton-backend` で H3 テキストエンコーダ（nvfp4_awq）ロード中に
+  `error: couldn't allocate input reg for constraint 'r'` で ComfyUI がクラッシュ（以前の 3.5.1 と同じ系統）。
+  → **triton フラグはこの機では無効化が正解**。ck + HIP（`super` = ck フォールバック）が動作中の最速構成。
 - フラグを付けなければ triton は import すらされない（`comfy/quant_ops.py` の有効化条件）ので、デフォルト起動には影響しない。
 - comfy-kitchen の **HIP バックエンドは triton なしで既に有効**（int8_linear / convrot int8）。
   triton は追加の tl.dot カーネル（nvfp4 逆量子化等）を足す。
@@ -116,6 +117,39 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
   バリデーション 400。turbo は `["2", 0]`、clipproj は `["11", 0]`（ClipProjApply 出力）を追加して修正
   （両ワークフローとも未実行だったため未発覚）。
 - 旧 src ワークフローの実測は 26 分（h3_t2v_00001_.mp4, 17:15）。
+
+## 2026-08-15: 全部載せ（super）＋ 短尺オーディオ全設定スモークテスト
+
+### 全部載せ構成の追加
+
+- **`h3_workflow_super.json`**: Turbo LoRA（strength 1.2）+ ClipProj（4B）を**同時適用**した全部載せ版
+  （8step・res_multistep・σ video 12 / audio 6）。`h3_workflow_super_short.json` は 512x320・16f・fps12 の確認用。
+- **`super` プロファイル**（`Get-ComfyUILaunchArgs`）: `--use-ck-attention` + `--enable-triton-backend` の同時付与。
+  選択メニューを**速い順**に並べ替え: `[1] super / [2] ck / [3] fast / [4] default / [5] bench / [6] triton / [7] custom`。
+
+### triton 3.7.1 実機検証の結果（→ デフォルト無効化に修正）
+
+- 単体テスト（import + gfx1101 HIP カーネルコンパイル）は PASS するが、`--enable-triton-backend` 付きで
+  H3 テキストエンコーダ（nvfp4_awq）ロード中に `error: couldn't allocate input reg for constraint 'r'` で
+  ComfyUI がクラッシュ（3.5.1 と同じ系統。`super` プロファイルで再現）。
+- **対策**: `Get-TritonBackendFlags` を「デフォルト無効・`LLAMADOCK_COMFY_TRITON=1` で opt-in」に変更。
+  この機では `super` は ck 相当にフォールバック（動作中の最速構成）。HIP バックエンド（triton 無し）は正常動作。
+
+### 短尺オーディオ全設定スモークテスト（512x320・16f・fps12・ck プロファイル）
+
+オーディオ VAE（`MiniMax-H3-audio_vae_fp32`）+ `VAEDecodeAudio` → `CreateVideo(audio=...)` で音声付き出力。
+4 設定すべて成功・**全出力に AAC 音声トラック確認済み**（PyAV で検証）。
+
+| ワークフロー | 構成 | 所要時間 | 出力 |
+| --- | --- | --- | --- |
+| `h3_workflow_bench_short_audio.json` | 20step・32B エンコーダ | **244.7s** | h3_bench_audio_00001_.mp4 |
+| `h3_workflow_turbo_short_audio.json` | 8step・Turbo LoRA・32B | **48.0s** | h3_turbo_audio_00001_.mp4 |
+| `h3_workflow_clipproj_short_audio.json` | 20step・ClipProj 4B | **66.2s** | h3_clipproj_audio_00001_.mp4 |
+| `h3_workflow_super_short_audio.json` | 8step・Turbo LoRA + ClipProj 4B | **45.7s** | h3_super_audio_00001_.mp4 |
+
+低解像度・短尺のスモークテスト（モデルロード含む）であり、フル解像度ベンチとは非比較。
+ただし相対傾向は明確: **super（8step 全部載せ）が最速**で、20step 構成の約 1/5。
+フル解像度（1344x768・48f・音声付き）での本計測は次の一手。
 
 ## 2026-08-14 後半: ComfyUI 更新 + Turbo LoRA + ClipProj（3 並行タスク）
 
@@ -148,8 +182,10 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
 | `h3_workflow_fast.json` | bench + `SpectrumApplyMiniMaxH3`（SigmaShift の後段） | 品質維持のまま ~15% |
 | `h3_workflow_turbo.json` | bench + **Turbo LoRA**（`LoraLoaderModelOnly`、strength 1.2）+ **8 step**・res_multistep/simple・σ video 12 / audio 6 | サンプリング 2.5 倍（20step→8step） |
 | `h3_workflow_clipproj.json` | bench の CLIP を **Load CLIP (krea2 / qwen3vl_4b_fp8) → ClipProj Apply** に差替（sampling は bench と同一） | エンコーダ VRAM 約 11GB 解放 |
+| `h3_workflow_super.json` | **全部載せ**: bench + Turbo LoRA（strength 1.2）+ 8 step・res_multistep・σ video 12 / audio 6 + **ClipProj（4B）** を同時適用 | 最速構成（`super` プロファイルと組む） |
 
 - Spectrum / Turbo LoRA / ClipProj はすべて併用可能（それぞれ別の層を最適化する）。
+  `h3_workflow_super.json` が Turbo LoRA + ClipProj の全部載せ版（`h3_workflow_super_short.json` は 512x320・16f・fps12 の動作確認用）。
   組み合わせる場合は 1 つずつ導入して同 seed A/B を取るのが安全。
 - **Turbo LoRA の設定**（Abiray pruned 版 README 準拠）: steps 8–12、sampler `res_multistep`、
   Video σ shift **12** / Audio σ shift **6**、strength 0.8–1.8。ファイルは `models/loras/minimax_h3_turbo_4step_ckpt600_ema_V4.safetensors`
