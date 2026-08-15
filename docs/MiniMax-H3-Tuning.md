@@ -67,15 +67,19 @@ main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0
 
 優先順位: `-ComfyUIFlags` > `LLAMADOCK_COMFY_FLAGS` > 起動時メニュー（custom の生フラグ） > プロファイル（`LLAMADOCK_COMFY_PROFILE` > 起動時メニュー > default）。
 
-### triton 導入（2026-08-14 追記: 3.7.1 で復活）
+### triton 導入（2026-08-14 追記: 3.7.1 で復活）→ **2026-08-16 アンインストール**
 
 AMD 公式は **Windows 用 triton wheel を出していない**（`rocm-rel-7.2` は torch/torchvision/torchaudio のみ。triton は Linux のみ）。
 Windows で使えるのはフォークの `triton-windows`（woct0rdho、HIP バックエンド対応あり）のみ。
 
 ```powershell
-uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.exe" "triton-windows==3.7.1.post27"
+uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.exe" triton-windows   # 2026-08-16 実施
 ```
 
+- **2026-08-16 削除**: 3.7.1 でも実ワークロード（H3 テキストエンコーダの int8 経路）でクラッシュするため、
+  **この機では完全に不要**（HIP バックエンドが int8 を処理）。未使用パッケージの削除で、
+  `LLAMADOCK_COMFY_TRITON=1` での誤クラッシュも防止。ランチャーは triton 不在時も「警告＋フラグ省略」で正常動作。
+  将来 triton-windows がこの GPU に対応したら再導入可能（`uv pip install ... triton-windows==3.7.1.post27`）。
 - **クラッシュの根本原因（判明）**: `comfy/quant_ops.py`（0.33.0）は「triton < 3.7 は ROCm INT8 パスに不適合
   （libdevice.rint 欠落でクラッシュ）」と**既にバージョンガード済み**。ただし
   `if args.enable_triton_backend or triton_version >= (3, 7)` のため、`--enable-triton-backend` を

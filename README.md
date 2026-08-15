@@ -44,7 +44,8 @@ ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`�
 `LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
 **ComfyUI 0.33.0 以上**）で、この機（RX 7800 XT）で有効化を確認済み。`super` は ck + triton の
 全部載せですが、triton 3.7.x はこの GPU の H3 INT8 経路でクラッシュするためデフォルトで ck 相当に
-フォールバックします（`LLAMADOCK_COMFY_TRITON=1` で強制有効化）。
+フォールバックします（`LLAMADOCK_COMFY_TRITON=1` で強制有効化。triton-windows は 2026-08-16 に
+アンインストール済みのため、この機では常に ck 相当になります）。
 
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
 `h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む）の
