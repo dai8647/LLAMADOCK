@@ -10,7 +10,7 @@
   "2": {
    "class_type": "CLIPLoader",
    "inputs": {
-    "clip_name": "Qwen3-VL-32B-Instruct\\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "clip_name": "Qwen3-VL-32B-Instruct\\qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
     "type": "minimax"
    }
   },
