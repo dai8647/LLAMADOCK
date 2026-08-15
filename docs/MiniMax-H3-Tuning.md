@@ -137,8 +137,9 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
 
 ### 短尺オーディオ全設定スモークテスト（512x320・16f・fps12・ck プロファイル）
 
-オーディオ VAE（`MiniMax-H3-audio_vae_fp32`）+ `VAEDecodeAudio` → `CreateVideo(audio=...)` で音声付き出力。
-4 設定すべて成功・**全出力に AAC 音声トラック確認済み**（PyAV で検証）。
+オーディオ VAE + `VAEDecodeAudio` → `CreateVideo(audio=...)` で音声付き出力。
+4 設定すべて成功。**ただし後日判明: この時点の音声は AAC トラックは存在するが完全無音だった**
+（下記 2026-08-16 の音声 VAE 修正を参照。PyAV で「トラックの存在」だけを見て「音声が出ている」と誤認していた）。
 
 | ワークフロー | 構成 | 所要時間 | 出力 |
 | --- | --- | --- | --- |
@@ -150,6 +151,38 @@ uv pip install --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.e
 低解像度・短尺のスモークテスト（モデルロード含む）であり、フル解像度ベンチとは非比較。
 ただし相対傾向は明確: **super（8step 全部載せ）が最速**で、20step 構成の約 1/5。
 フル解像度（1344x768・48f・音声付き）での本計測は次の一手。
+
+## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
+
+### 音声が完全無音/NaN だった根本原因（Reddit / GitHub 調査で特定）
+
+- **症状**: `[aac] Input contains (near) NaN/+-Inf` で SaveVideo が落ちる（`avcodec_send_frame()`）。
+  8/15 の「成功」分も実は **std=0 の完全無音トラック**だった（PyAV の統計で確認）。
+- **既知問題**: ComfyUI issue #15315（公式 H3 T2V ワークフローで毎回再現、NaN 音声）・
+  #15614（H3 音声が常に static/ノイズ）。Reddit でも「ComfyUI 更新で H3 音声が壊れた→修正入り」
+  （kemb0 スレ、2026-08-07）。
+- **根本原因（ローカルで特定）**: 起動ログの `Missing VAE keys [... decoder.conv_pre.weight ...]` 警告。
+  公式 `MiniMax-H3-audio_vae_fp32.safetensors`（MiniMax org）は **weight-norm 形式
+  （`weight_g`/`weight_v`、1086 テンソル）の未変換チェックポイント**だが、ComfyUI 0.33 の
+  `comfy/ldm/minimax/audio_vae.py` は「weight-norm 畳み込み済みの素の `*.weight`」を strict=True で期待
+  → 全キー欠落 → デコーダが空のまま → 無音 or NaN。
+- **修正**: **Comfy-Org 公式の変換済み版 `vae/minimax_h3_audio_vae_fp32.safetensors`**
+  （917 テンソル・weight_norm ゼロ・素の `decoder.conv_pre.weight`）に差し替え。4 つの音声ワークフロー
+  （bench / turbo / clipproj / super の short_audio）の `vae_name` を更新。旧ファイル（605MB）は削除。
+- **検証**: 同一シード 42 の super 短尺で再実行 → 音声 std=0.0092 / maxabs=0.047 の**実音声**が出力された
+  （旧 VAE は std=0.00000）。`h3_super_audio_00005_.mp4`。
+
+### Heretic 4B（軽量・拒否無し）エンコーダ導入
+
+- **導入**: `DreamFast/Qwen3-VL-4b-Heretic-ComfyUI` の `qwen3-vl-4b-heretic_fp8_e4m3fn.safetensors`
+  （4.5GB、fp8）を `qwen3vl_4b_heretic_fp8.safetensors` として配置。
+  旧 4B（`qwen3vl_4b_fp8_scaled`、5.2GB）と**同一言語構造（36 層・900 テンソル）のドロップイン**。
+  Qwen3-VL-4B-Instruct の Heretic（abliteration）版で、HarmBench ASR 30.8%→100%（拒否 0 相当）・
+  KL 0.0283（挙動ほぼ不変）。
+- **差替範囲**: 4B を参照する 6 ワークフロー全部（clipproj / clipproj_short / clipproj_short_audio /
+  super / super_short / super_short_audio）の `clip_name` を変更。32B 系（bench / turbo / fast）は不変。
+- **これで 2 系統とも拒否無し**: 32B（高品質・15.7GB）= Heretic / 4B（軽量・4.5GB・VRAM 約 11GB 節約）= Heretic。
+  旧 4B（fp8_scaled）は削除予定（動作確認後に実施）。
 
 ### Heretic（uncensored）テキストエンコーダへ差替（2026-08-15）
 
