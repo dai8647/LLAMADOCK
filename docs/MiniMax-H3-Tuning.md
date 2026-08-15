@@ -156,6 +156,17 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 ただし相対傾向は明確: **super（8step 全部載せ）が最速**で、20step 構成の約 1/5。
 フル解像度（1344x768・48f・音声付き）での本計測は次の一手。
 
+## テキストで動画生成（チャット UI、2026-08-16 追加）
+
+- **`tools/h3-chat.py`**（+ ランチャー `tools/h3-chat.ps1`）: ノード UI を触らずに
+  プロンプトを打つだけで動画を作れるローカルチャットページ（`http://127.0.0.1:8189`）。
+  ComfyUI の API をプロキシする小さなサーバーで、ブラウザの CORS 問題を回避。
+- **使い方**: ①`comfyui.bat` / `llamadock.bat` で [1] super（または [2] ck）を選んで ComfyUI 起動
+  ②`powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1` ③ブラウザが開くので文章を入力→生成。
+- **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
+  フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
+  seed は毎回ランダム。完了後はページ内で再生＋保存先パス表示。
+
 ## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
 
 ### 音声が完全無音/NaN だった根本原因（Reddit / GitHub 調査で特定）

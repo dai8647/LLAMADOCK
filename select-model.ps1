@@ -1498,7 +1498,7 @@ function Select-ComfyUITuning {
     }
     Write-Host ""
     Write-Host "ComfyUI tuning (MiniMax H3), fastest first:" -ForegroundColor Green
-    Write-Host " [1] super   - ck + triton (triton-windows was uninstalled 2026-08-16 -> same as ck)"
+    Write-Host " [1] super   - all-in fast config (ck attention; fastest)"
     Write-Host " [2] ck      - default + --use-ck-attention (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
     Write-Host " [3] fast    - default + --fast fp16_accumulation --force-non-blocking (untested; quality risk, benchmark first)"
     Write-Host " [4] default - --reserve-vram 1.0 (measured baseline 19m26s; 1GB stays free for the desktop)"
@@ -1614,6 +1614,7 @@ function Open-ComfyUIClient {
     else {
         Start-Process $comfyUrl
     }
+    Write-Host "h3-chat: テキストで動画生成するなら tools\h3-chat.ps1 を実行 → http://127.0.0.1:8189" -ForegroundColor Cyan
     return $process
 }
 
