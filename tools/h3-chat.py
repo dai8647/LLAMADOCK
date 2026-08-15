@@ -26,8 +26,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 WORKFLOWS = {
-    "quick": os.path.join(REPO, "h3_workflow_super_short_audio.json"),
-    "full": os.path.join(REPO, "h3_workflow_super_audio.json"),
+    # 32B Heretic encoder: best Japanese / detailed-prompt fidelity
+    "high": os.path.join(REPO, "h3_workflow_turbo_audio.json"),
+    "quick": os.path.join(REPO, "h3_workflow_turbo_short_audio.json"),
+    # 4B Heretic encoder: lightest on VRAM
+    "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
 }
 
 # ComfyUI node ids in the super workflows
@@ -82,14 +85,15 @@ HTML = """<!doctype html>
 <body>
 <header>
   <h1>🎬 MiniMax H3 チャット動画生成</h1>
-  <span class="sub">super 構成（Turbo LoRA + ClipProj 4B・8step）</span>
+  <span class="sub">Turbo LoRA 8step・音声付き（32B / 4B エンコーダ切替）</span>
   <span id="status-dot" title="ComfyUI 接続状態"></span>
 </header>
 <main id="msgs"></main>
 <footer>
   <div id="modes">
-    <label><input type="radio" name="mode" value="quick" checked> クイック（約1分・短尺・音声あり）</label>
-    <label><input type="radio" name="mode" value="full"> フル（約9分・高画質・音声あり）</label>
+    <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
+    <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約1分）</label>
+    <label><input type="radio" name="mode" value="lite"> 軽量 4B（省VRAM・約9分）</label>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で波が静かに打ち寄せる映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
@@ -362,7 +366,7 @@ def main():
     server.comfy_base = args.comfy.rstrip("/")
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")
-    print(f"h3-chat: ComfyUI = {server.comfy_base}  (quick={WORKFLOWS['quick']} full={WORKFLOWS['full']})")
+    print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
     print("h3-chat: Ctrl+C で停止")
     try:
         server.serve_forever()
