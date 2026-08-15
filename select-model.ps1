@@ -1498,16 +1498,15 @@ function Select-ComfyUITuning {
     }
     Write-Host ""
     Write-Host "ComfyUI tuning (MiniMax H3), fastest first:" -ForegroundColor Green
-    Write-Host " [1] super   - ck + triton (triton auto-falls-back: crashes H3 on this GPU; force with LLAMADOCK_COMFY_TRITON=1)"
+    Write-Host " [1] super   - ck + triton (triton-windows was uninstalled 2026-08-16 -> same as ck)"
     Write-Host " [2] ck      - default + --use-ck-attention (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
     Write-Host " [3] fast    - default + --fast fp16_accumulation --force-non-blocking (untested; quality risk, benchmark first)"
     Write-Host " [4] default - --reserve-vram 1.0 (measured baseline 19m26s; 1GB stays free for the desktop)"
     Write-Host " [5] bench   - no extra flags (A/B baseline)"
-    Write-Host " [6] triton  - default + --enable-triton-backend (off by default: 3.7.x crashes H3 int8 here; set LLAMADOCK_COMFY_TRITON=1)"
-    Write-Host " [7] custom  - type raw ComfyUI flags"
+    Write-Host " [6] custom  - type raw ComfyUI flags"
     Write-Host ""
     do {
-        $tuningInput = Read-Host "Select ComfyUI tuning (1-7), or press Enter for default"
+        $tuningInput = Read-Host "Select ComfyUI tuning (1-6), or press Enter for default"
         $tuningValid = $true
         if ([string]::IsNullOrWhiteSpace($tuningInput)) {
             $script:ComfyProfileChoice = "default"
@@ -1519,8 +1518,7 @@ function Select-ComfyUITuning {
                 "3" { $script:ComfyProfileChoice = "fast" }
                 "4" { $script:ComfyProfileChoice = "default" }
                 "5" { $script:ComfyProfileChoice = "bench" }
-                "6" { $script:ComfyProfileChoice = "triton" }
-                "7" {
+                "6" {
                     $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
                     $script:ComfyProfileChoice = "custom"
                     $script:ComfyFlagsChoice = $rawFlags
