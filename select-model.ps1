@@ -25,6 +25,8 @@ param(
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
     [string]$MoeExpertsCount = "",
+    # CPU MoE layers (--n-cpu-moe): Auto / 0-99 / Custom. Empty = interactive picker.
+    [string]$CpuMoeMode = "",
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
@@ -2876,82 +2878,89 @@ $cpuMoeOptions = @(
     [PSCustomObject]@{ Label = "Custom"; Value = "Custom"; Note = "enter layer count" }
 )
 
-if ($isLikelyMoeModel -and $MoeExpertsMode -ne "Prompt") {
-    if ($MoeExpertsMode -eq "Prompt") {
-        Write-Host "CPU MoE layers (--n-cpu-moe):" -ForegroundColor Green
-        for ($i = 0; $i -lt $cpuMoeOptions.Count; $i++) {
-            $opt = $cpuMoeOptions[$i]
-            Write-Host " [$($i+1)] $($opt.Label) - $($opt.Note)"
+if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace($CpuMoeMode)) {
+    Write-Host "CPU MoE layers (--n-cpu-moe):" -ForegroundColor Green
+    for ($i = 0; $i -lt $cpuMoeOptions.Count; $i++) {
+        $opt = $cpuMoeOptions[$i]
+        Write-Host " [$($i+1)] $($opt.Label) - $($opt.Note)"
+    }
+    Write-Host ""
+
+    do {
+        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
+        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
+        $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
+        if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
+            $cpuMoeSelection = $defaultCpuMoeIndex
+            $cpuMoeValid = $true
         }
-        Write-Host ""
+        else {
+            $cpuMoeSelection = 0
+            $cpuMoeValid = [int]::TryParse($cpuMoeInput, [ref]$cpuMoeSelection)
+        }
+    } while (-not $cpuMoeValid -or $cpuMoeSelection -lt 1 -or $cpuMoeSelection -gt $cpuMoeOptions.Count)
 
-        do {
-            $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
-            $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
-            $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
-            if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
-                $cpuMoeSelection = $defaultCpuMoeIndex
-                $cpuMoeValid = $true
-            }
-            else {
-                $cpuMoeSelection = 0
-                $cpuMoeValid = [int]::TryParse($cpuMoeInput, [ref]$cpuMoeSelection)
-            }
-        } while (-not $cpuMoeValid -or $cpuMoeSelection -lt 1 -or $cpuMoeSelection -gt $cpuMoeOptions.Count)
+    $cpuMoeMode = $cpuMoeOptions[$cpuMoeSelection - 1].Value
+}
+elseif ($isLikelyMoeModel) {
+    # Quick launch / -CpuMoeMode override: no interactive picker.
+    $cpuMoeMode = if ([string]::IsNullOrWhiteSpace($CpuMoeMode)) { "Auto" } else { $CpuMoeMode }
+}
 
-        $cpuMoeMode = $cpuMoeOptions[$cpuMoeSelection - 1].Value
+# Auto-calculate CPU MoE layers
+if ($cpuMoeMode -eq "Auto") {
+    $modelSizeGB = [math]::Round($selected.SizeMB / 1024, 1)
+    # Prefer the VRAM detected at startup (nvidia-smi / Win32_VideoController);
+    # fall back to engine-based estimates only when detection failed.
+    $detectedVramGB = if ($hardware.PrimaryGpu -and $hardware.PrimaryGpu.VramGB -gt 0) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
+    if ($detectedVramGB -gt 0) {
+        # Reserve headroom for KV cache, compute buffers and the OS compositor.
+        $vramGB = [math]::Max(4, [math]::Floor($detectedVramGB - 1.5))
+    }
+    elseif ($env:HIP_PATH -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "ExpertsLaguna") {
+        $vramGB = 14  # RX 7800 XT estimate, minus headroom
     }
     else {
-        $cpuMoeMode = "Auto"
-    }
-
-    # Auto-calculate CPU MoE layers
-    if ($cpuMoeMode -eq "Auto") {
-        $modelSizeGB = [math]::Round($selected.SizeMB / 1024, 1)
-        # Detect VRAM from earlier device_info or use conservative 12GB
         $vramGB = 12
-        if ($env:HIP_PATH -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "ExpertsLaguna") {
-            $vramGB = 16  # RX 7800 XT
-        }
-        if ($modelSizeGB -gt $vramGB) {
-            # Model doesn't fit in VRAM - offload excess layers to CPU
-            # DeepSeek 150B: fastest measured config uses --cpu-moe (all experts on CPU)
-            if ($isDeepSeek) {
-                $selectedCpuMoe = "99"
-                if (-not $isQuickLaunch) {
-                    Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
-                }
-            }
-            else {
-                $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
-                $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
-                if (-not $isQuickLaunch) {
-                    Write-Host "CPU MoE layers: Auto ($selectedCpuMoe) - model ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
-                }
+    }
+    if ($modelSizeGB -gt $vramGB) {
+        # Model doesn't fit in VRAM - offload excess layers to CPU
+        # DeepSeek 150B: fastest measured config uses --cpu-moe (all experts on CPU)
+        if ($isDeepSeek) {
+            $selectedCpuMoe = "99"
+            if (-not $isQuickLaunch) {
+                Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
             }
         }
         else {
-            $selectedCpuMoe = "0"
+            $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
+            $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
             if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: 0 (model ${modelSizeGB}GB fits in VRAM ${vramGB}GB)" -ForegroundColor Green
+                Write-Host "CPU MoE layers: Auto ($selectedCpuMoe) - model ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
             }
         }
     }
-    elseif ($cpuMoeMode -eq "Custom") {
-        do {
-            $customInput = Read-Host "Enter CPU MoE layer count"
-            $customValue = 0
-            $customValid = [int]::TryParse($customInput, [ref]$customValue)
-        } while (-not $customValid -or $customValue -lt 0)
-        $selectedCpuMoe = [string]$customValue
-    }
     else {
-        $selectedCpuMoe = $cpuMoeMode
+        $selectedCpuMoe = "0"
+        if (-not $isQuickLaunch) {
+            Write-Host "CPU MoE layers: 0 (model ${modelSizeGB}GB fits in VRAM ${vramGB}GB)" -ForegroundColor Green
+        }
     }
+}
+elseif ($cpuMoeMode -eq "Custom") {
+    do {
+        $customInput = Read-Host "Enter CPU MoE layer count"
+        $customValue = 0
+        $customValid = [int]::TryParse($customInput, [ref]$customValue)
+    } while (-not $customValid -or $customValue -lt 0)
+    $selectedCpuMoe = [string]$customValue
+}
+else {
+    $selectedCpuMoe = $cpuMoeMode
+}
 
-    if (-not $isQuickLaunch -and $selectedCpuMoe -ne "0") {
-        Write-Host "CPU MoE layers: $selectedCpuMoe" -ForegroundColor Green
-    }
+if (-not $isQuickLaunch -and $selectedCpuMoe -ne "0") {
+    Write-Host "CPU MoE layers: $selectedCpuMoe" -ForegroundColor Green
 }
 
 if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -not $isQuickLaunch) {
@@ -3481,7 +3490,9 @@ $maxWait = if ($selectedModelSizeGB -ge 50) { 180 } elseif ($selectedModelSizeGB
 $ready = $false
 for ($i = 0; $i -lt $maxWait; $i++) {
     Start-Sleep -Seconds 2
-    $expectedReadyModel = ""
+    # llama-server publishes the -a alias as the model id, so we can verify the
+    # freshly started server is actually serving the selected model.
+    $expectedReadyModel = $modelShort
     $directReady = Test-ServerReady -ExpectedModelId $expectedReadyModel
     $gatewayReady = $isDs4Engine -or (Test-GatewayReady -ExpectedModelId $expectedReadyModel)
     if ($directReady -and $gatewayReady) {
