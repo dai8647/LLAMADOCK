@@ -39,13 +39,15 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 ### MiniMax H3 の高速化
 
 ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`、`--lowvram` なし）が自動適用されます。
-起動時に「ComfyUI tuning」メニュー（**速い順**: ck / fast / default / bench / triton / custom）で対話的に切り替えられるほか、
-プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=fast|triton|ck|bench`、
+起動時に「ComfyUI tuning」メニュー（**速い順**: super / ck / fast / default / bench / triton / custom）で対話的に切り替えられるほか、
+プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=super|ck|fast|bench|triton`、
 `LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
-**ComfyUI 0.33.0 以上**）で、この機（RX 7800 XT）で有効化を確認済み。
+**ComfyUI 0.33.0 以上**）で、この機（RX 7800 XT）で有効化を確認済み。`super` は ck + triton の
+全部載せですが、triton 3.7.x はこの GPU の H3 INT8 経路でクラッシュするためデフォルトで ck 相当に
+フォールバックします（`LLAMADOCK_COMFY_TRITON=1` で強制有効化）。
 
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
-`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` 含む）の
+`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む）の
 調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
 
 ```powershell
