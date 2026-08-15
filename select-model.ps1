@@ -1529,6 +1529,37 @@ function Select-ComfyUITuning {
     } while (-not $tuningValid)
 }
 
+function Start-H3Chat {
+    # Starts the text-to-video chat UI (tools\h3-chat.py, port 8189) if it is
+    # not already running, then opens it in the default browser. This is what
+    # the user actually wants to see: a text box, not the ComfyUI node graph.
+    param([switch]$SkipOpenBrowser)
+    $chatUrl = "http://127.0.0.1:8189"
+    $chatPy = Join-Path $PSScriptRoot "tools\h3-chat.py"
+    $chatUp = $false
+    try {
+        $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        if ($h.StatusCode -eq 200) { $chatUp = $true }
+    }
+    catch { }
+    if (-not $chatUp -and (Test-Path -LiteralPath $chatPy)) {
+        $comfyRoot = "C:\Users\dai86\Documents\ComfyUI"
+        $comfyPython = Join-Path $comfyRoot ".venv\Scripts\python.exe"
+        if (Test-Path -LiteralPath $comfyPython) {
+            Write-Host "Starting h3-chat UI on $chatUrl ..." -ForegroundColor Cyan
+            Start-Process -FilePath $comfyPython -ArgumentList $chatPy -WindowStyle Hidden
+            Start-Sleep -Seconds 2
+        }
+    }
+    if ($SkipOpenBrowser) {
+        Write-Host "SKIP: Browser would open the h3-chat UI at $chatUrl" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "h3-chat UI: $chatUrl  (ComfyUI graph: http://127.0.0.1:8188)" -ForegroundColor Cyan
+        Start-Process $chatUrl
+    }
+}
+
 function Open-ComfyUIClient {
     # ComfyUI workspace: local ComfyUI server for MiniMax H3 video/audio gen.
     # Runs from Documents\ComfyUI (venv + extra_model_paths.yaml point at
@@ -1545,12 +1576,7 @@ function Open-ComfyUIClient {
         $existingComfyHealth = Invoke-WebRequest -Uri "$comfyUrl/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
         if ($existingComfyHealth.StatusCode -eq 200) {
             Write-Host "ComfyUI is already running on $comfyUrl; reusing the existing instance." -ForegroundColor Green
-            if ($SkipOpenBrowser) {
-                Write-Host "SKIP: Browser would open $comfyUrl" -ForegroundColor Yellow
-            }
-            else {
-                Start-Process $comfyUrl
-            }
+            Start-H3Chat -SkipOpenBrowser:$SkipOpenBrowser
             return $null
         }
     }
@@ -1608,13 +1634,7 @@ function Open-ComfyUIClient {
             Write-Host "MiniMax-H3 native nodes detected." -ForegroundColor Green
         }
     }
-    if ($SkipOpenBrowser) {
-        Write-Host "SKIP: Browser would open $comfyUrl" -ForegroundColor Yellow
-    }
-    else {
-        Start-Process $comfyUrl
-    }
-    Write-Host "h3-chat: テキストで動画生成するなら tools\h3-chat.ps1 を実行 → http://127.0.0.1:8189" -ForegroundColor Cyan
+    Start-H3Chat -SkipOpenBrowser:$SkipOpenBrowser
     return $process
 }
 
