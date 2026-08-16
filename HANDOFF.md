@@ -46,7 +46,8 @@ cd C:\Users\dai86\Documents\ComfyUI
 ### 動画（MiniMax H3）— `C:\Users\dai86\.lmstudio\models\MiniMax-H3\`
 | 種類 | ファイル | サイズ | 備考 |
 |---|---|---|---|
-| DiT | `diffusion_models\alpha-0.5-testing\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors` | 21GB | int8・pruned |
+| DiT（標準） | `diffusion_models\alpha-0.5-testing\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors` | 21GB | int8・pruned・デフォルト |
+| DiT（選択可） | `diffusion_models\10Eros-Max\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4.safetensors` | 12.5GB | 10Eros-Max beta2 NVFP4（sakamakismile）・高画質・16GB VRAM 可。h3-chat UI の「動画モデル」で切替 |
 | テキストエンコーダ（軽量） | `text_encoders\qwen3vl_4b_heretic_fp8.safetensors` | 4.8GB | CLIPLoader type=`krea2`・super/clipproj 系 WF で使用 |
 | テキストエンコーダ（高精度） | `text_encoders\Qwen3-VL-32B-Instruct\qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors` | 15.7GB | type=`minimax`・turbo 系 WF で使用 |
 | 動画 VAE | `vae\MiniMax-H3-video_vae_fp16.safetensors` | 5.2GB | |
@@ -76,6 +77,7 @@ cd C:\Users\dai86\Documents\ComfyUI
 ## 4. ワークフロー JSON（`h3_workflow_*.json`、API 形式）
 
 - `h3_workflow_zimage.json`: キー画像生成（UnetLoaderGGUF + CLIPLoader lumina2 + VAE + ModelSamplingAuraFlow shift=3 + KSampler 8step/cfg1/res_multistep + ConditioningZeroOut）
+- 動画ワークフローは全て node `1`=UNETLoader。h3-chat の `/api/generate` が `dit` パラメータ（`default` / `10eros`）で `unet_name` を差し替える（`tools/h3-chat.py` の `DITS` 辞書）
 - `super_*`: 4B エンコーダ + ck（+triton）向け / `turbo_*`: 32B エンコーダ + Turbo LoRA / `clipproj_*`: 4B + ClipProj / `fast` / `bench` / `src`
 - `_short` は短尺、`_audio` は音声付き（音声 VAE 使用）
 - 動画は `ComfyUI\output\` に `h3_turbo_audio_*.mp4` として出力、キー画像は `zimg_*.png`
