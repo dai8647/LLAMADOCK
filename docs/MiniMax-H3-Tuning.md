@@ -184,6 +184,10 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
   旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済み（ツール呼び出し形式のパースは
   他モデル対応として h3-chat.py に残してあります）。モデル導入元:
   `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（Reddit で 0/465 拒否）。
+- **視覚入力の検証テスト**（`tools/test-plan-vision.py`）: 合成画像（既知の色・形）を直接見せて
+  記述が一致するか（[A]）と、テキストプロンプト無しでキー画像だけを確定パスに通して最終動画
+  プロンプトが画像内容を反映するか（[B]）を自動チェックします。企画 LLM + h3-chat 起動中に
+  `python tools/test-plan-vision.py` で実行（両方 PASS なら視覚入力が実効している証拠）。
 
 ## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
 
