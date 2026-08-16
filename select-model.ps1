@@ -1559,10 +1559,7 @@ function Select-ComfyUITuning {
                 "7" {
                     $script:ComfyProfileChoice = "ck"
                     $script:PlanModeChoice = $true
-                    $planInput = Read-Host "Planning LLM model (Qwen3.5 / LFM / DirtyMuse), Enter for Qwen3.5"
-                    if ($planInput -match "(?i)dirty") { $script:PlanModelChoice = "DirtyMuse" }
-                    elseif ($planInput -match "(?i)lfm") { $script:PlanModelChoice = "LFM" }
-                    else { $script:PlanModelChoice = "Qwen3.5" }
+                    $script:PlanModelChoice = "Qwen3.5"
                 }
                 default { $tuningValid = $false }
             }
