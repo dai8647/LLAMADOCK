@@ -1406,6 +1406,9 @@ function Open-OpenWebUIClient {
 
 $script:ComfyProfileChoice = $null
 $script:ComfyFlagsChoice = ""
+$script:PlanModeChoice = $false
+$script:PlanModelChoice = "LFM"
+$script:StopAllOnExit = $false
 
 function Get-ComfyUITritonVersion {
     # Returns the triton version installed in the ComfyUI venv, or $null.
@@ -1531,24 +1534,34 @@ function Select-ComfyUITuning {
     Write-Host " [4] default - --reserve-vram 1.0 (measured baseline 19m26s; 1GB stays free for the desktop)"
     Write-Host " [5] bench   - no extra flags (A/B baseline)"
     Write-Host " [6] custom  - type raw ComfyUI flags"
+    Write-Host " [7] plan    - ck + planning mode (h3-chat with a local planning LLM)"
     Write-Host ""
     do {
-        $tuningInput = Read-Host "Select ComfyUI tuning (1-6), or press Enter for default"
+        $tuningInput = Read-Host "Select ComfyUI tuning (1-7), or press Enter for default"
         $tuningValid = $true
         if ([string]::IsNullOrWhiteSpace($tuningInput)) {
             $script:ComfyProfileChoice = "default"
+            $script:PlanModeChoice = $false
         }
         else {
             switch ($tuningInput) {
-                "1" { $script:ComfyProfileChoice = "super" }
-                "2" { $script:ComfyProfileChoice = "ck" }
-                "3" { $script:ComfyProfileChoice = "fast" }
-                "4" { $script:ComfyProfileChoice = "default" }
-                "5" { $script:ComfyProfileChoice = "bench" }
+                "1" { $script:ComfyProfileChoice = "super"; $script:PlanModeChoice = $false }
+                "2" { $script:ComfyProfileChoice = "ck"; $script:PlanModeChoice = $false }
+                "3" { $script:ComfyProfileChoice = "fast"; $script:PlanModeChoice = $false }
+                "4" { $script:ComfyProfileChoice = "default"; $script:PlanModeChoice = $false }
+                "5" { $script:ComfyProfileChoice = "bench"; $script:PlanModeChoice = $false }
                 "6" {
                     $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
                     $script:ComfyProfileChoice = "custom"
                     $script:ComfyFlagsChoice = $rawFlags
+                    $script:PlanModeChoice = $false
+                }
+                "7" {
+                    $script:ComfyProfileChoice = "ck"
+                    $script:PlanModeChoice = $true
+                    $planInput = Read-Host "Planning LLM model (LFM / DirtyMuse), Enter for LFM"
+                    if ($planInput -match "(?i)dirty") { $script:PlanModelChoice = "DirtyMuse" }
+                    else { $script:PlanModelChoice = "LFM" }
                 }
                 default { $tuningValid = $false }
             }
@@ -1560,9 +1573,61 @@ function Start-H3Chat {
     # Starts the text-to-video chat UI (tools\h3-chat.py, port 8189) if it is
     # not already running, then opens it in the default browser. This is what
     # the user actually wants to see: a text box, not the ComfyUI node graph.
+    # With plan mode ([7] plan in the tuning menu) it delegates to h3-chat.ps1,
+    # which also starts the planning LLM (llama-server, CPU-only) so the
+    # conversation-to-video flow works out of the box.
     param([switch]$SkipOpenBrowser)
     $chatUrl = "http://127.0.0.1:8189"
     $chatPy = Join-Path $PSScriptRoot "tools\h3-chat.py"
+    if ($script:PlanModeChoice) {
+        $h3chatPs1 = Join-Path $PSScriptRoot "tools\h3-chat.ps1"
+        if (Test-Path -LiteralPath $h3chatPs1) {
+            # Double-launch guard: if both the chat UI and the planning LLM are
+            # already up there is nothing to start, just open the browser.
+            $chatUpNow = $false
+            $planUpNow = $false
+            try {
+                $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                if ($h.StatusCode -eq 200) { $chatUpNow = $true }
+            }
+            catch { }
+            try {
+                $h = Invoke-WebRequest -Uri "http://127.0.0.1:8190/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                if ($h.StatusCode -eq 200) { $planUpNow = $true }
+            }
+            catch { }
+            if (-not ($chatUpNow -and $planUpNow)) {
+                Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1)..." -ForegroundColor Cyan
+                Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $h3chatPs1 -PlanModel $script:PlanModelChoice -NoBrowser" -WindowStyle Hidden
+            }
+            else {
+                Write-Host "h3-chat and planning LLM are already running; opening the UI." -ForegroundColor Green
+            }
+            # Wait for the chat UI (and, behind it, the planning LLM) to come
+            # up before opening the browser, so the user lands on a live page.
+            $chatReady = $false
+            for ($i = 0; $i -lt 45; $i++) {
+                Start-Sleep -Seconds 2
+                try {
+                    $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                    if ($h.StatusCode -eq 200) { $chatReady = $true; break }
+                }
+                catch { }
+            }
+            if (-not $chatReady) {
+                Write-Host "WARNING: h3-chat UI did not become ready; check tools\h3-chat.ps1." -ForegroundColor Yellow
+            }
+            if ($SkipOpenBrowser) {
+                Write-Host "SKIP: Browser would open the h3-chat UI at $chatUrl (planning mode)" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "h3-chat UI: $chatUrl (planning mode)  (ComfyUI graph: http://127.0.0.1:8188)" -ForegroundColor Cyan
+                Start-Process $chatUrl
+            }
+            return
+        }
+        Write-Host "WARNING: tools\h3-chat.ps1 not found; starting chat UI without plan mode." -ForegroundColor Yellow
+    }
     $chatUp = $false
     try {
         $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
@@ -1685,6 +1750,38 @@ function Open-WorkspaceClient {
     }
 }
 
+function Stop-H3Stack {
+    # Stops the video-stack sidecar processes that hold GPU/RAM after a
+    # session: ComfyUI (8188), h3-chat (8189) and the planning LLM (8190).
+    # Only kills processes whose command line matches the expected LlamaDock
+    # services, so unrelated apps on those ports are left alone.
+    $targets = @(
+        @{ Port = 8188; Match = "main.py" },
+        @{ Port = 8189; Match = "h3-chat.py" },
+        @{ Port = 8190; Match = "llama-server" }
+    )
+    foreach ($t in $targets) {
+        $listeners = Get-NetTCPConnection -LocalPort $t.Port -State Listen -ErrorAction SilentlyContinue
+        foreach ($ownerPid in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })) {
+            $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+            if (-not $proc) { continue }
+            $cmd = ""
+            try {
+                $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+                if ($cim) { $cmd = [string]$cim.CommandLine }
+            }
+            catch { }
+            if ($cmd -match [regex]::Escape($t.Match) -or ($t.Port -eq 8190 -and $proc.ProcessName -eq "llama-server")) {
+                Write-Host " Stop PID $ownerPid ($($proc.ProcessName)) [port $($t.Port)]" -ForegroundColor Yellow
+                Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                Write-Host " Skip PID $ownerPid ($($proc.ProcessName)) on port $($t.Port): not the LlamaDock service." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
 function Select-WorkspaceForSession {
     Write-Host ""
     Write-Host "LlamaDock session" -ForegroundColor Cyan
@@ -1711,7 +1808,13 @@ function Select-WorkspaceForSession {
         return @("relaunch", "")
     }
     if ($choice -eq "3") { return @("change-model", "") }
-    if ($choice -eq "4") { return @("stop", "") }
+    if ($choice -eq "4") {
+        # Ask whether to also shut down the video stack (ComfyUI / h3-chat /
+        # planning LLM) that keeps holding GPU and RAM after the session.
+        $stopStack = Read-Host "Also stop the video stack (ComfyUI / h3-chat / planning LLM) to free GPU+RAM? (y/N)"
+        if ($stopStack -match "^(y|yes)$") { $script:StopAllOnExit = $true }
+        return @("stop", "")
+    }
     return @("leave", "")
 }
 
@@ -3550,6 +3653,7 @@ while ($true) {
         "stop" {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
             if ($lastClientProcess -and -not $lastClientProcess.HasExited) { Stop-Process -Id $lastClientProcess.Id -Force -ErrorAction SilentlyContinue }
+            if ($script:StopAllOnExit) { Stop-H3Stack }
             exit 0
         }
         default { exit 0 }
