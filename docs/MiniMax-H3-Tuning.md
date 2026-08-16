@@ -178,12 +178,12 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
      （画像の内容・構図を保ちつつ動き・カメラ・時間経過を追加）→「🎬 この企画で生成 ▶」で生成。
   ⑤ 動画完成後は**自動停止**: ブラウザ側 90 秒カウントダウン（即停止/ComfyUI のみ/キャンセル可）、
      ブラウザが閉じていてもサーバー側が 180 秒後に ComfyUI・企画 LLM を停止し GPU・メモリを解放。
-  企画 LLM は `tools/h3-chat.ps1` の `-PlanModel` で選択（**`Qwen3.5`** Qwen3.5-4B Uncensored・NSFW・視覚対応・デフォルト /
-  `LFM` 軽量・汎用 / `DirtyMuse` エロティカ特化 / `Off` 無効）。
+  企画 LLM は `tools/h3-chat.ps1` の `-PlanModel` で選択（**`Qwen3.5`** Qwen3.5-4B Uncensored・NSFW・視覚対応・デフォルト / `Off` 無効）。
   Qwen3.5 は `--mmproj`（視覚エンコーダ 675MB）付きで起動し、**確定したキー画像を base64 で送って
   実際に見た上で**動画プロンプトを作成します（`h3-chat.py` が `data:image/...` 形式で添付）。
-  LFM のツール呼び出し形式（`video_prompt_creation` など）も従来どおり h3-chat.py 側でパースして
-  最終プロンプトを抽出します。モデル導入元: `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（Reddit で 0/465 拒否）。
+  旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済み（ツール呼び出し形式のパースは
+  他モデル対応として h3-chat.py に残してあります）。モデル導入元:
+  `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（Reddit で 0/465 拒否）。
 
 ## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
 

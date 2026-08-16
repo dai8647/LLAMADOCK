@@ -5,12 +5,11 @@
 #
 # Planning mode optionally starts a local planning LLM (CPU-only, VRAM stays
 # free for ComfyUI). Choose the model with -PlanModel:
-#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel LFM
-#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel DirtyMuse
+#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.5
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Off
 
 param(
-    [ValidateSet("Qwen3.5", "LFM", "DirtyMuse", "Off")]
+    [ValidateSet("Qwen3.5", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -27,17 +26,9 @@ $planUrl = "http://127.0.0.1:$planPort"
 
 $planModels = @{
     "Qwen3.5" = @{
-        Label = "Qwen3.5-4B Uncensored (NSFW・視覚対応・デフォルト)"
+        Label = "Qwen3.5-4B Uncensored (NSFW・視覚対応)"
         Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf"
         Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
-    }
-    LFM = @{
-        Label = "LFM2.5-2.6B (軽量・汎用)"
-        Path = "C:\Users\dai86\.lmstudio\models\nguyenthilaitrieulong\LFM2.5-2.6B-Heretic-Abliterated-GGUF\LFM2.5-2.6B-heretic-Q5_K_S.gguf"
-    }
-    DirtyMuse = @{
-        Label = "Dirty-Muse-Writer (エロティカ特化)"
-        Path = "C:\Users\dai86\.lmstudio\models\kizzet373\Dirty-Muse-Writer-v01-Uncensored-Erotica-NSFW-Q4_K_M-GGUF\dirty-muse-writer-v01-uncensored-erotica-nsfw-q4_k_m.gguf"
     }
 }
 

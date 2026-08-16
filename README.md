@@ -40,7 +40,7 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 
 ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`、`--lowvram` なし）が自動適用されます。
 起動時に「ComfyUI tuning」メニュー（**速い順**: super / ck / fast / default / bench / custom / **plan**。triton はアンインストール済みのため削除）で対話的に切り替えられるほか、
-`[7] plan` を選ぶと **ck + 企画モード** で起動し、h3-chat（企画 LLM 付き）を自動で開きます（企画 LLM は `LFM` / `DirtyMuse` を選択可）。両方起動済みなら二重起動せずブラウザを開くだけです。
+`[7] plan` を選ぶと **ck + 企画モード** で起動し、h3-chat（企画 LLM `Qwen3.5` 付き）を自動で開きます。両方起動済みなら二重起動せずブラウザを開くだけです。
 セッションメニューで `[4] Stop server and exit` を選ぶと、**ComfyUI / h3-chat / 企画 LLM も全部停止して GPU・RAM を解放するか**を確認します。
 プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=super|ck|fast|bench|triton`、
 `LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
@@ -59,9 +59,9 @@ ComfyUI 起動後に **`tools\h3-chat.ps1`** を実行すると、ノード UI �
 ④ 確定した画像をもとに企画 LLM が英語の動画プロンプト（動き・カメラ・時間経過を追加）を作成 → 生成
 動画が完成すると **自動停止のカウントダウン**が始まり、放置すれば ComfyUI・企画 LLM を停止して
 GPU・メモリを解放します（ブラウザが閉じていてもサーバー側で 180 秒後に確実に停止）。
-企画 LLM は `-PlanModel Qwen3.5`（**Qwen3.5-4B Uncensored・NSFW・視覚対応、デフォルト**）/ `LFM`
-（軽量・汎用）/ `DirtyMuse`（エロティカ特化）/ `Off`（無効）で選択します。Qwen3.5 は
-mmproj 視覚エンコーダ付きで起動するため、**確定したキー画像を実際に見て**動画プロンプトを作成します。
+企画 LLM は `-PlanModel Qwen3.5`（**Qwen3.5-4B Uncensored・NSFW・視覚対応、デフォルト）/ `Off`（無効）で
+選択します。Qwen3.5 は mmproj 視覚エンコーダ付きで起動するため、**確定したキー画像を実際に見て**
+動画プロンプトを作成します。旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済みです。
 
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
 `h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 13 個のバリアント
