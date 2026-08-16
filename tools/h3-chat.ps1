@@ -34,7 +34,8 @@ try {
 } catch { }
 
 if (-not $already) {
-    $python = "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.exe"
+    $comfyRoot = if ($env:LLAMADOCK_COMFY_ROOT) { $env:LLAMADOCK_COMFY_ROOT } else { "C:\Users\dai86\Documents\ComfyUI" }
+    $python = Join-Path $comfyRoot ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $python)) { $python = "python" }
     Write-Host "Starting h3-chat on $url ..." -ForegroundColor Cyan
     Start-Process -FilePath $python -ArgumentList $chatPy -WindowStyle Hidden

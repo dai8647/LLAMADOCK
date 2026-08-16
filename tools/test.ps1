@@ -331,15 +331,44 @@ if ($launcherSource -notmatch '(?s)\$ExistingServerMode\s*-eq\s*"UseExisting".{0
 }
 Write-Host "ComfyUI UseExisting branch OK"
 
+function Get-SweepModelIndex {
+    # Mirrors select-model.ps1's model enumeration (non-mmproj GGUFs under
+    # ModelsBase, sorted TQ3-first then by size descending) and returns the
+    # 1-based index of a model that fits the RAM/context guard for preset dry
+    # runs. Hard-coded indices drift whenever models are added/removed on disk
+    # (e.g. a new 80GB+ model shifting which file lands at index 3).
+    $modelsBase = $env:LLAMADOCK_MODELS_BASE
+    if ([string]::IsNullOrWhiteSpace($modelsBase)) { $modelsBase = "C:\Users\dai86\.lmstudio\models" }
+    $list = @(
+        Get-ChildItem -Path $modelsBase -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch "mmproj" } |
+            ForEach-Object {
+                [PSCustomObject]@{
+                    Name = $_.Name
+                    SizeMB = [math]::Round($_.Length / 1MB, 1)
+                    IsTQ3 = ($_.Name -match "TQ3")
+                }
+            } |
+            Sort-Object -Property @{ Expression = "IsTQ3"; Descending = $true }, @{ Expression = "SizeMB"; Descending = $true }
+    )
+    if ($list.Count -eq 0) { return 1 }
+    # Prefer the largest model under 40GB: big enough to exercise the engine
+    # routing, small enough that the launcher's "context exceeds RAM" guard
+    # never hard-exits the dry run. Fall back to the smallest model.
+    $candidates = @($list | Where-Object { $_.SizeMB -lt 40960 })
+    if ($candidates.Count -eq 0) { $candidates = @($list) }
+    $names = @($list | Select-Object -ExpandProperty Name)
+    return [array]::IndexOf($names, $candidates[0].Name) + 1
+}
+
 if (-not $SkipDryRun) {
     $presets = $validPresets
 
     foreach ($preset in $presets) {
-        $modelIndex = 3
+        $modelIndex = Get-SweepModelIndex
         $kIndex = 1
         $vIndex = 6
         if ($preset -eq "DeepResearchHeavy") {
-            $modelIndex = 1
             $vIndex = 9
         }
 

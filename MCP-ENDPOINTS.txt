@@ -5,15 +5,15 @@ Light stack - started automatically by LlamaDock when MCP helpers are enabled:
 
 Web Search / Fetch
   http://127.0.0.1:3100/mcp
-  tools: search_web, search_and_fetch, fetch_url
+  tools: search_web, search_and_fetch, fetch_url, deep_research
 
 Filesystem
   http://127.0.0.1:3101/mcp
-  allowed directory: C:\Users\dai86\Downloads\llama-tq3\mcp-share
+  allowed directory: <LLAMADOCK_ROOT>\mcp-share
 
 Memory
   http://127.0.0.1:3102/mcp
-  storage file: C:\Users\dai86\Downloads\llama-tq3\mcp-data\memory.jsonl
+  storage file: <LLAMADOCK_ROOT>\mcp-data\memory.jsonl
 
 
 Optional stack - start with mcp-all-optional.bat when needed:
@@ -35,13 +35,13 @@ BAT files
 =========
 
 Main launcher:
-  C:\Users\dai86\Downloads\llama-tq3\llamadock.bat
+  <LLAMADOCK_ROOT>\llamadock.bat
 
 Compatibility launcher:
-  C:\Users\dai86\Downloads\llama-tq3\llama-tq3-chat.bat
+  <LLAMADOCK_ROOT>\llama-tq3-chat.bat
 
 Starts the light MCP stack only:
-  C:\Users\dai86\Downloads\llama-tq3\mcp-all-light.bat
+  <LLAMADOCK_ROOT>\mcp-all-light.bat
 
 Starts Context7, MarkItDown, and Playwright:
-  C:\Users\dai86\Downloads\llama-tq3\mcp-all-optional.bat
+  <LLAMADOCK_ROOT>\mcp-all-optional.bat

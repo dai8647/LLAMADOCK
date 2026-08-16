@@ -2,7 +2,7 @@
 
 ローカル **GGUF モデル**を用途別ワークスペースに起動する Windows 向けランチャーです。Docker / WSL を使わず、ネイティブの llama.cpp (`llama-server.exe`) を起動し、コーディング・チャット・エージェント・リサーチの各ワークスペースへ接続します。
 
-> **セキュリティ方針**: このリポジトリは API キー・認証情報・個人データを一切含みません。API キーは Windows の環境変数のみで参照します。詳しくは下記「セキュリティ」を参照してください。
+> **セキュリティ方針**: このリポジトリは API キー・認証情報・トークンを一切含みません。API キーは Windows の環境変数のみで参照します。マシン固有パス（モデル・ComfyUI 等）はスクリプト内にフォールバックとして存在しますが、すべて `LLAMADOCK_*` / `LLAMA_TQ3_*` 環境変数で上書きできます（本リポジトリ自体に個人データは含まれません）。詳しくは下記「セキュリティ」を参照してください。
 
 ---
 
@@ -51,8 +51,8 @@ ComfyUI 起動後に **`tools\h3-chat.ps1`** を実行すると、ノード UI �
 チャットページ（`http://127.0.0.1:8189`）が開きます（クイック約1分 / フル約9分・音声付き）。
 
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
-`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む）の
-調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
+`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 13 個のバリアント
+（短尺音声付き `*_short_audio`・スーパー `*_super` 系を含む）の一覧・調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
@@ -144,7 +144,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 **42項目の全パラメータ**を機械可読で定義しています。GUI の設定パネルはこのスキーマから自動生成します。
 
 `config/memory-presets.json` には **省メモリ／速度プリセット**（very-light / light / balanced / full /
-moe-cpu-first / spec-mtp / spec-eagle3 / spec-off）を定義。1クリックで適用できます。
+moe-cpu-first / spec-mtp / spec-eagle3 / spec-off）を定義しています（現時点ではランチャーが既定値として利用。
+GUI 設定パネルからの 1 クリック適用は将来の Web GUI で実装予定）。
 
 次に実装する Web GUI の設計・引き継ぎは **`docs/PARAMETER-CATALOG.md`** を参照してください。
 
@@ -171,6 +172,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1
 - `.env`、ログ、DB、`node_modules`、`mcp-data/` などを含めない（`.gitignore` で除外済み）
 - API キー、Bearer token、個人アクセストークンをコミットしない
 - API キーは Windows 環境変数のみで参照する（スクリプトや README に書かない）
+- **Llama Agent は `--yolo`（全ツール自動承認・シェル権限あり）で起動します**。ローカルの llama-server にのみ接続する設計ですが、ターミナルに全権を与えるツールである点に留意してください
 
 ---
 
