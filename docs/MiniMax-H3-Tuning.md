@@ -166,6 +166,14 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
   フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
   seed は毎回ランダム。完了後はページ内で再生＋保存先パス表示。
+- **✎ 企画モード**（2026-08-16 追加）: チェックを入れると、チャット欄の文章をローカル企画 LLM
+  （llama-server・CPU 推論・VRAM 不使用・`http://127.0.0.1:8190`）が「打ち返しながら」企画として
+  具体化し、`[FINAL_PROMPT]` またはツール呼び出しの形で英語プロンプトに仕上げます。
+  画面に「🎬 この企画で生成 ▶」ボタンが出たら確定で生成。モデルは `tools/h3-chat.ps1` の
+  `-PlanModel` で選択（`LFM` 軽量・汎用 / `DirtyMuse` エロティカ特化 / `Off` 無効）。
+  企画 LLM は `--reasoning off --reasoning-budget 0` で起動し、LFM のツール呼び出し形式
+  （`video_prompt_creation` / `video_generator` / `video_generate` / `video_prompt` など）を
+  h3-chat.py 側でパースして最終プロンプトを抽出します。
 
 ## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
 

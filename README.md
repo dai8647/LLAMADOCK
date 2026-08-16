@@ -50,6 +50,10 @@ ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`�
 ComfyUI 起動後に **`tools\h3-chat.ps1`** を実行すると、ノード UI を触らずテキストで動画を生成できる
 チャットページ（`http://127.0.0.1:8189`）が開きます（クイック約1分 / フル約9分・音声付き）。
 
+チャット欄の **✎ 企画モード** にチェックを入れると、ローカル LLM（CPU 推論・VRAM 不使用）と
+「打ち返しながら」企画を固めてから生成できます。モデルは `-PlanModel LFM`（軽量・汎用、デフォルト）/
+`-PlanModel DirtyMuse`（エロティカ特化）/ `-PlanModel Off`（無効）で選択します。
+
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
 `h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 13 個のバリアント
 （短尺音声付き `*_short_audio`・スーパー `*_super` 系を含む）の一覧・調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
