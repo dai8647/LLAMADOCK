@@ -135,6 +135,11 @@ FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)\[/FINAL_PROMPT\]", re.S)
 PLAN_HISTORY = []
 PLAN_LOCK = threading.Lock()
 
+# Standard port for the local planning LLM (llama-server started by
+# tools\h3-chat.ps1). Used for auto-detection so plan mode also works when
+# h3-chat.py was launched without --plan-url (e.g. from select-model.ps1).
+PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
+
 HTML = """<!doctype html>
 <html lang="ja">
 <head>
@@ -201,6 +206,7 @@ HTML = """<!doctype html>
 <script>
 const $ = s => document.querySelector(s);
 let busy = false;
+let lastFinalPrompt = null;
 
 function addMsg(kind, html) {
   const el = document.createElement("div");
@@ -264,7 +270,11 @@ async function plan(text) {
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     let html = '<div class="meta">企画案</div>' + esc(j.reply || "（応答なし）");
     if (j.final_prompt) {
-      html += '<button class="genplan" onclick="genPlan(' + JSON.stringify(JSON.stringify(j.final_prompt)) + ')">🎬 この企画で生成 ▶</button>';
+      // Store the prompt in a module variable instead of inlining it into the
+      // onclick attribute: prompts may contain double quotes / HTML special
+      // characters that would break the inline-JSON escaping.
+      lastFinalPrompt = j.final_prompt;
+      html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
     }
     bot.innerHTML = html;
   } catch (e) {
@@ -274,19 +284,25 @@ async function plan(text) {
   $("#send").disabled = false;
 }
 
-async function genPlan(finalJson) {
+function genPlanLast() {
   if (busy) return;
-  const finalPrompt = JSON.parse(finalJson);
+  if (!lastFinalPrompt) return;
+  const finalPrompt = lastFinalPrompt;
+  lastFinalPrompt = null;
   busy = true;
   $("#send").disabled = true;
   const mode = document.querySelector('input[name="mode"]:checked').value;
   addMsg("user", "✅ この企画で生成する: " + finalPrompt);
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
+  doGenerate(mode, finalPrompt, bot);
+}
+
+async function doGenerate(mode, text, bot) {
   try {
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: mode, text: finalPrompt})
+      body: JSON.stringify({mode: mode, text: text})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -449,11 +465,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "メッセージが空です"})
             return
-        if not self.server.plan_url:
+        endpoint = self._plan_endpoint()
+        if not endpoint:
             self._json(503, {"error": "企画 LLM が接続されていません（h3-chat.ps1 で起動してください）"})
             return
         try:
-            reply, final_prompt = self._plan_llm(text)
+            reply, final_prompt = self._plan_llm(text, endpoint)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
@@ -461,7 +478,24 @@ class ChatHandler(BaseHTTPRequestHandler):
             reply = "企画案がまとまりました。下のボタンで生成できます。\n\n" + final_prompt
         self._json(200, {"reply": reply, "final_prompt": final_prompt})
 
-    def _plan_llm(self, user_text, timeout=300):
+    def _plan_endpoint(self, probe=True):
+        """Return the planning-LLM base URL to use.
+
+        Prefers the configured --plan-url; otherwise auto-detects the standard
+        llama-server on port 8190 so plan mode works no matter how h3-chat.py
+        was started. Returns None when no planning LLM is reachable.
+        """
+        if self.server.plan_url:
+            return self.server.plan_url
+        try:
+            with urllib.request.urlopen(PLAN_URL_DEFAULT + "/v1/models", timeout=2) as r:
+                if r.status == 200:
+                    return PLAN_URL_DEFAULT
+        except Exception:
+            pass
+        return None
+
+    def _plan_llm(self, user_text, endpoint, timeout=300):
         """Send the message (plus history) to the planning LLM.
 
         Returns (reply_text, final_prompt) where final_prompt is set when the
@@ -479,7 +513,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "temperature": 0.7,
             }).encode("utf-8")
             req = urllib.request.Request(
-                self.server.plan_url.rstrip("/") + "/v1/chat/completions",
+                endpoint.rstrip("/") + "/v1/chat/completions",
                 data=body,
                 headers={"Content-Type": "application/json"},
             )

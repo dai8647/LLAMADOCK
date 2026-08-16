@@ -11,7 +11,10 @@
 
 param(
     [ValidateSet("LFM", "DirtyMuse", "Off")]
-    [string]$PlanModel = "LFM"
+    [string]$PlanModel = "LFM",
+    # Used by select-model.ps1 (plan mode): start the planning LLM and the
+    # chat server but let the caller open the browser.
+    [switch]$NoBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,9 +65,23 @@ try {
     if ($r.StatusCode -eq 200) { $already = $true }
 } catch { }
 
+# Double-launch guard: chat UI and planning LLM both already running means
+# there is nothing left to do here.
+if ($already -and $PlanModel -ne "Off") {
+    try {
+        $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        if ($r.StatusCode -eq 200) {
+            Write-Host "h3-chat and planning LLM are already running; nothing to start." -ForegroundColor Green
+            if (-not $NoBrowser) { Start-Process $url }
+            exit 0
+        }
+    } catch { }
+}
+
 # ---- planning LLM (optional) ---------------------------------------
 
 $planArgs = @()
+$skipPlanStart = $false
 if ($PlanModel -ne "Off") {
     $model = $planModels[$PlanModel]
     if (-not (Test-Path -LiteralPath $model.Path)) {
@@ -74,8 +91,21 @@ if ($PlanModel -ne "Off") {
     } elseif (-not (Test-Path -LiteralPath $planServer)) {
         Write-Host "WARNING: llama-server not found ($planServer); planning mode disabled." -ForegroundColor Yellow
     } else {
+        # Reuse an already-running planning LLM instead of stacking a second
+        # llama-server on the same port (double-instance guard).
+        try {
+            $planHealth = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            if ($planHealth.StatusCode -eq 200) {
+                Write-Host "Planning LLM already running on $planUrl; reusing it." -ForegroundColor Green
+                $planArgs = @("--plan-url", $planUrl)
+                $planReady = $true
+                $skipPlanStart = $true
+            }
+        }
+        catch { }
         # CPU-only (-ngl 0) so ComfyUI keeps all VRAM; reasoning off so the
         # tiny planning model answers immediately instead of thinking forever.
+        if (-not $skipPlanStart) {
         Write-Host "Starting planning LLM ($($model.Label)) on $planUrl ..." -ForegroundColor Cyan
         Start-Process -FilePath $planServer -ArgumentList @(
             "-m", $model.Path,
@@ -101,6 +131,7 @@ if ($PlanModel -ne "Off") {
         } else {
             Write-Host "WARNING: planning LLM did not become ready; planning mode disabled." -ForegroundColor Yellow
         }
+        }
     }
 }
 
@@ -113,5 +144,7 @@ if (-not $already) {
     Start-Sleep -Seconds 2
 }
 
-Write-Host "Opening $url" -ForegroundColor Green
-Start-Process $url
+if (-not $NoBrowser) {
+    Write-Host "Opening $url" -ForegroundColor Green
+    Start-Process $url
+}

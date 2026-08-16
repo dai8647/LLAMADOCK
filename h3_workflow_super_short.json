@@ -55,7 +55,7 @@
     "5": {
       "class_type": "CLIPTextEncode",
       "inputs": {
-        "text": "no abrupt motion, no harsh lighting, no distant horizon, no static waves, no busy crowd, no modern structures, no high contrast colors, no fast-paced movement, no cold tones, no artificial lighting",
+        "text": "no distorted anatomy, no deformed hands, no extra limbs or fingers, no warped or asymmetrical faces, no unnatural body positions, no melting or smeared skin, no blurry frames, no watermark or text overlay, no jpeg artifacts, no flickering, no jittery motion, no sudden scene cuts, no harsh shadows, no plastic-looking skin",
         "clip": [
           "13",
           0
@@ -73,7 +73,7 @@
           "3",
           0
         ],
-        "prompt": "A serene coastline at sunset bathed in warm orange hues, where gentle waves lap softly against the shore. The glowing sky reflects a soft golden light onto the water, creating shimmering ripples. The camera slowly pans across the tranquil scene, capturing subtle water movements and the peaceful atmosphere. Soft lighting highlights the textures of the sand and the gentle motion of the waves. The scene is calm and inviting, with warm tones and gentle movements enhancing the coastal serenity.",
+        "prompt": "[ADULT SCENE PROMPT - replace me] Describe in natural language, in this order: the subject and their appearance, the intimate action and its pace, camera position and movement (e.g. slow dolly-in, static close-up), lighting (e.g. warm soft bedroom light), skin detail and mood.",
         "width": 512,
         "height": 320,
         "length": 16
