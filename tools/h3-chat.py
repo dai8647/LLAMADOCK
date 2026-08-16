@@ -44,6 +44,15 @@ WORKFLOWS = {
     "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
 }
 
+# Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
+# workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
+# NVFP4 10Eros-Max beta2 (12.5GB, higher quality, 16GB-VRAM friendly).
+DITS = {
+    "default": "alpha-0.5-testing\\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors",
+    "10eros": "10Eros-Max\\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4.safetensors",
+}
+NODE_UNET = "1"
+
 # Z-Image Turbo (key-image) workflow: 企画 → キー画像 → 確認 → 動画
 ZIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_zimage.json")
 NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
@@ -259,6 +268,7 @@ HTML = """<!doctype html>
   .plan { border-top:1px solid var(--line); padding-top:6px; }
   .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
   .hint { color:var(--muted); font-size:11px; }
+  .ditrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px; }
 </style>
 </head>
 <body>
@@ -279,6 +289,11 @@ HTML = """<!doctype html>
     <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
     <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約1分）</label>
     <label><input type="radio" name="mode" value="lite"> 軽量 4B（省VRAM・約9分）</label>
+    <div class="ditrow">
+      <span class="hint">動画モデル:</span>
+      <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
+      <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
+    </div>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
   </div>
@@ -319,6 +334,11 @@ async function checkServer() {
 setInterval(checkServer, 5000);
 checkServer();
 
+function ditValue() {
+  const el = document.querySelector('input[name="dit"]:checked');
+  return el ? el.value : "default";
+}
+
 async function send() {
   const text = $("#input").value.trim();
   if (!text || busy) return;
@@ -333,7 +353,7 @@ async function send() {
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: mode, text: text})
+      body: JSON.stringify({mode: mode, text: text, dit: ditValue()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -491,7 +511,7 @@ async function doGenerate(mode, text, bot) {
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: mode, text: text})
+      body: JSON.stringify({mode: mode, text: text, dit: ditValue()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -707,9 +727,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid JSON"})
             return
         mode = req.get("mode", "quick")
+        dit = req.get("dit", "default")
         text = (req.get("text") or "").strip()
         if mode not in WORKFLOWS:
             self._json(400, {"error": "unknown mode: " + mode})
+            return
+        if dit not in DITS:
+            self._json(400, {"error": "unknown dit: " + dit})
             return
         if not text:
             self._json(400, {"error": "プロンプトが空です"})
@@ -720,6 +744,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
             return
+        wf[NODE_UNET]["inputs"]["unet_name"] = DITS[dit]
         wf[NODE_PROMPT]["inputs"]["prompt"] = text
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
@@ -1125,6 +1150,7 @@ def main():
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")
     print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
+    print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
     print(f"h3-chat: plan LLM = {server.plan_url or 'off'}")
     print("h3-chat: Ctrl+C で停止")
