@@ -1407,7 +1407,7 @@ function Open-OpenWebUIClient {
 $script:ComfyProfileChoice = $null
 $script:ComfyFlagsChoice = ""
 $script:PlanModeChoice = $false
-$script:PlanModelChoice = "LFM"
+$script:PlanModelChoice = "Qwen3.5"
 $script:StopAllOnExit = $false
 
 function Get-ComfyUITritonVersion {
@@ -1559,9 +1559,10 @@ function Select-ComfyUITuning {
                 "7" {
                     $script:ComfyProfileChoice = "ck"
                     $script:PlanModeChoice = $true
-                    $planInput = Read-Host "Planning LLM model (LFM / DirtyMuse), Enter for LFM"
+                    $planInput = Read-Host "Planning LLM model (Qwen3.5 / LFM / DirtyMuse), Enter for Qwen3.5"
                     if ($planInput -match "(?i)dirty") { $script:PlanModelChoice = "DirtyMuse" }
-                    else { $script:PlanModelChoice = "LFM" }
+                    elseif ($planInput -match "(?i)lfm") { $script:PlanModelChoice = "LFM" }
+                    else { $script:PlanModelChoice = "Qwen3.5" }
                 }
                 default { $tuningValid = $false }
             }

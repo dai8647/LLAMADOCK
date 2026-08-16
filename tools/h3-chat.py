@@ -19,23 +19,15 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
-import urllib.error
-import urllib.parse
-import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-import argparse
-import json
-import os
-import random
-import sys
-import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,22 +44,98 @@ WORKFLOWS = {
     "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
 }
 
+# Z-Image Turbo (key-image) workflow: 企画 → キー画像 → 確認 → 動画
+ZIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_zimage.json")
+NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
+NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
+NODE_ZIMG_SEED = "8"     # KSampler: seed
+NODE_ZIMG_SAVE = "10"    # SaveImage: output filename
+
+# Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
+PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
+PLAN_PORT = 8190
+
 # ComfyUI node ids in the super workflows
 NODE_PROMPT = "6"     # MiniMaxH3ImageToVideo: user prompt
 NODE_SEED = "7"       # KSampler: seed
 NODE_SAVE = "10"      # SaveVideo: output filename
 
-# Planning-LLM system prompt: shapes the video concept conversationally and,
-# when the concept is settled, returns the final prompt in FINAL_PROMPT tags.
+# Per-session plan state (single-user local UI): image -> video pipeline.
+SESSION = {"image_prompt": None, "video_prompt": None}
+SESSION_LOCK = threading.Lock()
+
+# Server-side safety net: when a video finishes and nothing new is started,
+# stop ComfyUI + planning LLM (freeing GPU/RAM) even if the browser tab is
+# closed. The browser shows a shorter interactive countdown; this is the
+# guarantee that "作成終わったらちゃんと落とす".
+AUTO_STOP_SECONDS = 180
+
+
+def _stop_stack(server):
+    """Unload models, kill ComfyUI + planning LLM, then stop the chat server."""
+    try:
+        # free VRAM first (graceful unload), then kill the processes
+        req = urllib.request.Request(
+            server.comfy_base + "/free",
+            data=json.dumps({"unload_models": True, "free_memory": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15):
+            pass
+    except Exception:
+        pass
+    ChatHandler._kill_port(ChatHandler._comfy_port_of(server))
+    ChatHandler._kill_port(PLAN_PORT)
+    threading.Timer(1.5, server.shutdown).start()
+
+
+class _AutoStop(threading.Thread):
+    """Background watcher: stop the whole stack after a finished video sits
+    idle for AUTO_STOP_SECONDS (no new generation / no plan activity)."""
+
+    def __init__(self, server):
+        super().__init__(daemon=True)
+        self.server = server
+        self._done_at = None
+        self._lock = threading.Lock()
+        self.start()
+
+    def mark_done(self):
+        with self._lock:
+            self._done_at = time.time()
+
+    def poke(self):
+        with self._lock:
+            self._done_at = None
+
+    def run(self):
+        while True:
+            time.sleep(10)
+            with self._lock:
+                done_at = self._done_at
+            if done_at is not None and time.time() - done_at > AUTO_STOP_SECONDS:
+                try:
+                    _stop_stack(self.server)
+                except Exception:
+                    pass
+                return
+
+# Planning-LLM system prompt: shapes the concept in two stages -
+# 1) a key image (English prompt in [IMG_PROMPT] tags), then, after the user
+# confirms the rendered image, 2) a video prompt (English, [FINAL_PROMPT] tags)
+# that keeps the image content and adds motion / camera / duration.
 PLAN_SYSTEM = (
-    "あなたは MiniMax H3 動画生成の企画アシスタントです。"
-    "ユーザーのアイデアを聞き出し、映像として具体化していきます。"
+    "あなたは「キー画像 → 動画」の2段階で映像作品を作る企画アシスタントです。"
     "- 関数呼び出し・ツールは一切使わないでください。必ず普通の文章で答えてください。"
-    "- 会話のたびに、映像のポイント（被写体・背景・動き・雰囲気・カメラ）を1つずつ確認・提案する。"
+    "- 会話のたびに、映像のポイント（被写体・背景・構図・雰囲気・ライティング・動き・カメラ）を1つずつ確認・提案する。"
     "- 質問は一度に1〜2個までに絞る。長々と説明せず簡潔に。"
-    "- ユーザーが満足したら、最終的な動画生成プロンプトを英語で書き、"
-    "  それを [FINAL_PROMPT] と [/FINAL_PROMPT] のタグで囲んで返す。"
-    "  （例: [FINAL_PROMPT]A quiet beach at sunset, gentle waves, cinematic shot[/FINAL_PROMPT]）"
+    "【第1段階: キー画像】ユーザーのアイデアを聞き出し、被写体・背景・構図・雰囲気・ライティングを具体化する。"
+    "- キー画像の内容が固まったら、英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す。"
+    "  （例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, footprints in wet sand, low-angle cinematic composition[/IMG_PROMPT]）"
+    "- タグは必ず1組だけ。タグ以外の補足説明は不要。固まるまでは普通の日本語で会話を続ける。"
+    "【第2段階: 動画プロンプト】ユーザーがキー画像を確定したら、その画像の内容・構図を保ったまま、"
+    "動き・カメラワーク・時間経過・雰囲気を加えた英語の動画プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲んで返す。"
+    "  （例: [FINAL_PROMPT]A shiba inu runs along the shoreline at sunset, its paws leaving footprints in the wet sand, the camera slowly dollies in, warm golden light glinting off gentle waves[/FINAL_PROMPT]）"
     "- タグは必ず1組だけ。タグ以外の補足説明は不要。"
 )
 
@@ -111,6 +179,8 @@ def _tool_prompt(text):
         return None
     return ", ".join(keep)
 
+IMG_FINAL_RE = re.compile(r"\[IMG_PROMPT\](.*?)\[/IMG_PROMPT\]", re.S)
+
 # When LFM answers in plain text (no tool call), it often still writes the
 # finished English prompt. Treat a long mostly-ASCII description that reads
 # like a video shot as a final prompt; short/conversational replies stay chat.
@@ -134,11 +204,6 @@ FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)\[/FINAL_PROMPT\]", re.S)
 # Per-session conversation history for planning mode (single-user local UI).
 PLAN_HISTORY = []
 PLAN_LOCK = threading.Lock()
-
-# Standard port for the local planning LLM (llama-server started by
-# tools\h3-chat.ps1). Used for auto-detection so plan mode also works when
-# h3-chat.py was launched without --plan-url (e.g. from select-model.ps1).
-PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -168,7 +233,17 @@ HTML = """<!doctype html>
   .bot .meta { color:var(--muted); font-size:11px; margin-bottom:6px; }
   .bot .err { color:var(--err); }
   .bot video { width:100%; max-width:520px; border-radius:8px; background:#000; display:block; margin-top:8px; }
+  .bot img { width:100%; max-width:520px; border-radius:8px; background:#000; display:block; margin-top:8px; }
   .bot .path { color:var(--muted); font-size:11px; margin-top:6px; word-break:break-all; }
+  .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .row button.ok { background:var(--ok); color:#0b2b1c; }
+  .row button.rev { background:#ffb020; color:#3a2400; }
+  .row button.small { background:transparent; color:var(--muted); border:1px solid var(--line); }
+  #shutdown-box { display:none; border-top:2px solid var(--ok); background:#0e241a;
+                  padding:10px 20px; font-size:13px; }
+  #shutdown-box .meta { color:var(--muted); font-size:11px; margin-bottom:6px; }
+  #shutdown-box button { padding:8px 14px; font-size:12px; margin-right:8px; }
+  #shutdown-box button.warn { background:var(--err); }
   footer { border-top:1px solid var(--line); padding:12px 20px; display:flex; gap:10px;
            align-items:flex-end; }
   #modes { display:flex; flex-direction:column; gap:4px; margin-right:8px; }
@@ -189,24 +264,36 @@ HTML = """<!doctype html>
 <body>
 <header>
   <h1>🎬 MiniMax H3 チャット動画生成</h1>
-  <span class="sub">Turbo LoRA 8step・音声付き（32B / 4B エンコーダ切替）</span>
+  <span class="sub">企画モード: キー画像（Z-Image Turbo）→ 確認 → 動画（H3・32B/4B）</span>
   <span id="status-dot" title="ComfyUI 接続状態"></span>
 </header>
 <main id="msgs"></main>
+<div id="shutdown-box">
+  <div class="meta">生成完了 ✅ 自動停止まで <b id="countdown">90</b> 秒（GPU・メモリを解放します）</div>
+  <button class="warn" onclick="stopAll()">🛑 今すぐすべて終了</button>
+  <button onclick="stopComfy()">ComfyUI だけ停止</button>
+  <button class="small" onclick="cancelStop()">キャンセル</button>
+</div>
 <footer>
   <div id="modes">
     <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
     <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約1分）</label>
     <label><input type="radio" name="mode" value="lite"> 軽量 4B（省VRAM・約9分）</label>
-    <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（会話で練ってから生成）</label>
+    <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
+    <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
   </div>
-  <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で波が静かに打ち寄せる映像"></textarea>
+  <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
 </footer>
 <script>
 const $ = s => document.querySelector(s);
 let busy = false;
+let lastImgPrompt = null;
 let lastFinalPrompt = null;
+let curImageFilename = null;
+let planStage = "chat";   // chat -> image -> video -> done
+let shutdownTimer = null;
+let shutdownLeft = 0;
 
 function addMsg(kind, html) {
   const el = document.createElement("div");
@@ -264,16 +351,28 @@ async function plan(text) {
     const r = await fetch("/api/plan", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: text})
+      body: JSON.stringify({text: text, stage: planStage})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     let html = '<div class="meta">企画案</div>' + esc(j.reply || "（応答なし）");
-    if (j.final_prompt) {
+    if (j.img_prompt) {
+      lastImgPrompt = j.img_prompt;
+      if (planStage === "image") {
+        // 修正リクエスト: 新しい画像プロンプトでキー画像を再生成する
+        bot.innerHTML = html + '<div class="meta">キー画像を再生成します…</div>';
+        genImage(bot);
+        return;   // genImage が busy を管理する
+      }
+      planStage = "image";
+      html += '<button class="genplan" onclick="genImage()">🖼 キー画像を生成 ▶</button>';
+      html += '<div class="hint">画像を確認して OK なら確定、気に入らなければ「🔁 修正する」で修正できます。</div>';
+    } else if (j.final_prompt) {
       // Store the prompt in a module variable instead of inlining it into the
       // onclick attribute: prompts may contain double quotes / HTML special
       // characters that would break the inline-JSON escaping.
       lastFinalPrompt = j.final_prompt;
+      planStage = "video";
       html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
     }
     bot.innerHTML = html;
@@ -282,6 +381,96 @@ async function plan(text) {
   }
   busy = false;
   $("#send").disabled = false;
+}
+
+async function genImage(prevBot) {
+  if (!lastImgPrompt || busy) return;
+  const bot = prevBot || addMsg("bot", '<div class="meta">Z-Image Turbo でキー画像を生成中…（数秒）</div>');
+  busy = true;
+  $("#send").disabled = true;
+  try {
+    const r = await fetch("/api/zimg", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: lastImgPrompt})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    pollImage(j.prompt_id, bot);
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+    busy = false;
+    $("#send").disabled = false;
+  }
+}
+
+async function pollImage(id, bot) {
+  try {
+    const r = await fetch("/api/status/" + id);
+    const j = await r.json();
+    if (j.status === "success") {
+      const img = j.videos[0];
+      const fn = img.filename;
+      curImageFilename = fn;
+      bot.innerHTML =
+        '<div class="meta">キー画像 ✅（Z-Image Turbo・確認してね）</div>' +
+        '<img src="/api/view?filename=' + encodeURIComponent(fn) + '&type=' + encodeURIComponent(img.type || "output") + '">' +
+        '<div class="row">' +
+        '<button class="ok" onclick="confirmImage()">✅ この画像で確定 → 動画へ</button>' +
+        '<button class="rev" onclick="reviseImage()">🔁 修正する</button>' +
+        "</div>";
+      planStage = "image";
+      busy = false;
+      $("#send").disabled = false;
+      return;
+    }
+    if (j.status === "error") {
+      bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(j.error || "画像生成に失敗しました") + "</div>";
+      busy = false;
+      $("#send").disabled = false;
+      return;
+    }
+    bot.querySelector(".meta").textContent = "キー画像生成中… " + (j.extra || "");
+    setTimeout(() => pollImage(id, bot), 2000);
+  } catch (e) {
+    setTimeout(() => pollImage(id, bot), 2000);
+  }
+}
+
+function reviseImage() {
+  planStage = "image";
+  $("#input").placeholder = "修正したい点を入力（例：犬を白く、夕焼けをもっと赤く）";
+  $("#input").focus();
+}
+
+function confirmImage() {
+  if (busy) return;
+  busy = true;
+  $("#send").disabled = true;
+  const bot = addMsg("bot", '<div class="meta">企画 LLM が動画プロンプトを作成中…（Z-Image はアンロード済み）</div>');
+  (async () => {
+    try {
+      const r = await fetch("/api/plan", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text: "__CONFIRM_IMAGE__", stage: "video", image: curImageFilename})
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      let html = '<div class="meta">画像を確定 ✅（企画 LLM が画像を見て動画プロンプト作成）</div>' + esc(j.reply || "（応答なし）");
+      if (j.final_prompt) {
+        lastFinalPrompt = j.final_prompt;
+        planStage = "video";
+        html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
+        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます（例：カメラはゆっくり寄って）</div>';
+      }
+      bot.innerHTML = html;
+    } catch (e) {
+      bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+    }
+    busy = false;
+    $("#send").disabled = false;
+  })();
 }
 
 function genPlanLast() {
@@ -326,6 +515,7 @@ async function poll(id, bot) {
         '<div class="path">' + esc(v.path) + "</div>";
       busy = false;
       $("#send").disabled = false;
+      startShutdown(90);
       return;
     }
     if (j.status === "error") {
@@ -341,6 +531,87 @@ async function poll(id, bot) {
     setTimeout(() => poll(id, bot), 3000);
   }
 }
+
+function startShutdown(seconds) {
+  shutdownLeft = seconds || 90;
+  const box = $("#shutdown-box");
+  box.style.display = "block";
+  box.innerHTML =
+    '<div class="meta">生成完了 ✅ 自動停止まで <b id="countdown">' + shutdownLeft + "</b> 秒（GPU・メモリを解放します）</div>" +
+    '<button class="warn" onclick="stopAll()">🛑 今すぐすべて終了</button>' +
+    '<button onclick="stopComfy()">ComfyUI だけ停止</button>' +
+    '<button class="small" onclick="cancelStop()">キャンセル</button>';
+  clearInterval(shutdownTimer);
+  shutdownTimer = setInterval(() => {
+    shutdownLeft--;
+    if (shutdownLeft <= 0) {
+      clearInterval(shutdownTimer);
+      shutdownTimer = null;
+      stopAll();
+      return;
+    }
+    const c = $("#countdown");
+    if (c) c.textContent = shutdownLeft;
+  }, 1000);
+}
+
+function cancelStop() {
+  clearInterval(shutdownTimer);
+  shutdownTimer = null;
+  $("#shutdown-box").style.display = "none";
+  fetch("/api/shutdown", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({scope: "cancel"})
+  });
+  addMsg("bot", '<div class="meta">停止をキャンセルしました。このまま動画を作り続けられます。</div>');
+}
+
+function stopAll() { doShutdown("all"); }
+function stopComfy() { doShutdown("comfy"); }
+
+async function doShutdown(scope) {
+  clearInterval(shutdownTimer);
+  shutdownTimer = null;
+  const box = $("#shutdown-box");
+  box.innerHTML = '<div class="meta">停止中…（モデルをアンロードして GPU・メモリを解放します）</div>';
+  try {
+    const r = await fetch("/api/shutdown", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({scope: scope})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    if (scope === "all") {
+      box.innerHTML = '<div class="meta">すべて停止しました ✅ GPU・メモリ解放済み。ブラウザは閉じてもらって OK です（動画はファイルとして保存済み）。</div>';
+    } else {
+      box.innerHTML = '<div class="meta">ComfyUI を停止しました ✅（GPU・VRAM 解放）。動画はこのまま閲覧できます。企画 LLM も止める場合は下のボタンへ。</div>' +
+        '<button class="warn" onclick="stopAll()">すべて終了（企画 LLM も停止）</button>' +
+        '<button class="small" onclick="hideShutdown()">閉じる</button>';
+    }
+  } catch (e) {
+    box.innerHTML = '<div class="meta">停止エラー: ' + esc(String(e.message || e)) + "</div>";
+  }
+}
+
+function hideShutdown() { $("#shutdown-box").style.display = "none"; }
+
+function resetPlan() {
+  fetch("/api/plan", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text: "__RESET__"})
+  });
+  lastImgPrompt = null;
+  lastFinalPrompt = null;
+  planStage = "chat";
+  addMsg("bot", '<div class="meta">新しい企画</div>新しい企画を始めましょう。作りたい映像を教えてください。');
+}
+
+$("#planmode").addEventListener("change", e => {
+  $("#btn-reset").style.display = e.target.checked ? "" : "none";
+});
 
 $("#input").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -414,8 +685,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/generate":
             self._generate(parsed)
+        elif parsed.path == "/api/zimg":
+            self._zimg(parsed)
         elif parsed.path == "/api/plan":
             self._plan(parsed)
+        elif parsed.path == "/api/shutdown":
+            self._shutdown(parsed)
         else:
             self._json(404, {"error": "not found"})
 
@@ -447,6 +722,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         wf[NODE_PROMPT]["inputs"]["prompt"] = text
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
+        self.server.autostop.poke()
+        # Free stale models (e.g. Z-Image Turbo) first so the H3 model has the
+        # full VRAM - but only when nothing else is running, so we never
+        # unload a model mid-generation.
+        try:
+            _, raw, _ = self._comfy("GET", "/queue", timeout=10)
+            q = json.loads(raw)
+            if not q.get("queue_running") and not q.get("queue_pending"):
+                self._free_comfy()
+        except Exception:
+            pass
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             self._json(200, {"prompt_id": json.loads(raw)["prompt_id"]})
@@ -462,6 +748,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid JSON"})
             return
         text = (req.get("text") or "").strip()
+        stage = req.get("stage") or "chat"   # "chat" | "image" | "video"
+        if text == "__RESET__":
+            self._plan_reset()
+            self._json(200, {"reset": True, "reply": "新しい企画を始めましょう。作りたい映像を教えてください。"})
+            return
         if not text:
             self._json(400, {"error": "メッセージが空です"})
             return
@@ -469,14 +760,30 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not endpoint:
             self._json(503, {"error": "企画 LLM が接続されていません（h3-chat.ps1 で起動してください）"})
             return
+        self.server.autostop.poke()
+        image = req.get("image") or None   # 確定したキー画像のファイル名（視覚入力）
+        if stage == "video" and text == "__CONFIRM_IMAGE__":
+            # キー画像が確定: Z-Image Turbo をアンロードして VRAM を解放してから
+            # 企画 LLM に動画プロンプトを作らせる。
+            self._free_comfy()
         try:
-            reply, final_prompt = self._plan_llm(text, endpoint)
+            reply, img_prompt, final_prompt = self._plan_llm(text, endpoint, stage, image)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
         if final_prompt and not reply:
-            reply = "企画案がまとまりました。下のボタンで生成できます。\n\n" + final_prompt
-        self._json(200, {"reply": reply, "final_prompt": final_prompt})
+            reply = "動画プロンプトがまとまりました。下のボタンで生成できます。\n\n" + final_prompt
+        if img_prompt and not reply:
+            reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
+        self._json(200, {"reply": reply, "img_prompt": img_prompt, "final_prompt": final_prompt})
+
+    def _plan_reset(self):
+        global PLAN_HISTORY
+        with PLAN_LOCK:
+            PLAN_HISTORY.clear()
+        with SESSION_LOCK:
+            SESSION["image_prompt"] = None
+            SESSION["video_prompt"] = None
 
     def _plan_endpoint(self, probe=True):
         """Return the planning-LLM base URL to use.
@@ -495,16 +802,50 @@ class ChatHandler(BaseHTTPRequestHandler):
             pass
         return None
 
-    def _plan_llm(self, user_text, endpoint, timeout=300):
+    def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300):
         """Send the message (plus history) to the planning LLM.
 
-        Returns (reply_text, final_prompt) where final_prompt is set when the
-        model settled on a final video prompt (either [FINAL_PROMPT] tags or a
-        tool call whose prompt= argument is the finished prompt).
+        Returns (reply_text, img_prompt, final_prompt).
+        - stage "chat"/"image": the model settles on the key-image prompt
+          ([IMG_PROMPT] tags, or a tool-call prompt argument).
+        - stage "video": the model settles on the final video prompt
+          ([FINAL_PROMPT] tags, or a tool call whose prompt= is the finished
+          prompt). When image_fn is given (the confirmed key image), it is
+          attached as a real image so a vision-capable planning LLM can see it.
         """
         global PLAN_HISTORY
+        content = user_text
+        if stage == "video" and user_text == "__CONFIRM_IMAGE__":
+            with SESSION_LOCK:
+                ip = SESSION.get("image_prompt") or ""
+            user_text = (
+                "キー画像を確定しました。添付した画像（または以下の画像プロンプト）をベースに、"
+                "動画プロンプトを作成してください。画像の内容・構図を保ちつつ、"
+                "動き・カメラワーク・時間経過・雰囲気を加えた英語のプロンプトを "
+                "[FINAL_PROMPT] と [/FINAL_PROMPT] のタグで囲んで返してください。\n"
+                f"画像プロンプト: {ip}"
+            )
+            # multimodal: attach the confirmed key image (base64) so the
+            # planning LLM can actually see what was rendered
+            if image_fn:
+                abspath = self.server.local_files.get(image_fn) or image_fn
+                if os.path.isfile(abspath):
+                    try:
+                        with open(abspath, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("ascii")
+                        ext = os.path.splitext(image_fn)[1].lower().lstrip(".")
+                        if ext == "jpg":
+                            ext = "jpeg"
+                        if ext not in ("png", "jpeg", "webp"):
+                            ext = "png"
+                        content = [
+                            {"type": "text", "text": user_text},
+                            {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}},
+                        ]
+                    except Exception:
+                        content = user_text
         with PLAN_LOCK:
-            PLAN_HISTORY.append({"role": "user", "content": user_text})
+            PLAN_HISTORY.append({"role": "user", "content": content})
             # keep the context bounded; system prompt always first
             history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-12:]
             body = json.dumps({
@@ -525,17 +866,133 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not content.strip():
                 content = msg.get("reasoning_content") or ""
             reply = _clean_plan_reply(content)
-            m = FINAL_RE.search(reply)
-            final_prompt = m.group(1).strip() if m else None
-            if not final_prompt:
-                final_prompt = _tool_prompt(content)
-            if not final_prompt and _looks_like_final(reply):
-                final_prompt = reply
+            img_prompt = None
+            final_prompt = None
+            if stage == "video":
+                m = FINAL_RE.search(reply)
+                final_prompt = m.group(1).strip() if m else None
+                if not final_prompt:
+                    final_prompt = _tool_prompt(content)
+                if not final_prompt and _looks_like_final(reply):
+                    final_prompt = reply
+            else:
+                m = IMG_FINAL_RE.search(reply)
+                img_prompt = m.group(1).strip() if m else None
+                if not img_prompt:
+                    m = FINAL_RE.search(reply)
+                    img_prompt = m.group(1).strip() if m else None
+                if not img_prompt:
+                    img_prompt = _tool_prompt(content)
+                if not img_prompt and _looks_like_final(reply):
+                    img_prompt = reply
+            if img_prompt:
+                with SESSION_LOCK:
+                    SESSION["image_prompt"] = img_prompt
+            if final_prompt:
+                with SESSION_LOCK:
+                    SESSION["video_prompt"] = final_prompt
             # keep a non-empty assistant turn in the history so follow-up
             # messages have context (a tool-call reply becomes its prompt text)
-            history_reply = reply or final_prompt or "（企画案）"
+            history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
-            return reply, final_prompt
+            return reply, img_prompt, final_prompt
+
+    # ---- Z-Image key image ------------------------------------------
+
+    def _zimg(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        text = (req.get("text") or "").strip()
+        if not text:
+            self._json(400, {"error": "画像プロンプトが空です"})
+            return
+        try:
+            width = max(256, min(int(req.get("width") or 512), 1024))
+            height = max(256, min(int(req.get("height") or 320), 1024))
+        except Exception:
+            width, height = 512, 320
+        try:
+            with open(ZIMG_WORKFLOW, encoding="utf-8") as f:
+                wf = json.load(f)["prompt"]
+        except Exception as e:
+            self._json(500, {"error": f"Z-Image ワークフロー読み込み失敗: {e}"})
+            return
+        wf[NODE_ZIMG_PROMPT]["inputs"]["text"] = text
+        wf[NODE_ZIMG_LATENT]["inputs"]["width"] = width
+        wf[NODE_ZIMG_LATENT]["inputs"]["height"] = height
+        wf[NODE_ZIMG_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
+        self.server.autostop.poke()
+        self._free_comfy()
+        try:
+            _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
+            self._json(200, {"prompt_id": json.loads(raw)["prompt_id"]})
+        except Exception as e:
+            self._json(502, {"error": self._proxy_error(e)})
+
+    # ---- shutdown / VRAM ---------------------------------------------
+
+    def _free_comfy(self):
+        """Unload every model from VRAM (used between Z-Image and H3)."""
+        try:
+            self._comfy("POST", "/free", {"unload_models": True, "free_memory": True}, timeout=15)
+        except Exception:
+            pass
+
+    def _shutdown(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            req = {}
+        scope = req.get("scope") or "comfy"   # "comfy" | "all" | "cancel"
+        if scope == "cancel":
+            # browser-side countdown was cancelled: keep the stack alive
+            self.server.autostop.poke()
+            self._json(200, {"ok": True, "stopped": []})
+            return
+        self._free_comfy()
+        stopped = ["ComfyUI"]
+        self._kill_port(self._comfy_port())
+        if scope == "all":
+            self._kill_port(PLAN_PORT)
+            stopped.append("企画 LLM")
+            # respond first, then stop the chat server itself
+            threading.Timer(1.5, self.server.shutdown).start()
+        self.server.autostop.poke()
+        self._json(200, {"ok": True, "stopped": stopped})
+
+    def _comfy_port(self):
+        return ChatHandler._comfy_port_of(self.server)
+
+    @staticmethod
+    def _kill_port(port):
+        """Kill the process LISTENING on the given local port."""
+        try:
+            # netstat on a Japanese Windows emits CP932 bytes; decoding as
+            # UTF-8 crashes the reader thread and silently kills the whole
+            # cleanup, so read raw bytes and decode with errors="replace"
+            # (we only need ASCII tokens: port, LISTENING, PID).
+            res = subprocess.run(["netstat", "-ano"], capture_output=True, timeout=15)
+            out = (res.stdout or b"").decode("utf-8", errors="replace")
+            pids = set()
+            for line in out.splitlines():
+                if f":{port}" in line and "LISTENING" in line.upper():
+                    parts = line.split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(parts[-1])
+            for pid in pids:
+                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _comfy_port_of(server):
+        try:
+            return int(urllib.parse.urlparse(server.comfy_base).port or 8188)
+        except Exception:
+            return 8188
 
     # ---- status / view -----------------------------------------------
 
@@ -570,20 +1027,39 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "running", "extra": "", "pending": n_pending})
             return
         videos = []
+        comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
         for nid, out in entry.get("outputs", {}).items():
             for key, val in out.items():
                 if isinstance(val, list):
                     for item in val:
                         if isinstance(item, dict) and "filename" in item:
                             fn = item["filename"]
+                            abspath = os.path.join(comfy_root, "output", item.get("subfolder", ""), fn)
+                            # remember the on-disk path so /api/view still works
+                            # after ComfyUI is stopped (auto-shutdown)
+                            self.server.local_files[fn] = abspath
                             videos.append({
                                 "filename": fn,
                                 "type": item.get("type", "output"),
                                 "subfolder": item.get("subfolder", ""),
-                                "path": os.path.join(
-                                    os.path.join(os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI"), "output"),
-                                    item.get("subfolder", ""), fn),
+                                "kind": "image" if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) else "video",
+                                "path": abspath,
                             })
+        # 動画が完成してキューが空なら、自動停止のタイマーをスタート
+        # （画像だけの完了では起動しない: ユーザーが画像を確認中の場合がある）
+        has_video = any(v.get("kind") == "video" for v in videos)
+        if has_video:
+            try:
+                _, qraw, _ = self._comfy("GET", "/queue", timeout=10)
+                qq = json.loads(qraw)
+                queue_empty = not qq.get("queue_running") and not qq.get("queue_pending")
+            except Exception:
+                queue_empty = False
+            if queue_empty:
+                try:
+                    self.server.autostop.mark_done()
+                except Exception:
+                    pass
         self._json(200, {"status": "success", "videos": videos})
 
     def _view(self, query):
@@ -592,6 +1068,17 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not fn:
             self._json(400, {"error": "missing filename"})
             return
+        low = fn.lower()
+        if low.endswith(".mp4"):
+            ctype = "video/mp4"
+        elif low.endswith(".png"):
+            ctype = "image/png"
+        elif low.endswith((".jpg", ".jpeg")):
+            ctype = "image/jpeg"
+        elif low.endswith(".webp"):
+            ctype = "image/webp"
+        else:
+            ctype = "application/octet-stream"
         url = self.server.comfy_base + "/view?" + urllib.parse.urlencode({
             "filename": fn,
             "subfolder": params.get("subfolder", [""])[0],
@@ -600,14 +1087,24 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             with urllib.request.urlopen(url, timeout=60) as r:
                 data = r.read()
-            self.send_response(200)
-            ctype = "video/mp4" if fn.lower().endswith(".mp4") else "application/octet-stream"
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-        except Exception as e:
-            self._json(502, {"error": self._proxy_error(e)})
+        except Exception:
+            # ComfyUI may be stopped (auto-shutdown); serve the saved file
+            # directly from disk so the result stays viewable.
+            abspath = self.server.local_files.get(fn)
+            if not abspath or not os.path.isfile(abspath):
+                self._json(502, {"error": "file not available"})
+                return
+            try:
+                with open(abspath, "rb") as f:
+                    data = f.read()
+            except Exception as e:
+                self._json(502, {"error": f"read failed: {e}"})
+                return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[h3-chat] %s - %s\n" % (self.address_string(), fmt % args))
@@ -623,9 +1120,12 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", args.port), ChatHandler)
     server.comfy_base = args.comfy.rstrip("/")
     server.plan_url = args.plan_url.rstrip("/") if args.plan_url else None
+    server.local_files = {}
+    server.autostop = _AutoStop(server)
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")
     print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
+    print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
     print(f"h3-chat: plan LLM = {server.plan_url or 'off'}")
     print("h3-chat: Ctrl+C で停止")
     try:
