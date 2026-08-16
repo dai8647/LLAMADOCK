@@ -2,6 +2,7 @@
 import { JSDOM, VirtualConsole } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
+import { fetchSafeUrl } from "./safe-fetch.mjs";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -482,8 +483,8 @@ async function searchSerper(q, limit) {
 
 async function fetchReadable(result, maxChars) {
   try {
-    const response = await fetch(result.url, {
-      signal: AbortSignal.timeout(25000),
+    const response = await fetchSafeUrl(result.url, {
+      timeoutMs: 25000,
       headers: {
         "User-Agent": USER_AGENT,
         Accept: "text/html,application/xhtml+xml,text/plain",

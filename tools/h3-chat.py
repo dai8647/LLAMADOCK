@@ -324,7 +324,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                                 "type": item.get("type", "output"),
                                 "subfolder": item.get("subfolder", ""),
                                 "path": os.path.join(
-                                    r"C:\Users\dai86\Documents\ComfyUI\output",
+                                    os.path.join(os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI"), "output"),
                                     item.get("subfolder", ""), fn),
                             })
         self._json(200, {"status": "success", "videos": videos})

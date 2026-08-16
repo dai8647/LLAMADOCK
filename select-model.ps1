@@ -31,7 +31,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "DeepSeekDS4", "PrismBonsai", "ExpertsLaguna", "LongCat")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -53,7 +53,9 @@ elseif (Test-Path "C:\llama-tq3\build-rocm71\bin\llama-server.exe") {
 }
 else {
     "C:\llama-tq3\build\bin\llama-server.exe"
-}$TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
+}
+
+$TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
     $env:LLAMA_TQ3_TURBOTAN_SERVER
 }
 elseif (Test-Path "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe") {
@@ -93,8 +95,6 @@ elseif (Test-Path "C:\llama.cpp-cpu\llama-server.exe") {
 else {
     "C:\Users\dai86\Downloads\llama.cpp-cpu\llama-server.exe"
 }
-$Ds4Root = if ($env:LLAMADOCK_DS4_ROOT) { $env:LLAMADOCK_DS4_ROOT } else { "C:\Users\dai86\Downloads\ds4-for-reaped" }
-$Ds4ServerPath = if ($env:LLAMADOCK_DS4_SERVER) { $env:LLAMADOCK_DS4_SERVER } else { Join-Path $Ds4Root "ds4-server" }
 # PrismML-Eng llama.cpp fork for Ternary/Bonsai Q2_0 (group 128) GGUF models.
 # HIP build first (RX 7800 XT gfx1101), Vulkan/CPU fallback comme pour OfficialVulkan/OfficialCPU.
 $PrismBonsaiServerPath = if ($env:LLAMA_TQ3_PRISM_BONSAI_SERVER) {
@@ -132,7 +132,18 @@ elseif (Test-Path "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\l
 else {
     "C:\Users\dai86\Downloads\longcat-llama.cpp\build\bin\llama-server.exe"
 }
-$ModelsBase = "C:\Users\dai86\.lmstudio\models"
+$ModelsBase = if ($env:LLAMADOCK_MODELS_BASE) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_MODELS_BASE)
+}
+else {
+    "C:\Users\dai86\.lmstudio\models"
+}
+$ComfyRoot = if ($env:LLAMADOCK_COMFY_ROOT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_COMFY_ROOT)
+}
+else {
+    "C:\Users\dai86\Documents\ComfyUI"
+}
 $ServerBaseUrl = "http://127.0.0.1:8080"
 $GatewayPort = 8090
 $GatewayBaseUrl = "http://127.0.0.1:$GatewayPort"
@@ -143,7 +154,12 @@ $OpenWebUIPort = 3000
 $OpenWebUIUrl = "http://127.0.0.1:$OpenWebUIPort"
 $ComputerPort = 8000
 $ComputerUrl = "http://127.0.0.1:$ComputerPort"
-$OdysseusRoot = "C:\Users\dai86\Downloads\odysseus"
+$OdysseusRoot = if ($env:LLAMADOCK_ODYSSEUS_ROOT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_ODYSSEUS_ROOT)
+}
+else {
+    "C:\Users\dai86\Downloads\odysseus"
+}
 $OdysseusPort = 7000
 $OdysseusBaseUrl = "http://127.0.0.1:$OdysseusPort"
 $LegacyDeepResearchPort = 5000
@@ -155,7 +171,12 @@ $script:ClineDataDir = if ($env:LLAMADOCK_CLINE_DATA_DIR) {
 else {
     Join-Path $PSScriptRoot "mcp-data\cline"
 }
-$LlamaAgentPath = "C:\Users\dai86\llama-agent\build\bin\llama-agent.exe"
+$LlamaAgentPath = if ($env:LLAMADOCK_LLAMA_AGENT_SERVER) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_LLAMA_AGENT_SERVER)
+}
+else {
+    "C:\Users\dai86\llama-agent\build\bin\llama-agent.exe"
+}
 $LlamaAgentBinPath = Split-Path -Parent $LlamaAgentPath
 $LlamaAgentResearchSystemPath = Join-Path $PSScriptRoot "llama-agent-research-system.txt"
 $script:ResearchExtractionConcurrency = 2
@@ -277,10 +298,6 @@ function Test-GatewayReady {
 function Set-ClientBaseUrl {
     param([string]$ExpectedModelId = "")
 
-    if ($isDs4Engine) {
-        $script:ClientBaseUrl = $ServerBaseUrl
-        return $script:ClientBaseUrl
-    }
     if (Test-GatewayReady -ExpectedModelId $ExpectedModelId) {
         $script:ClientBaseUrl = $GatewayBaseUrl
         return $script:ClientBaseUrl
@@ -288,23 +305,6 @@ function Set-ClientBaseUrl {
 
     $script:ClientBaseUrl = $ServerBaseUrl
     return $script:ClientBaseUrl
-}
-
-function ConvertTo-WslPath {
-    param([string]$WindowsPath)
-
-    if ($WindowsPath -match "^([A-Za-z]):\\(.*)$") {
-        $drive = $matches[1].ToLowerInvariant()
-        $rest = $matches[2] -replace "\\", "/"
-        return "/mnt/$drive/$rest"
-    }
-
-    return $WindowsPath
-}
-
-function Quote-WslArg {
-    param([string]$Value)
-    return "'" + ($Value -replace "'", "'\''") + "'"
 }
 
 function Get-SystemRamGB {
@@ -573,13 +573,9 @@ function Test-ContextFitsRam {
 function Get-MaxContextTokensForRam {
     param(
         [double]$ModelSizeGB,
-        [double]$RamGB,
-        [bool]$IsDs4
+        [double]$RamGB
     )
 
-    if ($IsDs4) {
-        return 32768
-    }
     if ($RamGB -le 0) {
         return 131072
     }
@@ -589,7 +585,6 @@ function Get-MaxContextTokensForRam {
     $kvPer32kGB = [math]::Max(4, $ModelSizeGB * 0.22)
     $maxTokens = [math]::Floor(($availableForKv / $kvPer32kGB) * 32768)
 
-    if ($maxTokens -lt 8192) { return 8192 }
     if ($maxTokens -lt 16384) { return 8192 }
     if ($maxTokens -lt 32768) { return 16384 }
     if ($maxTokens -lt 65536) { return 32768 }
@@ -700,6 +695,28 @@ function Set-DeepResearchModeDefaults {
     }
 }
 
+function Test-IsLlamaDockServerProcess {
+    # Only kill processes that LlamaDock actually manages. A port can be owned
+    # by an unrelated app (e.g. another llama-server the user started by hand,
+    # or an entirely different service); blindly Stop-Process -Force on those
+    # would be destructive. Command-line inspection mirrors Stop-OdysseusOnPort.
+    param([int]$ProcessId)
+
+    $procInfo = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $procInfo) { return $false }
+    if ($procInfo.ProcessName -notmatch "^(llama-server|node|python|pythonw|powershell|pwsh)$") {
+        return $false
+    }
+    try {
+        $cimProc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+        if (-not $cimProc) { return $false }
+        return ([string]$cimProc.CommandLine -match "llama-server|llamadock|server-supervisor|gateway|mcp-server")
+    }
+    catch {
+        return $false
+    }
+}
+
 function Stop-ServerOnPort {
     param([int]$Port = 8080)
 
@@ -715,6 +732,10 @@ function Stop-ServerOnPort {
         try {
             $procInfo = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
             if ($procInfo) {
+                if (-not (Test-IsLlamaDockServerProcess -ProcessId $serverPid)) {
+                    Write-Host " Port $Port is used by PID $serverPid ($($procInfo.ProcessName)); not a LlamaDock server, leaving it running." -ForegroundColor Yellow
+                    return $false
+                }
                 Write-Host " Stop PID $serverPid ($($procInfo.ProcessName))" -ForegroundColor Yellow
                 Stop-Process -Id $serverPid -Force -ErrorAction Stop
             }
@@ -835,6 +856,10 @@ function Clear-LlamaDockGhostPorts {
     foreach ($procId in $candidatePids) {
         $procInfo = Get-Process -Id $procId -ErrorAction SilentlyContinue
         if (-not $procInfo) { continue }
+        if (-not (Test-IsLlamaDockServerProcess -ProcessId $procId)) {
+            Write-Host " Skip PID $procId ($($procInfo.ProcessName)): not a LlamaDock server process." -ForegroundColor Yellow
+            continue
+        }
         try {
             Write-Host " Stop PID $procId ($($procInfo.ProcessName))" -ForegroundColor Yellow
             Stop-Process -Id $procId -Force -ErrorAction Stop
@@ -1389,7 +1414,7 @@ function Get-ComfyUITritonVersion {
     # --enable-triton-backend forces them on (missing libdevice.rint /
     # register allocation errors). Gates the `triton` profile accordingly.
     try {
-        $comfyPython = "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python.exe"
+        $comfyPython = Join-Path $ComfyRoot ".venv\Scripts\python.exe"
         $v = & $comfyPython -c "import triton; print(triton.__version__)" 2>$null
         if ($v -match '^(\d+)\.(\d+)') {
             return [version]("$($Matches[1]).$($Matches[2])")
@@ -1545,7 +1570,7 @@ function Start-H3Chat {
     }
     catch { }
     if (-not $chatUp -and (Test-Path -LiteralPath $chatPy)) {
-        $comfyRoot = "C:\Users\dai86\Documents\ComfyUI"
+        $comfyRoot = $ComfyRoot
         $comfyPython = Join-Path $comfyRoot ".venv\Scripts\python.exe"
         if (Test-Path -LiteralPath $comfyPython) {
             Write-Host "Starting h3-chat UI on $chatUrl ..." -ForegroundColor Cyan
@@ -1668,7 +1693,12 @@ function Select-WorkspaceForSession {
     Write-Host " [3] Change model - stop this server and return to selector"
     Write-Host " [4] Stop server and exit"
     Write-Host " [5] Leave server running and exit"
-    $choice = Read-Host "Select session action (1-5)"
+    do {
+        $choice = Read-Host "Select session action (1-5)"
+        if ($choice -notin @("1", "2", "3", "4", "5")) {
+            Write-Host "Invalid choice '$choice'. Enter a number from 1 to 5." -ForegroundColor Yellow
+        }
+    } while ($choice -notin @("1", "2", "3", "4", "5"))
     if ($choice -eq "1") { return @("relaunch", "") }
     if ($choice -eq "2") {
         Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Deep Research  [6] Llama Agent  [7] ComfyUI"
@@ -2082,8 +2112,7 @@ $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "PrismBonsai"; Path = $PrismBonsaiServerPath },
     [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
     [PSCustomObject]@{ Name = "OfficialHIP"; Path = $OfficialHIPServerPath },
-    [PSCustomObject]@{ Name = "OfficialCPU"; Path = $OfficialCPUServerPath },
-    [PSCustomObject]@{ Name = "DeepSeekDS4"; Path = $Ds4ServerPath }
+    [PSCustomObject]@{ Name = "OfficialCPU"; Path = $OfficialCPUServerPath }
 )
 
 # ComfyUI is a model-independent workspace. Keep it at the front door so a
@@ -2218,18 +2247,8 @@ elseif ($requiredEngine -eq "OfficialHIP") {
 elseif ($requiredEngine -eq "OfficialCPU") {
     $ServerPath = $OfficialCPUServerPath
 }
-elseif ($requiredEngine -eq "DeepSeekDS4") {
-    $ServerPath = $Ds4ServerPath
-}
 else {
     $ServerPath = $AtomicBotServerPath
-}
-
-$isDs4Engine = $requiredEngine -eq "DeepSeekDS4"
-if ($isDs4Engine) {
-    Write-Host "ERROR: DeepSeekDS4's WSL launch path is disabled by the no-Docker/no-WSL policy." -ForegroundColor Red
-    Write-Host "Use a native HIP/Vulkan/CPU runtime instead." -ForegroundColor Yellow
-    exit 1
 }
 
 $modelNote = Get-ModelNote -Model $selected
@@ -2352,15 +2371,6 @@ elseif ($PresetMode -eq "WebUIChat") {
     if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
 }
-if ($isDs4Engine) {
-    if (-not $PSBoundParameters.ContainsKey("ContextIndex")) { $ContextIndex = 1 }
-    if (-not $PSBoundParameters.ContainsKey("OffloadMode")) { $OffloadMode = "CPU" }
-    if (-not $PSBoundParameters.ContainsKey("MoeExpertsMode")) { $MoeExpertsMode = "Auto" }
-    if (-not $PSBoundParameters.ContainsKey("FlashAttentionMode")) { $FlashAttentionMode = "Off" }
-    if (-not $PSBoundParameters.ContainsKey("SpecMode")) { $SpecMode = "Off" }
-    if (-not $PSBoundParameters.ContainsKey("McpMode")) { $McpMode = "None" }
-}
-
 Set-DeepResearchModeDefaults -Mode $ResearchMode
 
 if (-not $isQuickLaunch) {
@@ -2423,44 +2433,33 @@ if (-not (Test-Path $ServerPath)) {
 # Prompt context size selection
 $systemRamGB = $hardware.RamGB
 $primaryVramGB = if ($hardware.PrimaryGpu) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
-$maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB -IsDs4 $isDs4Engine
-if ($isDs4Engine) {
-    $contextOptions = @(
-        [PSCustomObject]@{ Label = "4K"; Tokens = 4096; Note = "DS4 smoke/default for 64-96GB RAM" },
-        [PSCustomObject]@{ Label = "8K"; Tokens = 8192; Note = "DS4 practical test" },
-        [PSCustomObject]@{ Label = "16K"; Tokens = 16384; Note = "higher RAM use" },
-        [PSCustomObject]@{ Label = "32K"; Tokens = 32768; Note = "heavy; use after 4K/8K works" },
-        [PSCustomObject]@{ Label = "Custom"; Tokens = 0; Note = "enter token count manually" }
-    )
+$maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
+$recommendedDefaultTokens = if ($isDeepSeek) {
+    # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
+    16384
+}
+elseif ($selectedModelSizeGB -ge 40) {
+    16384
+}
+elseif ($selectedModelSizeGB -ge 24) {
+    32768
+}
+elseif ($selectedModelSizeGB -ge 12) {
+    65536
 }
 else {
-    $recommendedDefaultTokens = if ($isDeepSeek) {
-        # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
-        16384
-    }
-    elseif ($selectedModelSizeGB -ge 40) {
-        16384
-    }
-    elseif ($selectedModelSizeGB -ge 24) {
-        32768
-    }
-    elseif ($selectedModelSizeGB -ge 12) {
-        65536
-    }
-    else {
-        131072
-    }
-
-    $contextOptions = @(
-        [PSCustomObject]@{ Label = "8K"; Tokens = 8192; Note = "lowest memory, startup test" },
-        [PSCustomObject]@{ Label = "16K"; Tokens = 16384; Note = "safe default for large models" },
-        [PSCustomObject]@{ Label = "32K"; Tokens = 32768; Note = "coding default" },
-        [PSCustomObject]@{ Label = "64K"; Tokens = 65536; Note = "long context, check RAM" },
-        [PSCustomObject]@{ Label = "128K"; Tokens = 131072; Note = "very long context, high RAM/KV" },
-        [PSCustomObject]@{ Label = "256K"; Tokens = 262144; Note = "extreme, expect high RAM/KV" },
-        [PSCustomObject]@{ Label = "Custom"; Tokens = 0; Note = "enter token count manually" }
-    )
+    131072
 }
+
+$contextOptions = @(
+    [PSCustomObject]@{ Label = "8K"; Tokens = 8192; Note = "lowest memory, startup test" },
+    [PSCustomObject]@{ Label = "16K"; Tokens = 16384; Note = "safe default for large models" },
+    [PSCustomObject]@{ Label = "32K"; Tokens = 32768; Note = "coding default" },
+    [PSCustomObject]@{ Label = "64K"; Tokens = 65536; Note = "long context, check RAM" },
+    [PSCustomObject]@{ Label = "128K"; Tokens = 131072; Note = "very long context, high RAM/KV" },
+    [PSCustomObject]@{ Label = "256K"; Tokens = 262144; Note = "extreme, expect high RAM/KV" },
+    [PSCustomObject]@{ Label = "Custom"; Tokens = 0; Note = "enter token count manually" }
+)
 
 if (-not $isQuickLaunch) {
     Write-Host "Context size:" -ForegroundColor Green
@@ -2472,7 +2471,7 @@ if (-not $isQuickLaunch) {
         $ctx = $contextOptions[$i]
         if ($ctx.Tokens -gt 0) {
             $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
-            $defaultMark = if (-not $isDs4Engine -and $ctx.Tokens -eq $recommendedDefaultTokens) { " [recommended]" } elseif ($isDs4Engine -and $ctx.Tokens -eq 4096) { " [recommended]" } else { "" }
+            $defaultMark = if ($ctx.Tokens -eq $recommendedDefaultTokens) { " [recommended]" } else { "" }
             Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
         }
         else {
@@ -2491,15 +2490,10 @@ if ($ContextIndex -gt 0) {
 }
 else {
     do {
-        $defaultContextLabel = if ($isDs4Engine) { "4K" } else { "$([int]($recommendedDefaultTokens / 1024))K" }
+        $defaultContextLabel = "$([int]($recommendedDefaultTokens / 1024))K"
         $ctxInput = Read-Host "Select context size (1-$($contextOptions.Count)), or press Enter for $defaultContextLabel"
         if ([string]::IsNullOrWhiteSpace($ctxInput)) {
-            if ($isDs4Engine) {
-                $ctxSelection = 1
-            }
-            else {
-                $ctxSelection = [array]::IndexOf(@($contextOptions | Select-Object -ExpandProperty Tokens), $recommendedDefaultTokens) + 1
-            }
+            $ctxSelection = [array]::IndexOf(@($contextOptions | Select-Object -ExpandProperty Tokens), $recommendedDefaultTokens) + 1
             $ctxValid = $true
         }
         else {
@@ -2544,131 +2538,123 @@ if ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFi
 if (-not $isQuickLaunch) { Write-Host "" }
 
 # Prompt KV cache quantization selection
-if ($isDs4Engine) {
-    $selectedKCache = [PSCustomObject]@{ Label = "DS4"; Type = "ds4-native" }
-    $selectedVCache = [PSCustomObject]@{ Label = "DS4"; Type = "ds4-native" }
-    Write-Host "KV cache: DS4 native runtime setting" -ForegroundColor Green
+$kvOptions = @(
+    [PSCustomObject]@{ Label = "Q8"; Type = "q8_0"; Note = "larger, stable default for K" },
+    [PSCustomObject]@{ Label = "Q5_1"; Type = "q5_1"; Note = "supported middle option for K, safer than Q4" },
+    [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "supported compact middle option" },
+    [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "compact, more quality risk for K" },
+    [PSCustomObject]@{ Label = "turbo4"; Type = "turbo4"; Note = "TurboQuant 4.5bit" },
+    [PSCustomObject]@{ Label = "turbo3"; Type = "turbo3"; Note = "TurboQuant 3.5bit, compact default for V" },
+    [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "uncompressed compatibility fallback" },
+    [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "uncompressed compatibility fallback, lower memory than f32" }
+)
+
+if ($requiredEngine -eq "TurboTan") {
+    $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
+}
+elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
+    $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
+    if (-not $isQuickLaunch) {
+        Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
+    }
+}
+
+if (-not $isQuickLaunch) {
+    Write-Host "KV cache K type:" -ForegroundColor Green
+    for ($i = 0; $i -lt $kvOptions.Count; $i++) {
+        $kv = $kvOptions[$i]
+        Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
+    }
     Write-Host ""
 }
+
+if ($KCacheIndex -eq 0 -and $KvIndex -gt 0) {
+    $KCacheIndex = $KvIndex
+}
+
+if ($KCacheIndex -gt 0) {
+    $kSelection = $KCacheIndex
+    if ($kSelection -lt 1 -or $kSelection -gt $kvOptions.Count) {
+        Write-Host "ERROR: KCacheIndex out of range" -ForegroundColor Red
+        exit 1
+    }
+}
 else {
-    $kvOptions = @(
-        [PSCustomObject]@{ Label = "Q8"; Type = "q8_0"; Note = "larger, stable default for K" },
-        [PSCustomObject]@{ Label = "Q5_1"; Type = "q5_1"; Note = "supported middle option for K, safer than Q4" },
-        [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "supported compact middle option" },
-        [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "compact, more quality risk for K" },
-        [PSCustomObject]@{ Label = "turbo4"; Type = "turbo4"; Note = "TurboQuant 4.5bit" },
-        [PSCustomObject]@{ Label = "turbo3"; Type = "turbo3"; Note = "TurboQuant 3.5bit, compact default for V" },
-        [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "uncompressed compatibility fallback" },
-        [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "uncompressed compatibility fallback, lower memory than f32" }
-    )
-
-    if ($requiredEngine -eq "TurboTan") {
-        $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
-    }
-    elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
-        $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
-        if (-not $isQuickLaunch) {
-            Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
+    $defaultKType = if ($isDeepSeek) { "turbo4" } else { "q8_0" }
+    do {
+        $defaultKLabel = $defaultKType
+        $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for $defaultKLabel"
+        if ([string]::IsNullOrWhiteSpace($kInput)) {
+            $kSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultKType) + 1
+            if ($kSelection -le 0) { $kSelection = 1 }
+            $kValid = $true
         }
-    }
+        else {
+            $kSelection = 0
+            $kValid = [int]::TryParse($kInput, [ref]$kSelection)
+        }
+    } while (-not $kValid -or $kSelection -lt 1 -or $kSelection -gt $kvOptions.Count)
+}
 
+$selectedKCache = $kvOptions[$kSelection - 1]
+if (-not $isQuickLaunch) {
+    Write-Host ""
+    Write-Host "KV cache K: $($selectedKCache.Label) ($($selectedKCache.Type))" -ForegroundColor Green
+    Write-Host ""
+}
+
+if (-not $isQuickLaunch) {
+    Write-Host "KV cache V type:" -ForegroundColor Green
+    for ($i = 0; $i -lt $kvOptions.Count; $i++) {
+        $kv = $kvOptions[$i]
+        Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
+    }
+    Write-Host ""
+}
+
+if ($isDeepSeek) {
+    # DeepSeek V4 Flash (this fork) requires symmetric K/V cache types:
+    # "model does not support different K and V cache types". V follows K.
+    $selectedVCache = $selectedKCache
     if (-not $isQuickLaunch) {
-        Write-Host "KV cache K type:" -ForegroundColor Green
-        for ($i = 0; $i -lt $kvOptions.Count; $i++) {
-            $kv = $kvOptions[$i]
-            Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
-        }
+        Write-Host ""
+        Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type)) (symmetric - DeepSeek requires K==V)" -ForegroundColor Green
         Write-Host ""
     }
-
-    if ($KCacheIndex -eq 0 -and $KvIndex -gt 0) {
-        $KCacheIndex = $KvIndex
+}
+else {
+    if ($VCacheIndex -eq 0 -and $KvIndex -gt 0) {
+        $VCacheIndex = $KvIndex
     }
 
-    if ($KCacheIndex -gt 0) {
-        $kSelection = $KCacheIndex
-        if ($kSelection -lt 1 -or $kSelection -gt $kvOptions.Count) {
-            Write-Host "ERROR: KCacheIndex out of range" -ForegroundColor Red
+    if ($VCacheIndex -gt 0) {
+        $vSelection = $VCacheIndex
+        if ($vSelection -lt 1 -or $vSelection -gt $kvOptions.Count) {
+            Write-Host "ERROR: VCacheIndex out of range" -ForegroundColor Red
             exit 1
         }
     }
     else {
-        $defaultKType = if ($isDeepSeek) { "turbo4" } else { "q8_0" }
+        $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna" -or $requiredEngine -eq "LongCat") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
         do {
-            $defaultKLabel = $defaultKType
-            $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for $defaultKLabel"
-            if ([string]::IsNullOrWhiteSpace($kInput)) {
-                $kSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultKType) + 1
-                if ($kSelection -le 0) { $kSelection = 1 }
-                $kValid = $true
+            $defaultVLabel = $defaultVType
+            $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
+            if ([string]::IsNullOrWhiteSpace($vInput)) {
+                $vSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
+                $vValid = $true
             }
             else {
-                $kSelection = 0
-                $kValid = [int]::TryParse($kInput, [ref]$kSelection)
+                $vSelection = 0
+                $vValid = [int]::TryParse($vInput, [ref]$vSelection)
             }
-        } while (-not $kValid -or $kSelection -lt 1 -or $kSelection -gt $kvOptions.Count)
+        } while (-not $vValid -or $vSelection -lt 1 -or $vSelection -gt $kvOptions.Count)
     }
 
-    $selectedKCache = $kvOptions[$kSelection - 1]
+    $selectedVCache = $kvOptions[$vSelection - 1]
     if (-not $isQuickLaunch) {
         Write-Host ""
-        Write-Host "KV cache K: $($selectedKCache.Label) ($($selectedKCache.Type))" -ForegroundColor Green
+        Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
         Write-Host ""
-    }
-
-    if (-not $isQuickLaunch) {
-        Write-Host "KV cache V type:" -ForegroundColor Green
-        for ($i = 0; $i -lt $kvOptions.Count; $i++) {
-            $kv = $kvOptions[$i]
-            Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
-        }
-        Write-Host ""
-    }
-
-    if ($isDeepSeek) {
-        # DeepSeek V4 Flash (this fork) requires symmetric K/V cache types:
-        # "model does not support different K and V cache types". V follows K.
-        $selectedVCache = $selectedKCache
-        if (-not $isQuickLaunch) {
-            Write-Host ""
-            Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type)) (symmetric - DeepSeek requires K==V)" -ForegroundColor Green
-            Write-Host ""
-        }
-    }
-    else {
-        if ($VCacheIndex -eq 0 -and $KvIndex -gt 0) {
-            $VCacheIndex = $KvIndex
-        }
-
-        if ($VCacheIndex -gt 0) {
-            $vSelection = $VCacheIndex
-            if ($vSelection -lt 1 -or $vSelection -gt $kvOptions.Count) {
-                Write-Host "ERROR: VCacheIndex out of range" -ForegroundColor Red
-                exit 1
-            }
-        }
-        else {
-            $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna" -or $requiredEngine -eq "LongCat") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
-            do {
-                $defaultVLabel = $defaultVType
-                $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
-                if ([string]::IsNullOrWhiteSpace($vInput)) {
-                    $vSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
-                    $vValid = $true
-                }
-                else {
-                    $vSelection = 0
-                    $vValid = [int]::TryParse($vInput, [ref]$vSelection)
-                }
-            } while (-not $vValid -or $vSelection -lt 1 -or $vSelection -gt $kvOptions.Count)
-        }
-
-        $selectedVCache = $kvOptions[$vSelection - 1]
-        if (-not $isQuickLaunch) {
-            Write-Host ""
-            Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
-            Write-Host ""
-        }
     }
 }
 
@@ -3002,11 +2988,27 @@ $effectiveVCacheType = $selectedVCache.Type
 
 # Keep prompt-cache RAM explicit. Long-context and larger-model runs receive
 # smaller host-side cache budgets unless the caller overrides this parameter.
+# The prompt cache lives in host RAM, so scale the default with detected RAM:
+# on a 96GB machine the old fixed 2048-8192 MiB budgets left prompt reuse on
+# the table. Override any time with -CacheRamMiB / LLAMADOCK_CACHE_RAM_MIB.
 $effectiveCacheRamMiB = $CacheRamMiB
+if ($effectiveCacheRamMiB -lt 0 -and $env:LLAMADOCK_CACHE_RAM_MIB) {
+    $effectiveCacheRamMiB = [int]$env:LLAMADOCK_CACHE_RAM_MIB
+}
 if ($effectiveCacheRamMiB -lt 0) {
-    $effectiveCacheRamMiB = 8192
-    if ($selectedContext.Tokens -ge 65536) { $effectiveCacheRamMiB = 4096 }
-    if ($selectedModelSizeGB -ge 20) { $effectiveCacheRamMiB = 2048 }
+    if ($systemRamGB -ge 96) {
+        $effectiveCacheRamMiB = 16384
+        if ($selectedContext.Tokens -ge 65536) { $effectiveCacheRamMiB = 8192 }
+    }
+    elseif ($systemRamGB -ge 48) {
+        $effectiveCacheRamMiB = 12288
+        if ($selectedContext.Tokens -ge 65536) { $effectiveCacheRamMiB = 8192 }
+    }
+    else {
+        $effectiveCacheRamMiB = 8192
+        if ($selectedContext.Tokens -ge 65536) { $effectiveCacheRamMiB = 4096 }
+        if ($selectedModelSizeGB -ge 20) { $effectiveCacheRamMiB = 2048 }
+    }
 }
 if (-not $isQuickLaunch) {
     Write-Host "Prompt cache RAM: $effectiveCacheRamMiB MiB" -ForegroundColor Green
@@ -3057,7 +3059,7 @@ if (-not $isQuickLaunch) {
     Write-Host ""
 }
 
-if (-not $isDs4Engine -and $requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", "f32")) {
+if ($requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", "f32")) {
     Write-Host "ERROR: V cache quantization requires Flash Attention." -ForegroundColor Red
     Write-Host "Select Flash Attention On, or use V cache f16/bf16/f32." -ForegroundColor Red
     exit 1
@@ -3157,99 +3159,88 @@ else {
 
 # Get model short name for -a flag
 $modelShort = $selected.Name -replace "\.gguf$", "" -replace "-", "_"
-if ($isDs4Engine) {
-    $modelShort = "deepseek-v4-flash"
-}
 
 # Start server
 $startFilePath = $ServerPath
 $args = @()
 $disableTurboAutoAsymmetric = $false
-
-if ($isDs4Engine) {
-    $ds4RootWsl = ConvertTo-WslPath $Ds4Root
-    $modelPathWsl = ConvertTo-WslPath $selected.FullName
-    $kvDirWsl = ConvertTo-WslPath (Join-Path $PSScriptRoot "mcp-data\ds4-kv")
-    $ds4Command = @(
-        "cd $(Quote-WslArg $ds4RootWsl)",
-        "mkdir -p $(Quote-WslArg $kvDirWsl)",
-        "./ds4-server --cpu -m $(Quote-WslArg $modelPathWsl) --host 127.0.0.1 --port 8080 --ctx $($selectedContext.Tokens) -n 4096 --kv-disk-dir $(Quote-WslArg $kvDirWsl) --kv-disk-space-mb 4096"
-    ) -join " && "
-    $startFilePath = "wsl.exe"
-    $args = @("-d", "Ubuntu", "bash", "-lc", $ds4Command)
+$dsparkDraftModel = if ($env:LLAMADOCK_DSPARK_DRAFT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DSPARK_DRAFT)
 }
 else {
-    $args = @(
-        "-m", $selected.FullName,
-        "-a", $modelShort,
-        "--host", "127.0.0.1",
-        "--port", "8080",
-        "-ngl", "$serverOffload",
-        "-c", "$($selectedContext.Tokens)",
-        "-np", "1",
-        "-ctk", "$effectiveKCacheType",
-        "-ctv", "$effectiveVCacheType",
-        "-fa", "$flashAttention",
-        "--jinja"
-    )
-
-    # The LongCat fork's server does not accept --no-ui.
-    if ($requiredEngine -ne "LongCat") {
-        $args += "--no-ui"
-    }
-
-    if ($effectiveReasoningMode) {
-        $args += @("--reasoning", $effectiveReasoningMode)
-    }
-
-    $args += @("--cache-ram", "$effectiveCacheRamMiB")
-
-    if ($ClientMode -eq "WebUI") {
-        $args += @("--tools", "all")
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($selectedMoeExperts)) {
-        $args += @("--override-kv", "llama.expert_used_count=int:$selectedMoeExperts")
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($selectedCpuMoe) -and $selectedCpuMoe -ne "0") {
-        $args += @("--n-cpu-moe", "$selectedCpuMoe")
-    }
-
-    if ($isDeepSeek) {
-        $args += "--no-mmap"
-    }
-
-    if ($SpecMode -eq "MtpNextN") {
-        $args += @(
-            "-md", $selected.FullName,
-            "--spec-type", "draft-mtp",
-            "--spec-draft-n-max", "2",
-            "--spec-draft-n-min", "1",
-            "-ngld", "$serverOffload",
-            "-ctkd", "$effectiveKCacheType",
-            "-ctvd", "$effectiveVCacheType"
-        )
-    }
-
-    if ($SpecMode -eq "DSpark") {
-        $args += @(
-            "--spec-type", "draft-dspark",
-            "--spec-draft-model", "C:\Users\dai86\.lmstudio\models\ggml-org\DeepSeek-V4-Flash-0731-GGUF\dspark-DeepSeek-V4-Flash-0731-MXFP4.gguf",
-            "--spec-draft-n-max", "5",
-            "-ngld", "99"
-        )
-    }
-
-    $disableTurboAutoAsymmetric = $effectiveKCacheType -like "turbo*"
+    Join-Path $ModelsBase "ggml-org\DeepSeek-V4-Flash-0731-GGUF\dspark-DeepSeek-V4-Flash-0731-MXFP4.gguf"
 }
 
-if ($selectedMcp -eq "Light" -and -not $isDs4Engine) {
+$args = @(
+    "-m", $selected.FullName,
+    "-a", $modelShort,
+    "--host", "127.0.0.1",
+    "--port", "8080",
+    "-ngl", "$serverOffload",
+    "-c", "$($selectedContext.Tokens)",
+    "-np", "1",
+    "-ctk", "$effectiveKCacheType",
+    "-ctv", "$effectiveVCacheType",
+    "-fa", "$flashAttention",
+    "--jinja"
+)
+
+# The LongCat fork's server does not accept --no-ui.
+if ($requiredEngine -ne "LongCat") {
+    $args += "--no-ui"
+}
+
+if ($effectiveReasoningMode) {
+    $args += @("--reasoning", $effectiveReasoningMode)
+}
+
+$args += @("--cache-ram", "$effectiveCacheRamMiB")
+
+if ($ClientMode -eq "WebUI") {
+    $args += @("--tools", "all")
+}
+
+if (-not [string]::IsNullOrWhiteSpace($selectedMoeExperts)) {
+    $args += @("--override-kv", "llama.expert_used_count=int:$selectedMoeExperts")
+}
+
+if (-not [string]::IsNullOrWhiteSpace($selectedCpuMoe) -and $selectedCpuMoe -ne "0") {
+    $args += @("--n-cpu-moe", "$selectedCpuMoe")
+}
+
+if ($isDeepSeek) {
+    $args += "--no-mmap"
+}
+
+if ($SpecMode -eq "MtpNextN") {
+    $args += @(
+        "-md", $selected.FullName,
+        "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", "2",
+        "--spec-draft-n-min", "1",
+        "-ngld", "$serverOffload",
+        "-ctkd", "$effectiveKCacheType",
+        "-ctvd", "$effectiveVCacheType"
+    )
+}
+
+if ($SpecMode -eq "DSpark") {
+    $args += @(
+        "--spec-type", "draft-dspark",
+        "--spec-draft-model", "$dsparkDraftModel",
+        "--spec-draft-n-max", "5",
+        "-ngld", "99"
+    )
+}
+
+$disableTurboAutoAsymmetric = $effectiveKCacheType -like "turbo*"
+
+if ($selectedMcp -eq "Light") {
     $args += "--webui-mcp-proxy"
 }
 
 if ($DryRun) {
-    $dryRunServerLabel = if ($isDs4Engine) { "ds4-server would start with:" } else { "llama-server would start with:" }
+    $dryRunServerLabel = "llama-server would start with:"
     Write-Host "DRY RUN: $dryRunServerLabel" -ForegroundColor Yellow
     Write-Host "Engine: $requiredEngine" -ForegroundColor Yellow
     Write-Host $startFilePath
@@ -3435,12 +3426,7 @@ if ($selectedMcp -eq "Light") {
     Write-Host ""
 }
 
-if ($isDs4Engine) {
-    Write-Host "Starting ds4-server through WSL..." -ForegroundColor Blue
-}
-else {
-    Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
-}
+Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
 if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
     $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $effectiveChatTemplateKwargs
 }
@@ -3451,36 +3437,31 @@ if ($disableTurboAutoAsymmetric) {
     $env:TURBO_AUTO_ASYMMETRIC = "0"
 }
 $proc = $null
-if ($isDs4Engine) {
-    $proc = Start-Process -FilePath $startFilePath -ArgumentList $args -PassThru -WindowStyle Normal
+$serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"
+New-Item -ItemType Directory -Path (Split-Path -Parent $serverArgumentsPath) -Force | Out-Null
+Write-Utf8NoBom -Path $serverArgumentsPath -Value ($args | ConvertTo-Json -Compress)
+$supervisorScript = Join-Path $PSScriptRoot "tools\llamadock-server-supervisor.ps1"
+if (-not (Test-Path -LiteralPath $supervisorScript)) {
+    Write-Host "ERROR: LlamaDock server supervisor was not found: $supervisorScript" -ForegroundColor Red
+    exit 1
 }
-else {
-    $serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"
-    New-Item -ItemType Directory -Path (Split-Path -Parent $serverArgumentsPath) -Force | Out-Null
-    Write-Utf8NoBom -Path $serverArgumentsPath -Value ($args | ConvertTo-Json -Compress)
-    $supervisorScript = Join-Path $PSScriptRoot "tools\llamadock-server-supervisor.ps1"
-    if (-not (Test-Path -LiteralPath $supervisorScript)) {
-        Write-Host "ERROR: LlamaDock server supervisor was not found: $supervisorScript" -ForegroundColor Red
-        exit 1
-    }
-    $supervisorArgs = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $supervisorScript,
-        "-ServerPath", $startFilePath,
-        "-ArgumentsPath", $serverArgumentsPath,
-        "-Root", $PSScriptRoot,
-        "-GatewayPort", $GatewayPort,
-        "-UpstreamPort", 8080,
-        "-LogDir", (Join-Path $PSScriptRoot "logs"),
-        "-AutoRestartServer"
-    )
-    # Keep the supervisor in a normal console so the user can see and control
-    # the server session. Ctrl+C in that console reaches the supervisor's
-    # finally block, which stops llama-server and the gateway cleanly.
-    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $supervisorArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Normal
-    Write-Host "LlamaDock server console opened (supervisor PID $($proc.Id)). Press Ctrl+C in that window to stop llama-server." -ForegroundColor Cyan
-}
+$supervisorArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $supervisorScript,
+    "-ServerPath", $startFilePath,
+    "-ArgumentsPath", $serverArgumentsPath,
+    "-Root", $PSScriptRoot,
+    "-GatewayPort", $GatewayPort,
+    "-UpstreamPort", 8080,
+    "-LogDir", (Join-Path $PSScriptRoot "logs"),
+    "-AutoRestartServer"
+)
+# Keep the supervisor in a normal console so the user can see and control
+# the server session. Ctrl+C in that console reaches the supervisor's
+# finally block, which stops llama-server and the gateway cleanly.
+$proc = Start-Process -FilePath "powershell.exe" -ArgumentList $supervisorArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Normal
+Write-Host "LlamaDock server console opened (supervisor PID $($proc.Id)). Press Ctrl+C in that window to stop llama-server." -ForegroundColor Cyan
 
 Write-Host "Waiting for server to be ready..." -NoNewline -ForegroundColor Yellow
 # A 50+ GiB MoE can need several minutes to map weights, fit VRAM, and
@@ -3494,7 +3475,7 @@ for ($i = 0; $i -lt $maxWait; $i++) {
     # freshly started server is actually serving the selected model.
     $expectedReadyModel = $modelShort
     $directReady = Test-ServerReady -ExpectedModelId $expectedReadyModel
-    $gatewayReady = $isDs4Engine -or (Test-GatewayReady -ExpectedModelId $expectedReadyModel)
+    $gatewayReady = Test-GatewayReady -ExpectedModelId $expectedReadyModel
     if ($directReady -and $gatewayReady) {
         $ready = $true
         Set-ClientBaseUrl -ExpectedModelId $expectedReadyModel | Out-Null

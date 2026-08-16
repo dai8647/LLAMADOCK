@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 import http from "node:http";
-import dns from "node:dns/promises";
-import net from "node:net";
 import { URL } from "node:url";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { fetchSafeUrl } from "./tools/safe-fetch.mjs";
 import { Readability } from "@mozilla/readability";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -20,9 +19,13 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const REQUEST_TIMEOUT_MS = Number(process.env.MCP_WEB_TIMEOUT_MS || 15000);
+const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MiB request body cap (memory DoS guard)
+// The research harness can run up to 1200s (heavy mode); keep the execFile
+// timeout aligned so MCP deep_research is not cut off mid-run.
+const RESEARCH_TIMEOUT_MS = Number(process.env.MCP_RESEARCH_TIMEOUT_MS || 1200000);
 
 const httpServer = http.createServer(async (req, res) => {
-  setCorsHeaders(res);
+  setCorsHeaders(res, req);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -77,14 +80,14 @@ const httpServer = http.createServer(async (req, res) => {
       return setHeader(name, value);
     };
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    const body = ["POST", "PUT", "PATCH"].includes(req.method || "")
-      ? await readJsonBody(req)
-      : undefined;
+    const body = await readJsonBody(req);
     await transport.handleRequest(req, res, body);
   } catch (error) {
     console.error(error);
     if (!res.headersSent) {
-      sendJson(res, 500, { error: "mcp_error", message: errorMessage(error) });
+      const status = error && error.statusCode ? error.statusCode : 500;
+      if (status === 413) res.setHeader("Connection", "close");
+      sendJson(res, status, { error: "mcp_error", message: errorMessage(error) });
     } else {
       res.end();
     }
@@ -208,7 +211,7 @@ function createMcpServer() {
           "node",
           [harnessScriptPath, q],
           {
-            timeout: 300000,
+            timeout: RESEARCH_TIMEOUT_MS,
             maxBuffer: 10 * 1024 * 1024,
             env: {
               ...process.env,
@@ -426,7 +429,7 @@ async function fetchSearchResult(result, perPageChars) {
 }
 
 async function fetchUrl(url, mode, maxLength, format) {
-  const response = await fetchSafeUrl(url);
+  const response = await fetchWithGuard(url);
 
   if (!response.ok) {
     throw new Error(`Fetch returned HTTP ${response.status}`);
@@ -471,67 +474,17 @@ async function fetchUrl(url, mode, maxLength, format) {
   };
 }
 
-// Web-search tools are exposed to local agents, so do not allow them to reach
-// loopback, private, link-local, or metadata endpoints (including redirects
-// and DNS names that resolve to those ranges). Redirects are checked one hop
-// at a time to reduce SSRF and DNS-rebinding risk.
-async function fetchSafeUrl(initialUrl) {
-  let currentUrl = initialUrl;
-  for (let hop = 0; hop <= 5; hop += 1) {
-    await assertSafeRemoteUrl(currentUrl);
-    const response = await fetch(currentUrl, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
-      },
-    });
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-    const location = response.headers.get("location");
-    if (!location) throw new Error(`Fetch returned redirect ${response.status} without Location`);
-    if (hop === 5) throw new Error("Fetch exceeded redirect limit");
-    currentUrl = new URL(location, currentUrl).href;
-  }
-  throw new Error("Fetch exceeded redirect limit");
-}
-
-async function assertSafeRemoteUrl(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("URL is invalid");
-  }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new Error("Only HTTP(S) URLs are allowed");
-  }
-  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (isBlockedIp(hostname) || ["localhost", "localhost.localdomain", "metadata.google.internal"].includes(hostname)) {
-    throw new Error("Private or local network URLs are blocked");
-  }
-  const records = await dns.lookup(hostname, { all: true, verbatim: true });
-  if (!records.length || records.some((record) => isBlockedIp(record.address))) {
-    throw new Error("URL resolves to a private or local network address");
-  }
-}
-
-function isBlockedIp(value) {
-  const normalized = String(value).toLowerCase().replace(/^\[|\]$/g, "");
-  const family = net.isIP(normalized);
-  if (family === 4) {
-    const octets = normalized.split(".").map(Number);
-    const [a, b] = octets;
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-      a >= 224;
-  }
-  if (family === 6) {
-    return normalized === "::" || normalized === "::1" || normalized.startsWith("fe80:") ||
-      normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("ff");
-  }
-  return false;
+// SSRF guard (fetchSafeUrl / assertSafeRemoteUrl / isBlockedIp) lives in
+// tools/safe-fetch.mjs and is shared with the research harnesses.
+async function fetchWithGuard(url) {
+  return fetchSafeUrl(url, {
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+      "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+    },
+  });
 }
 
 function mergeSearchResults(target, source, limit) {
@@ -634,8 +587,31 @@ function cleanForModel(value) {
     .trim();
 }
 
-function setCorsHeaders(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function isLoopbackHostname(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "localhost" || host === "localhost.localdomain" ||
+    host === "::1" || host === "::ffff:127.0.0.1" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+function setCorsHeaders(res, req) {
+  // The server binds to 127.0.0.1, so only grant CORS to pages served from
+  // loopback origins. Requests without an Origin header (curl, native MCP
+  // clients such as Cline/OpenCode) get no CORS headers, which is fine: only
+  // browsers enforce CORS, and a browser page from anywhere else must not be
+  // able to POST to the MCP endpoint.
+  const origin = req && req.headers && req.headers.origin;
+  let allowedOrigin = null;
+  if (origin) {
+    try {
+      if (isLoopbackHostname(new URL(origin).hostname)) allowedOrigin = origin;
+    } catch {
+      allowedOrigin = null;
+    }
+  }
+  if (!allowedOrigin) return;
+  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -649,10 +625,28 @@ function sendJson(res, status, value) {
   res.end(JSON.stringify(value, null, 2));
 }
 
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("Request body exceeds the 10 MiB limit");
+    this.statusCode = 413;
+  }
+}
+
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
+    let totalBytes = 0;
+    req.on("data", (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        // Do not destroy the socket (the client would see a reset instead of
+        // the 413); drain the rest of the body and let the caller respond.
+        req.resume();
+        reject(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) {
