@@ -7,9 +7,28 @@ workflow to a running ComfyUI (127.0.0.1:8188), polls until done, and plays
 the resulting video inline. Proxies /prompt, /history, /view so the browser
 never talks to ComfyUI directly (avoids CORS).
 
+Planning mode: when enabled, messages are bounced off a local planning LLM
+(OpenAI-compatible endpoint, e.g. a llama-server on --plan-url) so the user
+can shape the video concept conversationally before generating. When the LLM
+wraps its final prompt in [FINAL_PROMPT]...[/FINAL_PROMPT], the UI offers a
+"generate with this plan" button.
+
 Usage:
     python tools/h3-chat.py [--port 8189] [--comfy http://127.0.0.1:8188]
+                             [--plan-url http://127.0.0.1:8190]
 """
+
+import argparse
+import json
+import os
+import random
+import re
+import sys
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import argparse
 import json
@@ -37,6 +56,84 @@ WORKFLOWS = {
 NODE_PROMPT = "6"     # MiniMaxH3ImageToVideo: user prompt
 NODE_SEED = "7"       # KSampler: seed
 NODE_SAVE = "10"      # SaveVideo: output filename
+
+# Planning-LLM system prompt: shapes the video concept conversationally and,
+# when the concept is settled, returns the final prompt in FINAL_PROMPT tags.
+PLAN_SYSTEM = (
+    "あなたは MiniMax H3 動画生成の企画アシスタントです。"
+    "ユーザーのアイデアを聞き出し、映像として具体化していきます。"
+    "- 関数呼び出し・ツールは一切使わないでください。必ず普通の文章で答えてください。"
+    "- 会話のたびに、映像のポイント（被写体・背景・動き・雰囲気・カメラ）を1つずつ確認・提案する。"
+    "- 質問は一度に1〜2個までに絞る。長々と説明せず簡潔に。"
+    "- ユーザーが満足したら、最終的な動画生成プロンプトを英語で書き、"
+    "  それを [FINAL_PROMPT] と [/FINAL_PROMPT] のタグで囲んで返す。"
+    "  （例: [FINAL_PROMPT]A quiet beach at sunset, gentle waves, cinematic shot[/FINAL_PROMPT]）"
+    "- タグは必ず1組だけ。タグ以外の補足説明は不要。"
+)
+
+# Some planning models (e.g. LFM) respond to a prompt-creation request with a
+# <|tool_call_start|>[video_prompt_creation(prompt='...', ...)]<|tool_call_end|>
+# block. The tool's prompt argument is a ready-to-use English prompt, so we
+# parse it as the final prompt instead of treating it as an error.
+TOOL_CALL_RE = re.compile(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", re.S)
+# LFM switches between video_prompt_creation(prompt=...),
+# video_generator(prompt=...), video_generate(scene_description=...),
+# video_prompt(subject=..., setting=...) etc.
+PROMPT_ARG_RE = re.compile(r"(?:prompt|scene_description|scene|user_idea)\s*=\s*['\"](.*?)['\"]", re.S)
+# structured tool call: key='value' pairs inside the tool-call block
+TOOL_KV_RE = re.compile(r"(?:[a-z_]+)\s*=\s*['\"](.*?)['\"]", re.S)
+
+
+def _clean_plan_reply(text):
+    """Remove tool-call markup and empty lines from a planning-LLM reply."""
+    text = TOOL_CALL_RE.sub("", text or "")
+    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+
+
+def _tool_prompt(text):
+    """If the reply is a tool call, return its prompt argument (or None).
+
+    Handles both "full prompt" styles (prompt=..., scene_description=...) and
+    structured styles (subject=..., setting=..., mood=..., style=...) where the
+    parts are joined into a single English prompt.
+    """
+    m = TOOL_CALL_RE.search(text or "")
+    if not m:
+        return None
+    block = m.group(1)
+    pm = PROMPT_ARG_RE.search(block)
+    if pm:
+        return pm.group(1).strip()
+    # structured: pick the descriptive fields and join them
+    parts = TOOL_KV_RE.findall(block)
+    keep = [p.strip() for p in parts if p.strip()]
+    if not keep:
+        return None
+    return ", ".join(keep)
+
+# When LFM answers in plain text (no tool call), it often still writes the
+# finished English prompt. Treat a long mostly-ASCII description that reads
+# like a video shot as a final prompt; short/conversational replies stay chat.
+VIDEO_KEYWORDS = (
+    "beach", "sunset", "shot", "camera", "lighting", "cinematic", "scene",
+    "atmosphere", "wave", "sky", "background", "motion", "mood", "focus",
+)
+
+
+def _looks_like_final(text):
+    if len(text) < 40:
+        return False
+    ascii_ratio = sum(1 for ch in text if ord(ch) < 128) / len(text)
+    if ascii_ratio < 0.7:
+        return False
+    low = text.lower()
+    return any(k in low for k in VIDEO_KEYWORDS)
+
+FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)\[/FINAL_PROMPT\]", re.S)
+
+# Per-session conversation history for planning mode (single-user local UI).
+PLAN_HISTORY = []
+PLAN_LOCK = threading.Lock()
 
 HTML = """<!doctype html>
 <html lang="ja">
@@ -79,6 +176,8 @@ HTML = """<!doctype html>
   button { background:var(--accent); color:#fff; border:none; border-radius:10px;
            padding:12px 22px; font-size:14px; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.5; cursor:default; }
+  .plan { border-top:1px solid var(--line); padding-top:6px; }
+  .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
   .hint { color:var(--muted); font-size:11px; }
 </style>
 </head>
@@ -94,6 +193,7 @@ HTML = """<!doctype html>
     <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
     <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約1分）</label>
     <label><input type="radio" name="mode" value="lite"> 軽量 4B（省VRAM・約9分）</label>
+    <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（会話で練ってから生成）</label>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で波が静かに打ち寄せる映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
@@ -133,6 +233,7 @@ async function send() {
   $("#send").disabled = true;
   $("#input").value = "";
   addMsg("user", esc(text));
+  if ($("#planmode").checked) { plan(text); return; }
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   const mode = document.querySelector('input[name="mode"]:checked').value;
   try {
@@ -140,6 +241,52 @@ async function send() {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({mode: mode, text: text})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    poll(j.prompt_id, bot);
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+    busy = false;
+    $("#send").disabled = false;
+  }
+}
+
+async function plan(text) {
+  const bot = addMsg("bot", '<div class="meta">企画 LLM が考え中…</div>');
+  try {
+    const r = await fetch("/api/plan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: text})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    let html = '<div class="meta">企画案</div>' + esc(j.reply || "（応答なし）");
+    if (j.final_prompt) {
+      html += '<button class="genplan" onclick="genPlan(' + JSON.stringify(JSON.stringify(j.final_prompt)) + ')">🎬 この企画で生成 ▶</button>';
+    }
+    bot.innerHTML = html;
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+  }
+  busy = false;
+  $("#send").disabled = false;
+}
+
+async function genPlan(finalJson) {
+  if (busy) return;
+  const finalPrompt = JSON.parse(finalJson);
+  busy = true;
+  $("#send").disabled = true;
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  addMsg("user", "✅ この企画で生成する: " + finalPrompt);
+  const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
+  try {
+    const r = await fetch("/api/generate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mode: mode, text: finalPrompt})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -249,12 +396,22 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/api/generate":
+        if parsed.path == "/api/generate":
+            self._generate(parsed)
+        elif parsed.path == "/api/plan":
+            self._plan(parsed)
+        else:
             self._json(404, {"error": "not found"})
-            return
+
+    def _read_json_body(self):
         length = int(self.headers.get("Content-Length", 0))
+        if length > 1_000_000:
+            raise ValueError("body too large")
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def _generate(self, parsed):
         try:
-            req = json.loads(self.rfile.read(length) or b"{}")
+            req = self._read_json_body()
         except Exception:
             self._json(400, {"error": "invalid JSON"})
             return
@@ -279,6 +436,72 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"prompt_id": json.loads(raw)["prompt_id"]})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
+
+    # ---- planning mode ----------------------------------------------
+
+    def _plan(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        text = (req.get("text") or "").strip()
+        if not text:
+            self._json(400, {"error": "メッセージが空です"})
+            return
+        if not self.server.plan_url:
+            self._json(503, {"error": "企画 LLM が接続されていません（h3-chat.ps1 で起動してください）"})
+            return
+        try:
+            reply, final_prompt = self._plan_llm(text)
+        except Exception as e:
+            self._json(502, {"error": f"企画 LLM エラー: {e}"})
+            return
+        if final_prompt and not reply:
+            reply = "企画案がまとまりました。下のボタンで生成できます。\n\n" + final_prompt
+        self._json(200, {"reply": reply, "final_prompt": final_prompt})
+
+    def _plan_llm(self, user_text, timeout=300):
+        """Send the message (plus history) to the planning LLM.
+
+        Returns (reply_text, final_prompt) where final_prompt is set when the
+        model settled on a final video prompt (either [FINAL_PROMPT] tags or a
+        tool call whose prompt= argument is the finished prompt).
+        """
+        global PLAN_HISTORY
+        with PLAN_LOCK:
+            PLAN_HISTORY.append({"role": "user", "content": user_text})
+            # keep the context bounded; system prompt always first
+            history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-12:]
+            body = json.dumps({
+                "messages": history,
+                "max_tokens": 512,
+                "temperature": 0.7,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                self.server.plan_url.rstrip("/") + "/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.load(r)
+            msg = d["choices"][0]["message"]
+            content = msg.get("content") or ""
+            # some reasoning models put the text in reasoning_content
+            if not content.strip():
+                content = msg.get("reasoning_content") or ""
+            reply = _clean_plan_reply(content)
+            m = FINAL_RE.search(reply)
+            final_prompt = m.group(1).strip() if m else None
+            if not final_prompt:
+                final_prompt = _tool_prompt(content)
+            if not final_prompt and _looks_like_final(reply):
+                final_prompt = reply
+            # keep a non-empty assistant turn in the history so follow-up
+            # messages have context (a tool-call reply becomes its prompt text)
+            history_reply = reply or final_prompt or "（企画案）"
+            PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
+            return reply, final_prompt
 
     # ---- status / view -----------------------------------------------
 
@@ -360,13 +583,16 @@ def main():
     ap = argparse.ArgumentParser(description="MiniMax H3 chat-to-video UI")
     ap.add_argument("--port", type=int, default=8189)
     ap.add_argument("--comfy", default="http://127.0.0.1:8188")
+    ap.add_argument("--plan-url", default=None, help="OpenAI-compatible planning LLM endpoint (e.g. http://127.0.0.1:8190)")
     args = ap.parse_args()
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), ChatHandler)
     server.comfy_base = args.comfy.rstrip("/")
+    server.plan_url = args.plan_url.rstrip("/") if args.plan_url else None
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")
     print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
+    print(f"h3-chat: plan LLM = {server.plan_url or 'off'}")
     print("h3-chat: Ctrl+C で停止")
     try:
         server.serve_forever()
