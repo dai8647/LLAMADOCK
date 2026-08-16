@@ -52,9 +52,16 @@ ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`�
 ComfyUI 起動後に **`tools\h3-chat.ps1`** を実行すると、ノード UI を触らずテキストで動画を生成できる
 チャットページ（`http://127.0.0.1:8189`）が開きます（クイック約1分 / フル約9分・音声付き）。
 
-チャット欄の **✎ 企画モード** にチェックを入れると、ローカル LLM（CPU 推論・VRAM 不使用）と
-「打ち返しながら」企画を固めてから生成できます。モデルは `-PlanModel LFM`（軽量・汎用、デフォルト）/
-`-PlanModel DirtyMuse`（エロティカ特化）/ `-PlanModel Off`（無効）で選択します。
+チャット欄の **✎ 企画モード** にチェックを入れると、**「キー画像 → 動画」の2段階**で企画できます。
+① ローカル LLM（CPU 推論・VRAM 不使用）と日本語で「打ち返しながら」アイデアを固め、英語の画像プロンプトを生成
+② **Z-Image Turbo**（GGUF Q8・`lesliemore/z-image-turbo-nsfw-v2`）でキー画像を高速生成（約15秒）
+③ 画像を確認 → 必要なら日本語で修正指示 → 確定すると Z-Image をアンロード（VRAM 解放）
+④ 確定した画像をもとに企画 LLM が英語の動画プロンプト（動き・カメラ・時間経過を追加）を作成 → 生成
+動画が完成すると **自動停止のカウントダウン**が始まり、放置すれば ComfyUI・企画 LLM を停止して
+GPU・メモリを解放します（ブラウザが閉じていてもサーバー側で 180 秒後に確実に停止）。
+企画 LLM は `-PlanModel Qwen3.5`（**Qwen3.5-4B Uncensored・NSFW・視覚対応、デフォルト**）/ `LFM`
+（軽量・汎用）/ `DirtyMuse`（エロティカ特化）/ `Off`（無効）で選択します。Qwen3.5 は
+mmproj 視覚エンコーダ付きで起動するため、**確定したキー画像を実際に見て**動画プロンプトを作成します。
 
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
 `h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 13 個のバリアント

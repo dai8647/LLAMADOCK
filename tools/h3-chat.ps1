@@ -10,8 +10,8 @@
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Off
 
 param(
-    [ValidateSet("LFM", "DirtyMuse", "Off")]
-    [string]$PlanModel = "LFM",
+    [ValidateSet("Qwen3.5", "LFM", "DirtyMuse", "Off")]
+    [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
     [switch]$NoBrowser
@@ -26,6 +26,11 @@ $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
 $planModels = @{
+    "Qwen3.5" = @{
+        Label = "Qwen3.5-4B Uncensored (NSFW・視覚対応・デフォルト)"
+        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+    }
     LFM = @{
         Label = "LFM2.5-2.6B (軽量・汎用)"
         Path = "C:\Users\dai86\.lmstudio\models\nguyenthilaitrieulong\LFM2.5-2.6B-Heretic-Abliterated-GGUF\LFM2.5-2.6B-heretic-Q5_K_S.gguf"
@@ -107,15 +112,21 @@ if ($PlanModel -ne "Off") {
         # tiny planning model answers immediately instead of thinking forever.
         if (-not $skipPlanStart) {
         Write-Host "Starting planning LLM ($($model.Label)) on $planUrl ..." -ForegroundColor Cyan
-        Start-Process -FilePath $planServer -ArgumentList @(
+        $serverArgs = @(
             "-m", $model.Path,
             "--port", "$planPort",
             "-ngl", "0",
-            "-c", "4096",
+            "-c", "8192",
             "--no-webui",
             "--reasoning", "off",
             "--reasoning-budget", "0"
-        ) -WorkingDirectory (Split-Path -Parent $planServer) -WindowStyle Hidden
+        )
+        # multimodal models (Qwen3.5 etc.): attach the vision projector so the
+        # planning LLM can actually see the confirmed key image.
+        if ($model.Mmproj -and (Test-Path -LiteralPath $model.Mmproj)) {
+            $serverArgs += @("--mmproj", $model.Mmproj)
+        }
+        Start-Process -FilePath $planServer -ArgumentList $serverArgs -WorkingDirectory (Split-Path -Parent $planServer) -WindowStyle Hidden
         # wait for the model to finish loading (up to ~60s)
         $planReady = $false
         for ($i = 0; $i -lt 30; $i++) {

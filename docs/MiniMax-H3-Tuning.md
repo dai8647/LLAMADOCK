@@ -166,14 +166,24 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
   フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
   seed は毎回ランダム。完了後はページ内で再生＋保存先パス表示。
-- **✎ 企画モード**（2026-08-16 追加）: チェックを入れると、チャット欄の文章をローカル企画 LLM
-  （llama-server・CPU 推論・VRAM 不使用・`http://127.0.0.1:8190`）が「打ち返しながら」企画として
-  具体化し、`[FINAL_PROMPT]` またはツール呼び出しの形で英語プロンプトに仕上げます。
-  画面に「🎬 この企画で生成 ▶」ボタンが出たら確定で生成。モデルは `tools/h3-chat.ps1` の
-  `-PlanModel` で選択（`LFM` 軽量・汎用 / `DirtyMuse` エロティカ特化 / `Off` 無効）。
-  企画 LLM は `--reasoning off --reasoning-budget 0` で起動し、LFM のツール呼び出し形式
-  （`video_prompt_creation` / `video_generator` / `video_generate` / `video_prompt` など）を
-  h3-chat.py 側でパースして最終プロンプトを抽出します。
+- **✎ 企画モード**（2026-08-16 追加・同日 Z-Image 連携化）: チェックを入れると、
+  **「キー画像 → 動画」の2段階**で企画できます。
+  ① ローカル企画 LLM（llama-server・CPU 推論・VRAM 不使用・`http://127.0.0.1:8190`）と日本語で
+     「打ち返しながら」アイデアを固め、`[IMG_PROMPT]` / ツール呼び出しの形で英語の**画像プロンプト**に仕上げる。
+  ② **Z-Image Turbo**（`h3_workflow_zimage.json`・`lesliemore/z-image-turbo-nsfw-v2` GGUF Q8_0 7.2GB）
+     でキー画像を高速生成（この機で 8step 約15秒）。UnetLoaderGGUF は `ComfyUI-GGUF` カスタムノードが必要。
+  ③ 画像を確認 → 必要なら日本語で修正指示（再生成）→ **✅ この画像で確定**。
+     確定時に ComfyUI へ `POST /free` を送り Z-Image をアンロード（VRAM 解放 =「Z-Image を落とす」）。
+  ④ 確定した画像プロンプトをもとに企画 LLM が `[FINAL_PROMPT]` の英語**動画プロンプト**を作成
+     （画像の内容・構図を保ちつつ動き・カメラ・時間経過を追加）→「🎬 この企画で生成 ▶」で生成。
+  ⑤ 動画完成後は**自動停止**: ブラウザ側 90 秒カウントダウン（即停止/ComfyUI のみ/キャンセル可）、
+     ブラウザが閉じていてもサーバー側が 180 秒後に ComfyUI・企画 LLM を停止し GPU・メモリを解放。
+  企画 LLM は `tools/h3-chat.ps1` の `-PlanModel` で選択（**`Qwen3.5`** Qwen3.5-4B Uncensored・NSFW・視覚対応・デフォルト /
+  `LFM` 軽量・汎用 / `DirtyMuse` エロティカ特化 / `Off` 無効）。
+  Qwen3.5 は `--mmproj`（視覚エンコーダ 675MB）付きで起動し、**確定したキー画像を base64 で送って
+  実際に見た上で**動画プロンプトを作成します（`h3-chat.py` が `data:image/...` 形式で添付）。
+  LFM のツール呼び出し形式（`video_prompt_creation` など）も従来どおり h3-chat.py 側でパースして
+  最終プロンプトを抽出します。モデル導入元: `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（Reddit で 0/465 拒否）。
 
 ## 2026-08-16: 音声 VAE 修正 + Heretic 4B 導入
 
