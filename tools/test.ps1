@@ -55,7 +55,15 @@ Write-Host "model-notes.json OK"
 $nodeTools = @(
     (Join-Path $root "tools\web-research.mjs"),
     (Join-Path $root "tools\deep-research-harness.mjs"),
-    $gateway
+    (Join-Path $root "tools\mcp-smoke.mjs"),
+    $gateway,
+    (Join-Path $root "web-ui\server.js"),
+    (Join-Path $root "web-ui\app.js"),
+    (Join-Path $root "web-ui\arg-builder.js"),
+    (Join-Path $root "web-ui\launch-manager.js"),
+    (Join-Path $root "web-ui\results-store.js"),
+    (Join-Path $root "web-ui\client-manager.js"),
+    (Join-Path $root "web-ui\mock-llama-server.mjs")
 )
 foreach ($nodeTool in $nodeTools) {
     node --check $nodeTool | Out-Null

@@ -1654,8 +1654,12 @@ function Open-ComfyUIClient {
     # ComfyUI workspace: local ComfyUI server for MiniMax H3 video/audio gen.
     # Runs from Documents\ComfyUI (venv + extra_model_paths.yaml point at
     # .lmstudio\models\MiniMax-H3).
-    $comfyRoot = "C:\Users\dai86\Documents\ComfyUI"
-    $comfyPort = 8188
+    # The root and port are overridable (LLAMADOCK_COMFYUI_ROOT /
+    # LLAMADOCK_COMFYUI_PORT) so the CLI launcher and the Web GUI
+    # (web-ui/client-manager.js) can never diverge: both use the same env
+    # override for the launch --port and the health probe.
+    $comfyRoot = if ($env:LLAMADOCK_COMFYUI_ROOT) { $env:LLAMADOCK_COMFYUI_ROOT } else { "C:\Users\dai86\Documents\ComfyUI" }
+    $comfyPort = if ($env:LLAMADOCK_COMFYUI_PORT -match "^\d+$") { [int]$env:LLAMADOCK_COMFYUI_PORT } else { 8188 }
     $comfyUrl = "http://127.0.0.1:$comfyPort"
     $comfyPython = Join-Path $comfyRoot ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath (Join-Path $comfyRoot "main.py")) -or -not (Test-Path -LiteralPath $comfyPython)) {
@@ -2245,9 +2249,12 @@ if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
 
 if ($comfyOnly) {
     if ($DryRun) {
-        $comfyArgs = Get-ComfyUILaunchArgs -Port 8188
+        # Effective ComfyUI port shared by the dry-run messages and by
+        # Open-ComfyUIClient (which reads the same env override independently).
+        $comfyLaunchPort = if ($env:LLAMADOCK_COMFYUI_PORT -match "^[0-9]+$") { [int]$env:LLAMADOCK_COMFYUI_PORT } else { 8188 }
+        $comfyArgs = Get-ComfyUILaunchArgs -Port $comfyLaunchPort
         Write-Host "DRY RUN: ComfyUI-only launch; model selection and llama-server will be skipped." -ForegroundColor Yellow
-        Write-Host "DRY RUN: ComfyUI would start on http://127.0.0.1:8188" -ForegroundColor Yellow
+        Write-Host "DRY RUN: ComfyUI would start on http://127.0.0.1:$comfyLaunchPort" -ForegroundColor Yellow
         Write-Host ("DRY RUN: ComfyUI flags: {0}" -f ($comfyArgs -join " ")) -ForegroundColor Yellow
         exit 0
     }

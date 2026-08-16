@@ -125,3 +125,43 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
 - APIキー・Bearer token・個人トークンをコミットしない（既存方針）。
 - `models-config.json`・`run-results.json`・`logs/`・`mcp-data/` は `.gitignore` 対象。
 - `params-schema.json`・`memory-presets.json` はキーを含まない（スキーマ/設定のみ）。
+
+---
+
+## 7. 実装状況（2026-08-16）
+
+- **Phase 2（一部）・Phase 3（UI）を実装**: `web-ui/` に依存ゼロの3カラム・ダークテーマGUIを追加。
+  `npm start`（`node web-ui/server.js`）で起動。
+- **API（Phase 2）**: `GET /api/bootstrap`・`GET/POST /api/params`（モデル別記憶を
+  `config/models-config.json` へ保存、`per_model` のみ許可）・`GET /api/health`・`GET /api/status` を実装。
+- **Phase 1/2 コアの Node 実装（全プラットフォームで検証可能）**:
+  - `web-ui/arg-builder.js` — スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定）。
+    引数プレビュー（UI）と実起動（API）が同じロジックを使う。
+  - `web-ui/launch-manager.js` — 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング・ログリング）。
+    Windows では `LLAMADOCK_ENGINE_BIN` のエンジンを実行（Phase 1 コア配線待ち）。
+- **Phase 4（計測収束）を実装**:
+  - `web-ui/results-store.js` — `config/run-results.json` へモデル別・設定指紋別に実測を蓄積し、
+    **実測成功 minRuns（既定3）回以上**の設定だけを「推奨（実測）」に認定。
+  - `web-ui/mock-llama-server.mjs` — 非Windows用のシミュレーション llama-server。
+    起動 → ready待ち → 3回計測 → 停止のループを実プロセスで検証可能（`simulated: true`）。
+  - `POST /api/launch` / `stop` / `benchmark` / `GET /api/results` を実装し、UI の起動/停止ボタンと
+    計測実行ボタンを配線。3秒間隔の状態ポーリングで信号灯・メトリクス・ログを更新。
+- **`POST /api/connect`（クライアント起動）を実装**: `web-ui/client-manager.js`。
+  `select-model.ps1` の `Open-*Client` と同じ起動経路をクライアントID（Cline / OpenCode / OpenClaude /
+  WebUI / DeepResearch / LlamaAgent / ComfyUI）ごとに定義。Windows では detached spawn、それ以外では
+  リクエストを検証した上で Windows が実行する正確なコマンドを `simulated: true` で返す（契約を全プラットフォームで検証可能）。
+  未起動時は `server_not_running` で拒否。接続状態は `/api/status` の `clients` と UI のチップで確認できる。
+- **ComfyUI を standalone 扱いに修正**: llama-server 未起動でも接続可能（`select-model.ps1` の
+  「ComfyUI runs its own server on :8188 and does not depend on the llama-server」と同じ契約）。
+  `CLIENTS` の `standalone: true` で判定し、`/api/status` の `clients[*].standalone` と UI に反映。
+- **MiniMax H3 対応（ComfyUI 専用モデル）**: `model-notes.json` に `MiniMax.?H3|minimax_h3|fl2va|ref2va` の
+  エントリを追加（llama-server 非対応・ComfyUI 0.30.0+ / ComfyUI-GGUF / ComfyUI-H3-Multishot v1.5.2+ が前提、
+  エンコーダ GGUF + VAE 必須、K 量子化不可）。UI のエンジン推定は `ComfyUI (DiT)` と表示し、
+  llama.cpp エンジンへの誤推定を防止。
+- **クライアント稼働モニタ（`GET /api/clients/health`）を実装**: 独自 HTTP サーバーを持つクライアント
+  （Open WebUI :8000 / DeepResearch :7000 / ComfyUI :8188）をプローブし、UI に稼働ドット（緑/赤）と
+  「開く ↗」を表示。ポートは `LLAMADOCK_<ID>_PORT` で上書き可能で、ComfyUI の起動 `--port` と監視が
+  同じ値を使う。CLI クライアントは `no_health_check`。
+- **残（Windows 機で実施・検証が必要）**: Phase 1 の `select-model.ps1` モジュール抽出と
+  `/api/launch` → コア接続（`LLAMADOCK_ENGINE_BIN` 配線、GGUF 実パス解決）、実モデルでの計測収束、
+  `/api/connect` の Windows 実起動（現状は `simulated` のまま）。

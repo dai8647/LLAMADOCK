@@ -97,9 +97,13 @@ powershell -File test.ps1 -SkipDryRun
 
 # 企画 LLM の視覚入力を証明する E2E（企画 LLM + h3-chat 起動中に実行）
 python tools/test-plan-vision.py
+
+# MCP ウェブ検索サーバーのスモーク（起動→initialize→4 ツール→実検索）
+node tools/mcp-smoke.mjs
 ```
 - `test-plan-vision.py`: ①合成画像を直接見せて記述照合 ②テキスト手がかりゼロで確定パスに通し、最終動画プロンプトが画像内容（色・被写体）と一致するか照合
-- 最終コミット: `fa3f1b9`（以降、本 HANDOFF.md 追記コミットあり）
+- `tools/mcp-smoke.mjs`: MCP サーバーを実起動して `search_web` / `search_and_fetch` / `fetch_url` / `deep_research` を叩き、全項目 PASS を確認
+- 最終コミット: `86c9513`（本 HANDOFF.md を追加したコミット）
 
 ---
 
@@ -114,11 +118,51 @@ python tools/test-plan-vision.py
 
 ---
 
-## 7. 次にやること（優先度順）
+## 7. Web GUI（`web-ui/`・パラメータコントロールパネル）
 
-1. **全体ベンチのやり直し** — Z-Image + Qwen3.5 導入後、super/ck プロファイルの実測（旧実測: ck 17m19s vs default 19m26s）
-2. **fast プロファイルの検証** — `--fast fp16_accumulation` の画質劣化リスクを短尺・粗画質で確認（OK なら super より速い可能性）
-3. **32B vs 4B エンコーダの画質比較** — turbo（32B・NVFP4）と super（4B・fp8）を同じ複雑な日本語プロンプトで比較、意図反映度を確認
-4. **GitHub クラウド移行準備** — 絶対パスの抽象化（環境変数 or 設定ファイル化）、Windows 固有コマンドの分離、CI での test.ps1 / test-plan-vision.py 実行
-5. **企画モード UX 改善** — キー画像の複数案生成と比較選択、生成プロンプトのプレビュー編集
-6. **新モデル調査** — 「拒否無しでもっと軽い MiniMax」「より軽量な Z-Image / テキストエンコーダ」の Reddit/GitHub 調査（必要時のみ）
+ComfyUI / h3-chat とは別系統の **依存ゼロ Web GUI**（Node 標準ライブラリのみ）。
+`config/params-schema.json`（42 パラメータ）と `config/memory-presets.json`（8 プリセット）から
+設定パネルを自動生成し、llama-server の起動/停止/計測/クライアント接続をブラウザから行えます。
+
+```bash
+npm start          # http://127.0.0.1:3000（node web-ui/server.js）
+```
+
+| ファイル | 役割 |
+|---|---|
+| `server.js` | 静的配信 + REST API（`/api/bootstrap|params|launch|stop|benchmark|results|connect|status|health|clients/health`） |
+| `arg-builder.js` | スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
+| `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング） |
+| `results-store.js` | 実測 tok/s・VRAM を `config/run-results.json`（gitignore）に蓄積、成功 3 回以上で「推奨（実測）」認定 |
+| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/DeepResearch/LlamaAgent/ComfyUI の起動契約（ComfyUI は standalone） |
+| `mock-llama-server.mjs` | 非 Windows 用シミュレーション llama-server（計測ループ検証用） |
+| `app.js` / `index.html` / `style.css` | 3カラム・ダークテーマ UI |
+
+- **Windows**: `LLAMADOCK_ENGINE_BIN` にエンジンを設定すると実 llama-server を起動（**Phase 1 配線待ち**）。
+  未設定時は明確なエラー、それ以外の OS ではモックで全ループを実証済み（実測 22.3 tok/s を確認）
+- **ComfyUI は standalone**: llama-server 未起動でも接続可。`LLAMADOCK_COMFYUI_ROOT` / `LLAMADOCK_COMFYUI_PORT`
+  で CLI（`select-model.ps1`）と Web GUI の起動・監視ポートを共有（README「Web GUI」参照）
+- 設計・API 詳細・残作業: `docs/PARAMETER-CATALOG.md`（§7 実装状況）
+
+### MCP 検索の Serper 対応
+
+`mcp-server.js` に **Serper API（`SERPER_API_KEY`、環境変数のみ）＋ 結果キャッシュ**
+（`MCP_SEARCH_CACHE_TTL_MS`、既定 5 分・最大 200 件）を追加済み。キー設定時は auto で Serper が先頭、
+失敗時は DuckDuckGo / Brave / Bing にフォールバック。SSRF ガード（`tools/safe-fetch.mjs`）は維持。
+
+---
+
+## 8. 次にやること（優先度順）
+
+1. **Web GUI のコミット＆プッシュ** — `web-ui/` 一式・`tools/mcp-smoke.mjs`・`package.json` の
+   `start:web` / `start`・`.gitignore`（`config/models-config.json` / `run-results.json`）・
+   `tools/test.ps1` の web-ui 構文チェック・`model-notes.json` の MiniMax H3 エントリ・
+   README / PARAMETER-CATALOG / MCP-ENDPOINTS の追記（本 HANDOFF.md §7 の内容が対象）
+2. **Windows 実機での web-ui 検証** — Phase 1 コア配線（`LLAMADOCK_ENGINE_BIN`・GGUF 実パス解決）、
+   `/api/launch` で実 llama-server 起動、`/api/connect` の Windows 実起動（現状 `simulated`）
+3. **全体ベンチのやり直し** — Z-Image + Qwen3.5 導入後、super/ck プロファイルの実測（旧実測: ck 17m19s vs default 19m26s）
+4. **fast プロファイルの検証** — `--fast fp16_accumulation` の画質劣化リスクを短尺・粗画質で確認（OK なら super より速い可能性）
+5. **32B vs 4B エンコーダの画質比較** — turbo（32B・NVFP4）と super（4B・fp8）を同じ複雑な日本語プロンプトで比較、意図反映度を確認
+6. **GitHub クラウド移行準備** — 絶対パスの抽象化（環境変数 or 設定ファイル化）、Windows 固有コマンドの分離、CI での test.ps1 / test-plan-vision.py 実行
+7. **企画モード UX 改善** — キー画像の複数案生成と比較選択、生成プロンプトのプレビュー編集
+8. **新モデル調査** — 「拒否無しでもっと軽い MiniMax」「より軽量な Z-Image / テキストエンコーダ」の Reddit/GitHub 調査（必要時のみ）

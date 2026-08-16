@@ -7,6 +7,17 @@ Web Search / Fetch
   http://127.0.0.1:3100/mcp
   tools: search_web, search_and_fetch, fetch_url, deep_research
 
+  env (optional):
+    SERPER_API_KEY          higher-quality search results (Windows env vars only)
+    RESEARCH_LLM_BASE_URL   local LLM base for deep_research evidence extraction
+                            (default http://127.0.0.1:8080/v1; needs llama-server up)
+    RESEARCH_LLM_MODEL      model id for deep_research (default local-model)
+    MCP_WEB_TIMEOUT_MS      fetch timeout in ms (default 15000)
+    MCP_SEARCH_CACHE_TTL_MS repeat-query cache TTL in ms (default 300000)
+
+  repeat queries within the cache TTL are served from memory (no network call).
+  quick check: node tools/mcp-smoke.mjs
+
 Filesystem
   http://127.0.0.1:3101/mcp
   allowed directory: <LLAMADOCK_ROOT>\mcp-share
