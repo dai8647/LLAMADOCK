@@ -147,8 +147,103 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 │   ├── params-schema.json     # 全パラメータの機械可読カタログ（GUI設定パネルの定義）
 │   └── memory-presets.json    # 省メモリ／速度プリセット（1クリック適用用）
 ├── docs/                      # 設計・運用・パラメータカタログ
+├── web-ui/                    # Web GUI（3カラム・ダークテーマ・依存ゼロ）
+│   ├── server.js              # 静的配信 + REST API（node:http のみ）
+│   ├── arg-builder.js         # スキーマ駆動の引数生成（解決順: 上書き→記憶→プロファイル→既定）
+│   ├── launch-manager.js      # 起動/停止/計測のランタイム状態機械（ready待ち・healthポーリング）
+│   ├── results-store.js       # run-results.json 蓄積 + 実測認定ロジック（Phase 4）
+│   ├── client-manager.js      # ワークスペース接続（Cline/OpenCode/…/ComfyUI）の起動契約
+│   ├── mock-llama-server.mjs  # 非Windows用のシミュレーション llama-server（計測ループ検証用）
+│   ├── index.html             # 3カラムUI（左: モデル / 中央: パラメータ / 右: モニタ）
+│   ├── style.css              # テーマ
+│   └── app.js                 # スキーマ駆動フォーム生成・引数プレビュー・モデル別記憶・状態ポーリング
 └── tools/                     # 調査ハーネス・ランタイムヘルパー・検証スクリプト
 ```
+
+## Web GUI（パラメータコントロールパネル）
+
+`config/params-schema.json` と `config/memory-presets.json` から設定パネルを自動生成する
+ブラウザUIです（設計は `docs/PARAMETER-CATALOG.md`）。依存ゼロ（Node 標準ライブラリのみ）。
+
+```bash
+npm start            # http://127.0.0.1:3000
+npm run start:web    # 同じ
+npm run start:mcp    # MCP ウェブ検索サーバー（http://127.0.0.1:3100/mcp）
+```
+
+- 左: モデル一覧（追加・エンジン推定・`model-notes.json` の推奨プリセット / 警告）
+- 中央: スキーマ駆動のパラメータパネル（グループ折り畳み・上級設定・メモリプリセット1クリック適用・生成される起動引数プレビュー）
+- 右: サーバー状態（信号灯・PID・メトリクス）・起動/停止・**計測実行**・実測結果一覧・ログ・ワークスペース接続
+
+`per_model: true` の項目はモデル別に `config/models-config.json`（gitignore 対象）へ保存され、
+起動時の解決順は「個別上書き → `_profiles` パターン → スキーマ既定 → メモリプリセット」です。
+
+### 起動 → 計測 → 実測認定（Phase 4）
+
+`起動` は設定を解決し（`web-ui/arg-builder.js`）起動引数を生成して llama-server を立ち上げます。
+`計測実行` は起動中のサーバーに 3 回の Chat Completions を送り、実測 tok/s・VRAM・RAM・成否を
+`config/run-results.json`（gitignore 対象）へモデル別・設定別に蓄積します。
+
+- **実測成功 3 回以上**の設定だけをそのモデルの「推奨（実測）」として表示（「推奨は断言ではなく
+  実測で裏付けられた仮説」方針）。設定が違えば設定ごとに独立して集計されます。
+- プラットフォーム分岐:
+  - **Windows**: `LLAMADOCK_ENGINE_BIN` にエンジン実行ファイルを設定すると実際の llama.cpp を起動します
+    （Phase 1 コアの配線待ち。未設定時は明確なエラーを返します）。
+  - **その他（プレビュー等）**: `web-ui/mock-llama-server.mjs` のシミュレーション llama-server を起動し、
+    起動→ready待ち→計測→停止の一連のループを実プロセスで検証できます（`simulated: true` で識別）。
+
+### ワークスペース接続（`POST /api/connect`）
+
+起動中のサーバーに対して Cline / OpenCode / OpenClaude / Open WebUI / Deep Research /
+Llama Agent / ComfyUI を接続します（右カラムの「ワークスペース接続」）。
+
+- **Windows**: `web-ui/client-manager.js` が `select-model.ps1` の `Open-*Client` と同じ起動経路を
+  （detached で）実行します。Cline / OpenCode / OpenClaude は `tools/llamadock-client-shell.ps1`、
+  WebUI は `tools/computer-start.ps1`、Deep Research は `tools/deep-research-harness.mjs`、
+  LlamaAgent は `llama-agent.exe`、ComfyUI は `main.py --port 8188`。接続先は回復ゲートウェイ
+  `http://127.0.0.1:8090/v1` です。
+- **その他（プレビュー等）**: リクエスト全体を検証した上で、Windows が実行する正確なコマンドを
+  `simulated: true` で返します（実クライアントは起動しません）。未起動時の接続は `server_not_running` で拒否。
+- **ComfyUI は例外（standalone）**: `select-model.ps1` の `Open-ComfyUIClient` と同様、llama-server が
+  起動していなくても接続できます（ComfyUI は独自に :8188 で動くため）。モデルを先に起動する必要はありません。
+- 各クライアントの接続状態（未接続 / 接続済み / sim / エラー）は `/api/status` の `clients` に載り、
+  UI のチップで確認できます。
+
+### クライアント稼働モニタ（`GET /api/clients/health`）
+
+独自の HTTP サーバーを持つワークスペース（Open WebUI :8000 / Deep Research :7000 / ComfyUI :8188）は、
+接続状態とは別に**実際に稼働しているか**を 10 秒間隔でプローブします。
+
+- プローブ先: WebUI `http://127.0.0.1:8000/`、DeepResearch `http://127.0.0.1:7000/`、ComfyUI
+  `http://127.0.0.1:8188/system_stats`。ポートは `LLAMADOCK_<ID>_PORT`（例 `LLAMADOCK_COMFYUI_PORT=8190`）で
+  変更でき、起動コマンド（ComfyUI の `--port`）と監視が同じ値を使うためずれません。
+- UI: 各クライアントの説明の横に稼働ドット（緑 = 応答あり・赤 = 停止/接続拒否）。応答中は「開く ↗」が
+  出てブラウザで直接開けます。CLI クライアント（Cline 等）は HTTP サーバーを持たないためドットなし。
+- プレビュー環境では何も待ち受けていないため、Web 系は「停止中」と表示されます（真実の状態です）。
+
+### ComfyUI / MiniMax H3
+
+**ComfyUI は llama-server を必要としない「単独起動」ワークスペース**です。起動コマンドは
+`select-model.ps1` と同一で、ComfyUI の `.venv` の Python で `main.py --port 8188 --listen 127.0.0.1` を
+実行します（ルートは `LLAMADOCK_COMFYUI_ROOT` で変更可、既定 `C:\Users\dai86\Documents\ComfyUI`）。
+既に :8188 で起動中なら再利用します。
+
+**MiniMax H3（`minimax_h3`）は llama-server 用のテキストモデルではありません**。
+33B の動画・音声生成 DiT（拡散モデル）で、ComfyUI 内で GGUF として読み込みます（`model-notes.json` に警告あり）。
+
+- GGUF: `joeygambino/MiniMax-H3-GGUF`（fl2va / ref2va、Q8_0・Q5_1・Q5_0・Q4_0 のみ。K 量子化は hidden width 2688 のため不可）
+- 前提: **ComfyUI 0.30.0+** + **ComfyUI-GGUF** + **ComfyUI-H3-Multishot v1.5.2+**（GGUF 版）
+  （ネイティブ版は `MiniMaxAI/MiniMax-H3` のノード。`Open-ComfyUIClient` は起動時に
+  `MiniMaxH3ImageToVideo` / `MiniMaxH3SigmaShift` などのネイティブノードを検出し、無ければ警告します）
+- 必須の付属ファイル: テキストエンコーダ GGUF（`joeygambino/MiniMax-H3-encoder-GGUF` = Qwen3-VL-32B + mmproj）と VAE（`Comfy-Org/MiniMax-H3`）。エンコーダなしでは生成できません。
+- 配置例: ComfyUI の `extra_model_paths.yaml` で `.lmstudio\models\MiniMax-H3` を参照し、DiT・エンコーダ・mmproj・VAE を置きます。
+- VRAM 目安: Q5_1 ≈ 25.9 GB（24–32 GB カード）、Q4_0 ≈ 19.9 GB（16 GB カードはストリーミング）。
+
+MiniMax H3 を Web GUI に登録すると、エンジンは「ComfyUI (DiT)」と表示され、起動フロー（llama-server）には
+回りません。
+
+> プレビュー環境では `127.0.0.1:8080` が使用中の場合、`LLAMADOCK_UPSTREAM_PORT` で
+> llama-server のポートを変更できます。
 
 ## パラメータカタログとプリセット
 
@@ -157,10 +252,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 **42項目の全パラメータ**を機械可読で定義しています。GUI の設定パネルはこのスキーマから自動生成します。
 
 `config/memory-presets.json` には **省メモリ／速度プリセット**（very-light / light / balanced / full /
-moe-cpu-first / spec-mtp / spec-eagle3 / spec-off）を定義しています（現時点ではランチャーが既定値として利用。
-GUI 設定パネルからの 1 クリック適用は将来の Web GUI で実装予定）。
+moe-cpu-first / spec-mtp / spec-eagle3 / spec-off）を定義しています。Web GUI の上部バーから
+1 クリックで適用できます。
 
-次に実装する Web GUI の設計・引き継ぎは **`docs/PARAMETER-CATALOG.md`** を参照してください。
+Web GUI（3カラム・ダークテーマ）の設計・引き継ぎ資料は **`docs/PARAMETER-CATALOG.md`**、
+実装済みのコントロールパネルは **`web-ui/`** を参照してください（上記「Web GUI」セクション）。
 
 
 ## 検証

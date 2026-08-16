@@ -4,7 +4,9 @@
   "description": "Local GGUF workspace launcher for coding, chat, and research",
   "main": "mcp-server.js",
   "scripts": {
-    "start:mcp": "node mcp-server.js"
+    "start:mcp": "node mcp-server.js",
+    "start:web": "node web-ui/server.js",
+    "start": "node web-ui/server.js"
   },
   "keywords": [],
   "author": "",

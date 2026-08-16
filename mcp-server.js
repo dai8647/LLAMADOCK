@@ -19,6 +19,44 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const REQUEST_TIMEOUT_MS = Number(process.env.MCP_WEB_TIMEOUT_MS || 15000);
+
+// Serper API key lives in the environment only (never committed). When set,
+// search_web / search_and_fetch use Serper as the primary provider and the
+// HTML-scraping providers (DuckDuckGo / Brave / Bing) as fallbacks.
+const SERPER_API_KEY = process.env.SERPER_API_KEY || "";
+const SERPER_ENDPOINT = "https://google.serper.dev/search";
+
+// In-memory search-result cache: identical queries within the TTL are served
+// without hitting the network again. Keyed by provider set + query + region.
+const SEARCH_CACHE_TTL_MS = Number(process.env.MCP_SEARCH_CACHE_TTL_MS || 5 * 60 * 1000);
+const searchCache = new Map();
+
+function cacheKey(provider, query, limit, region) {
+  return `${provider}|${limit}|${region}|${query.trim().toLowerCase()}`;
+}
+
+function cacheGet(provider, query, limit, region) {
+  const key = cacheKey(provider, query, limit, region);
+  const hit = searchCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(key);
+    return null;
+  }
+  return hit.results;
+}
+
+function cacheSet(provider, query, limit, region, results) {
+  if (!results || results.length === 0) return;
+  const key = cacheKey(provider, query, limit, region);
+  searchCache.set(key, { at: Date.now(), results });
+  // Bound the cache size so a research burst cannot grow memory unbounded.
+  if (searchCache.size > 200) {
+    const oldest = searchCache.keys().next().value;
+    searchCache.delete(oldest);
+  }
+}
+
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MiB request body cap (memory DoS guard)
 // The research harness can run up to 1200s (heavy mode); keep the execFile
 // timeout aligned so MCP deep_research is not cut off mid-run.
@@ -108,12 +146,13 @@ function createMcpServer() {
     "search_web",
     {
       title: "Web Search",
-      description: "Search the web with Bing and DuckDuckGo HTML search. No API key required.",
+      description:
+        "Search the web. Uses the Serper API when SERPER_API_KEY is set, otherwise falls back to DuckDuckGo / Brave / Bing HTML search. Identical queries within a short window are served from cache.",
       inputSchema: {
         q: z.string().min(1).describe("Search query"),
         limit: z.number().int().min(1).max(20).default(8),
-        lang: z.string().default("jp-jp").describe("DuckDuckGo region, such as jp-jp or us-en"),
-        provider: z.enum(["auto", "bing", "duckduckgo", "brave"]).default("auto"),
+        lang: z.string().default("jp-jp").describe("Search region, such as jp-jp or us-en"),
+        provider: z.enum(["auto", "serper", "bing", "duckduckgo", "brave"]).default("auto"),
       },
     },
     async ({ q, limit = 8, lang = "jp-jp", provider = "auto" }) => {
@@ -133,7 +172,7 @@ function createMcpServer() {
         search_limit: z.number().int().min(1).max(20).default(8),
         fetch_limit: z.number().int().min(1).max(10).default(5),
         lang: z.string().default("jp-jp").describe("Search region/language, such as jp-jp or us-en"),
-        provider: z.enum(["auto", "bing", "duckduckgo", "brave"]).default("auto"),
+        provider: z.enum(["auto", "serper", "bing", "duckduckgo", "brave"]).default("auto"),
         per_page_chars: z.number().int().min(500).max(20000).default(5000),
         include_failed: z.boolean().default(false),
       },
@@ -238,14 +277,27 @@ function createMcpServer() {
 }
 
 async function searchWeb(query, limit, region, provider) {
+  // Serve repeat queries from cache before touching the network.
+  const cached = cacheGet(provider, query, limit, region);
+  if (cached) return cached;
+
   const results = [];
   const errors = [];
-  const providers = provider === "auto" ? ["duckduckgo", "brave", "bing"] : [provider];
+  let providers;
+  if (provider === "auto") {
+    providers = SERPER_API_KEY
+      ? ["serper", "duckduckgo", "brave", "bing"]
+      : ["duckduckgo", "brave", "bing"];
+  } else {
+    providers = [provider];
+  }
 
   for (const currentProvider of providers) {
     try {
       let nextResults;
-      if (currentProvider === "bing") {
+      if (currentProvider === "serper") {
+        nextResults = await searchSerper(query, limit);
+      } else if (currentProvider === "bing") {
         nextResults = await searchBing(query, limit, region);
       } else if (currentProvider === "brave") {
         nextResults = await searchBrave(query, limit);
@@ -263,6 +315,35 @@ async function searchWeb(query, limit, region, provider) {
     throw new Error(errors.map((item) => `${item.provider}: ${item.error}`).join("; "));
   }
 
+  if (results.length > 0) cacheSet(provider, query, limit, region, results);
+  return results;
+}
+
+async function searchSerper(query, limit) {
+  const response = await fetch(SERPER_ENDPOINT, {
+    method: "POST",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": SERPER_API_KEY,
+    },
+    body: JSON.stringify({ q: query, num: Math.min(limit, 20), gl: "jp", hl: "ja" }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Serper returned HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const results = [];
+  for (const item of payload.organic || []) {
+    const title = cleanText(item.title);
+    const url = item.link;
+    const snippet = cleanText(item.snippet);
+    if (!title || !isUsefulHttpUrl(url)) continue;
+    results.push({ provider: "serper", title, url, snippet });
+    if (results.length >= limit) break;
+  }
   return results;
 }
 
