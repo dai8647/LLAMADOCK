@@ -1520,6 +1520,9 @@ function Select-ComfyUITuning {
     # only when ComfyUI is about to start and the flags were not pinned through
     # -ComfyUIFlags / LLAMADOCK_COMFY_FLAGS / LLAMADOCK_COMFY_PROFILE. Skipped
     # when stdin is redirected so scripted/bench launches keep working.
+    # The menu is trimmed to 4 options (ck / plan / default / custom); the
+    # super, fast, triton and bench profiles remain available for scripted use
+    # via LLAMADOCK_COMFY_PROFILE (see Get-ComfyUILaunchArgs).
     if (-not [string]::IsNullOrWhiteSpace($ComfyUIFlags) -or $env:LLAMADOCK_COMFY_FLAGS -or $env:LLAMADOCK_COMFY_PROFILE) {
         return
     }
@@ -1527,39 +1530,34 @@ function Select-ComfyUITuning {
         return
     }
     Write-Host ""
-    Write-Host "ComfyUI tuning (MiniMax H3), fastest first:" -ForegroundColor Green
-    Write-Host " [1] super   - all-in fast config (ck attention; fastest)"
-    Write-Host " [2] ck      - default + --use-ck-attention (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
-    Write-Host " [3] fast    - default + --fast fp16_accumulation --force-non-blocking (untested; quality risk, benchmark first)"
-    Write-Host " [4] default - --reserve-vram 1.0 (measured baseline 19m26s; 1GB stays free for the desktop)"
-    Write-Host " [5] bench   - no extra flags (A/B baseline)"
-    Write-Host " [6] custom  - type raw ComfyUI flags"
-    Write-Host " [7] plan    - ck + planning mode (h3-chat with a local planning LLM)"
+    Write-Host "ComfyUI tuning (MiniMax H3), recommended first:" -ForegroundColor Green
+    Write-Host " [1] plan    - recommended: ck + planning mode (h3-chat with a local planning LLM) - the video-creation flow"
+    Write-Host " [2] ck      - --use-ck-attention only (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
+    Write-Host " [3] default - --reserve-vram 1.0 (safe baseline 19m26s; 1GB stays free for the desktop)"
+    Write-Host " [4] custom  - type raw ComfyUI flags"
     Write-Host ""
     do {
-        $tuningInput = Read-Host "Select ComfyUI tuning (1-7), or press Enter for default"
+        $tuningInput = Read-Host "Select ComfyUI tuning (1-4), or press Enter for plan"
         $tuningValid = $true
         if ([string]::IsNullOrWhiteSpace($tuningInput)) {
-            $script:ComfyProfileChoice = "default"
-            $script:PlanModeChoice = $false
+            $script:ComfyProfileChoice = "ck"
+            $script:PlanModeChoice = $true
+            $script:PlanModelChoice = "Qwen3.5"
         }
         else {
             switch ($tuningInput) {
-                "1" { $script:ComfyProfileChoice = "super"; $script:PlanModeChoice = $false }
+                "1" {
+                    $script:ComfyProfileChoice = "ck"
+                    $script:PlanModeChoice = $true
+                    $script:PlanModelChoice = "Qwen3.5"
+                }
                 "2" { $script:ComfyProfileChoice = "ck"; $script:PlanModeChoice = $false }
-                "3" { $script:ComfyProfileChoice = "fast"; $script:PlanModeChoice = $false }
-                "4" { $script:ComfyProfileChoice = "default"; $script:PlanModeChoice = $false }
-                "5" { $script:ComfyProfileChoice = "bench"; $script:PlanModeChoice = $false }
-                "6" {
+                "3" { $script:ComfyProfileChoice = "default"; $script:PlanModeChoice = $false }
+                "4" {
                     $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
                     $script:ComfyProfileChoice = "custom"
                     $script:ComfyFlagsChoice = $rawFlags
                     $script:PlanModeChoice = $false
-                }
-                "7" {
-                    $script:ComfyProfileChoice = "ck"
-                    $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.5"
                 }
                 default { $tuningValid = $false }
             }
@@ -1571,7 +1569,8 @@ function Start-H3Chat {
     # Starts the text-to-video chat UI (tools\h3-chat.py, port 8189) if it is
     # not already running, then opens it in the default browser. This is what
     # the user actually wants to see: a text box, not the ComfyUI node graph.
-    # With plan mode ([7] plan in the tuning menu) it delegates to h3-chat.ps1,
+    # With plan mode ([1] plan in the tuning menu, or Enter) it delegates to
+    # h3-chat.ps1,
     # which also starts the planning LLM (llama-server, CPU-only) so the
     # conversation-to-video flow works out of the box.
     param([switch]$SkipOpenBrowser)

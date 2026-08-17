@@ -55,7 +55,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40, "qimg": 90}
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
 # workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
@@ -72,6 +72,29 @@ NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
 NODE_ZIMG_SEED = "8"     # KSampler: seed
 NODE_ZIMG_SAVE = "10"    # SaveImage: output filename
+
+# Qwen-Image 2512 (key-image, high quality): GGUF Q4_K_S + Lightning 4step +
+# tumblrasia NSFW LoRA. batch_size=4 so the UI can pick the best candidate.
+QIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_qimage.json")
+NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
+NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
+NODE_QIMG_SEED = "10"    # KSampler: seed
+
+# Key-image engines selectable in the UI
+IMG_ENGINES = {
+    "zimg": {
+        "workflow": ZIMG_WORKFLOW,
+        "prompt": NODE_ZIMG_PROMPT, "latent": NODE_ZIMG_LATENT, "seed": NODE_ZIMG_SEED,
+        "default_size": (512, 320),
+        "label": "Z-Image Turbo",
+    },
+    "qimg": {
+        "workflow": QIMG_WORKFLOW,
+        "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
+        "default_size": (1344, 768),
+        "label": "Qwen-Image 2512",
+    },
+}
 
 # R2V (reference-to-video) workflows: 確定したキー画像を参照画像にして同一キャラを維持する。
 # MiniMaxH3ReferenceToVideo ノード + 参照 LoRA（minimax_h3_ref_lora_rank_256_bf16）を
@@ -139,10 +162,22 @@ def _spawn_plan_llm():
         PLAN_SERVER_BIN, "-m", PLAN_MODEL_PATH,
         "--port", str(PLAN_PORT),
         "-ngl", "0", "-c", "8192", "--no-webui",
-        "--reasoning", "off", "--reasoning-budget", "0",
+        "-np", "1", "--mlock", "-ctk", "q8_0",
+        # This 4B model is not a reasoning model: when the Qwen3.5 chat
+        # template injects a think-block opener it "thinks" by re-reading its
+        # own system prompt, burns the whole token budget, then restarts the
+        # thinking inside the answer (measured: 200s, no clean output).
+        # enable_thinking=false makes the template emit an empty think block
+        # so the model answers directly. --reasoning auto still parses any
+        # stray think tags into reasoning_content for the UI.
+        "--reasoning", "auto",
+        "--chat-template-kwargs", "{\"enable_thinking\": false}",
+        "--temp", "0.8", "--top-p", "0.95", "--min-p", "0.05", "--repeat-penalty", "1.05",
     ]
     if os.path.isfile(PLAN_MMPROJ_PATH):
-        args += ["--mmproj", PLAN_MMPROJ_PATH]
+        # Qwen-VL needs >=1024 image tokens to resolve detail (server warns
+        # about this at startup); without it the model under-sees the key image.
+        args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     log_path = os.path.join(os.environ.get("TEMP", REPO), "h3_plan_llm.log")
     logf = open(log_path, "a", encoding="utf-8", errors="replace")
     try:
@@ -341,32 +376,38 @@ class _AutoStop(threading.Thread):
 # 1) a key image (English prompt in [IMG_PROMPT] tags), then, after the user
 # confirms the rendered image, 2) a video prompt (English, [FINAL_PROMPT] tags)
 # that keeps the image content and adds motion / camera / duration.
+# ~800 tokens (was ~1400): every prompt-processing token costs ~27ms on CPU,
+# so a leaner system prompt directly cuts first-response latency. NSFW rules
+# and the MiniMax H3 FINAL_PROMPT structure are kept intact — those are the
+# parts that drive output quality.
 PLAN_SYSTEM = (
-    "あなたは「キー画像 → 動画」の2段階で映像作品を作る企画アシスタントです。"
-    "- 関数呼び出し・ツールは一切使わないでください。必ず普通の文章で答えてください。"
-    "- 会話のたびに、映像のポイント（被写体・背景・構図・雰囲気・ライティング・動き・カメラ）を1つずつ確認・提案する。"
-    "- 質問は一度に1〜2個までに絞る。長々と説明せず簡潔に。"
-    "【第1段階: キー画像】ユーザーのアイデアを聞き出し、被写体・背景・構図・雰囲気・ライティングを具体化する。"
-    "- キー画像の内容が固まったら、英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す。"
-    "  （例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, footprints in wet sand, low-angle cinematic composition[/IMG_PROMPT]）"
-    "- タグは必ず1組だけ。タグ以外の補足説明は不要。固まるまでは普通の日本語で会話を続ける。"
-    "【音声・セリフ・音楽】ユーザーの映像に合わせて、セリフ（誰が何を言うか）・声の質・効果音・環境音・音楽も企画に含める。"
-    "- 打ち返しのときに「セリフは入れますか？誰が何を言いますか？」「声の質（年齢・性別・声質・トーン）」「効果音・環境音」「音楽」を確認する。"
-    "- ユーザーが指定しなかった項目は、あなたが映像に合うものを自然に決めて提案する（いちいち空にするな）。"
-    "- ユーザーがセリフを指定したら、一字一句そのまま使う（翻訳・言い換え禁止）。"
-    "- [FINAL_PROMPT] を返すとき、その外に音声・セリフ設定を [AUDIO_SET] タグで必ず添える:"
-    "  [AUDIO_SET]\n  voice: 声の質（年齢・性別・声質・トーン・話速）\n  dialogue: セリフ（原文・誰が何を言うか）\n  sfx: 効果音・環境音\n  music: 音楽・BGM\n  [/AUDIO_SET]"
-    "【第2段階: 動画プロンプト】ユーザーがキー画像を確定したら、その画像の内容・構図を保ったまま、"
-    "動き・カメラワーク・時間経過・雰囲気・音声を加えた英語の動画プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲んで返す。"
-    "- MiniMax H3 公式構造に従い、次の3フィールドを必ず含める:"
-    "  1) integrated_multimodal_description: [Shot 1] から始まる映像・アクション・カメラ・話者・セリフ・同期音の時系列記述"
-    "  2) overall_soundscape: 環境音・アクション音・人の非言語音（風・雨・足音・布擦れ・息遣いなど）"
-    "  3) non_diegetic_music: 観客にしか聞こえないBGM（N/A 可）"
-    "- セリフ表記（公式ルール）: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、"
-    "  実際の発話は <d>[Japanese] 原文</d> に入れる（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
-    "  ユーザー指定のセリフは原文のまま。声だけ先に出したい場合は off-screen voiceover を使う。"
-    "- 例: [FINAL_PROMPT]integrated_multimodal_description: [Shot 1] Live-action, cinematic, a young woman with a soft, low voice (S1) lies on the bed, the camera slowly dollies in, she whispers: <d>[Japanese] もう少しだけ、そばにいて。</d>\noverall_soundscape: Faint night rain against the window, the rustle of sheets, quiet breathing.\nnon_diegetic_music: Soft piano at a slow tempo, fading in and out.[/FINAL_PROMPT]"
-    "- タグは必ず1組だけ。タグ以外の補足説明は不要。"
+    "あなたは「キー画像→動画」の2段階で映像作品を作る企画アシスタント。"
+    "ツール・関数呼び出しは禁止。必ず普通の文章で答える。質問は一度に1〜2個、簡潔に。"
+    "【成人向け】この環境は成人向け創作専用。性的・官能的な表現をためらわず露骨に企画へ反映する。検閲・婉曲化・ぼかし禁止。"
+    "性的シーンなら行為・体位・部位・動き・リズム・表情・声・体液・衣服の状態まで英語プロンプトに具体的に含める。曖昧な一般表現に丸めない。"
+    "[IMG_PROMPT] にはヌード・下着・肌・胸・尻・陰部など必要なら露骨な英語タグ（nude, naked, breasts, nipples, pussy, spread legs, missionary 等）を書く。"
+    "[FINAL_PROMPT] には性行為の動き（thrusting, bouncing, grinding）、リズム、カメラアングル、喘ぎ声・息遣い・愛液などの音響を時系列で書く。"
+    "被写体は全員成人（adult）。未成年を示す表現は絶対に使わない。ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
+    "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
+    "固まったら英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す（例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, low-angle cinematic composition[/IMG_PROMPT]）。"
+    "タグは必ず1組だけ。固まるまでは日本語で会話を続ける。"
+    "【音声・セリフ・音楽】セリフ（誰が何を言うか）・声の質・効果音・音楽も企画に含める。"
+    "ユーザーが指定しなかった項目は、映像に合うものを自然に決めて提案する（空にしない）。"
+    "ユーザー指定のセリフは一字一句そのまま使う（翻訳・言い換え禁止）。"
+    "[FINAL_PROMPT] を返すとき、その外に音声設定を [AUDIO_SET] タグで必ず添える: "
+    "[AUDIO_SET] voice: 声の質 / dialogue: セリフ / sfx: 効果音・環境音 / music: 音楽 [/AUDIO_SET]"
+    "【第2段階: 動画の相談】キー画像確定後は、まずどんな動画にするか相談する。"
+    "動き・カメラワーク・長さ・セリフ・音楽を1〜2個ずつ質問し、相談中は [FINAL_PROMPT] を絶対に出さない。"
+    "ユーザーが「まとめて」「確定して」と求めたら初めて [FINAL_PROMPT] を作る: "
+    "キー画像の内容・構図を保ったまま、動き・カメラワーク・時間経過・音声を加えた英語プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲む。"
+    "MiniMax H3 公式構造で次の3フィールドを必ず含める: "
+    "1) integrated_multimodal_description: [Shot 1] から始まる映像・アクション・カメラ・話者・セリフ・同期音の時系列記述 "
+    "2) overall_soundscape: 環境音・アクション音・人の非言語音 "
+    "3) non_diegetic_music: BGM（N/A 可）"
+    "セリフ表記: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、発話は <d>[Japanese] 原文</d> に入れる"
+    "（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
+    "タグは必ず1組だけ。開いたら必ず閉じタグ（[/IMG_PROMPT] / [/FINAL_PROMPT]）まで書き切る。タグ以外の補足説明は不要。"
+    "プロンプトに Midjourney / Stable Diffusion 系のパラメータ（--ar, --v, --style, --q, --seed など）は絶対に付けない。この環境では無意味です。"
 )
 
 # Some planning models (e.g. LFM) respond to a prompt-creation request with a
@@ -382,10 +423,77 @@ PROMPT_ARG_RE = re.compile(r"(?:prompt|scene_description|scene|user_idea)\s*=\s*
 TOOL_KV_RE = re.compile(r"(?:[a-z_]+)\s*=\s*['\"](.*?)['\"]", re.S)
 
 
+# The model sometimes *mentions* the tag names in backticks while explaining
+# the format ("enclosed in `[IMG_PROMPT]` and `[/IMG_PROMPT]`"); strip those
+# references so they are never mistaken for real tag pairs.
+TAG_REF_RE = re.compile(r"`\s*\[/?[A-Z_]+\]\s*`")
+
+
 def _clean_plan_reply(text):
     """Remove tool-call markup and empty lines from a planning-LLM reply."""
     text = TOOL_CALL_RE.sub("", text or "")
+    text = TAG_REF_RE.sub("", text)
     return "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+
+
+def _best_tag_match(regex, text):
+    """Content of the best [TAG]...[/TAG] match in text, or None.
+
+    When several pairs appear (a draft inside the model's rambling plus the
+    real one), prefer the longest content — the real prompt is always the
+    substantial one.
+    """
+    matches = regex.findall(text or "")
+    if not matches:
+        return None
+    return max(matches, key=len).strip()
+
+
+# Midjourney / SD-style generation flags the model sometimes appends
+# (--ar 16:9 --v 6.0 --style raw --q 2 ...). They are meaningless to
+# Qwen-Image / Z-Image and pollute the prompt, so strip them. Leading
+# whitespace is optional because the model sometimes glues them on
+# ("8k--v 6.0--q 2").
+GEN_PARAM_RE = re.compile(
+    r"\s*--(?:ar|aspect|v|version|style|stylize|s|q|quality|no|seed|c|chaos|tile|iw|w|h)\b[^-]*",
+    re.I,
+)
+
+
+def _strip_gen_params(text):
+    return GEN_PARAM_RE.sub("", text or "").strip()
+
+
+def _unclosed_tag(text, tag):
+    """Content after an UNCLOSED [tag] opener, or None.
+
+    Small models often open [IMG_PROMPT] / [FINAL_PROMPT] and then stop (or
+    drift into Japanese) without emitting the closing tag. Recover the prompt
+    by taking the text after the LAST opener and cutting it at the first '---'
+    separator or the first mostly-Japanese line. The result must be mostly
+    ASCII (real prompts are English) — otherwise the opener was just a mention
+    inside Japanese prose and we return None.
+    """
+    opener = "[" + tag + "]"
+    idx = (text or "").rfind(opener)
+    if idx < 0:
+        return None
+    rest = text[idx + len(opener):]
+    lines = []
+    for line in rest.splitlines():
+        s = line.strip()
+        if s.startswith("---") or s.startswith("==="):
+            break
+        # stop at a line that is mostly non-ASCII (Japanese prose), but only
+        # once we already captured some prompt text
+        if lines and s and sum(1 for ch in s if ord(ch) > 127) / len(s) > 0.5:
+            break
+        lines.append(line)
+    content = _strip_gen_params("\n".join(lines)).strip()
+    if len(content) < 15:
+        return None
+    ascii_ratio = sum(1 for ch in content if ord(ch) < 128) / len(content)
+    return content if ascii_ratio >= 0.7 else None
 
 
 def _tool_prompt(text):
@@ -528,6 +636,9 @@ HTML = """<!doctype html>
   .plan { border-top:1px solid var(--line); padding-top:6px; }
   .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
   .hint { color:var(--muted); font-size:11px; }
+  details.thinkbox { margin:6px 0; border:1px solid var(--line); border-radius:8px; padding:6px 10px; background:rgba(255,255,255,0.02); }
+  details.thinkbox summary { cursor:pointer; color:var(--muted); font-size:11px; user-select:none; }
+  details.thinkbox pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); font-size:11px; margin:6px 0 0; max-height:220px; overflow:auto; }
   .ditrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px; }
   #audioset { margin-top:6px; font-size:12px; color:var(--muted); }
   #audioset summary { cursor:pointer; font-weight:600; }
@@ -558,6 +669,13 @@ HTML = """<!doctype html>
   .refcard .refname { font-size:11px; padding:5px 6px 0; color:var(--text);
                       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .refcard .refdir { font-size:10px; padding:0 6px 6px; color:var(--muted); }
+  .imggrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:8px; }
+  .imgcard { border:2px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer; background:var(--bg); }
+  .imgcard:hover { border-color:var(--accent); }
+  .imgcard.sel { border-color:var(--ok); box-shadow:0 0 0 2px rgba(62,207,142,.35); }
+  .imgcard img { width:100%; height:110px; object-fit:cover; display:block; background:#000; }
+  .imgcard .imgname { font-size:10px; padding:4px 6px; color:var(--muted);
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -591,6 +709,11 @@ HTML = """<!doctype html>
       <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
       <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
     </div>
+    <div class="ditrow">
+      <span class="hint">キー画像:</span>
+      <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
+      <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+    </div>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
     <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
     <div id="refpick" class="plan">
@@ -598,6 +721,7 @@ HTML = """<!doctype html>
       <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
     </div>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
+    <button id="btn-manual" class="small" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font-size:12px" onclick="showManualPrompt()">✍ 手動プロンプト</button>
     <details id="audioset">
       <summary>🎙 音声・セリフ設定（任意）</summary>
       <input type="text" id="au-voice" placeholder="声: 例：低めの落ち着いた声・息を含むささやき">
@@ -610,11 +734,13 @@ HTML = """<!doctype html>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
+  <button id="cancel" class="warn" style="display:none;background:var(--err)" onclick="cancelCurrent()">✕ キャンセル</button>
 </footer>
 <script>
 const $ = s => document.querySelector(s);
 let busy = false;
 let jobCancelled = false;
+let curJobId = null;
 let lastImgPrompt = null;
 let lastFinalPrompt = null;
 let curImageFilename = null;
@@ -633,6 +759,18 @@ function addMsg(kind, html) {
 
 function esc(s) {
   return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// Collapsible "thinking" trace from the planning LLM (reasoning_content).
+function thinkHtml(t) {
+  if (!t) return "";
+  return '<details class="thinkbox"><summary>💭 企画 LLM の考え中（' + t.length + '字）</summary><pre>' + esc(t) + "</pre></details>";
+}
+
+function setBusy(b) {
+  busy = b;
+  $("#send").disabled = b;
+  $("#cancel").style.display = b ? "" : "none";
 }
 
 async function checkServer() {
@@ -725,15 +863,13 @@ function closeRefModal() { $("#refmodal").style.display = "none"; }
 async function send() {
   const text = $("#input").value.trim();
   if (!text || busy) return;
-  busy = true;
-  $("#send").disabled = true;
+  setBusy(true);
   $("#input").value = "";
   addMsg("user", esc(text));
   if ($("#planmode").checked) { plan(text); return; }
   if ($("#refmode").checked && !curImageFilename) {
     addMsg("bot", '<div class="meta">参照画像が未設定です。✎ 企画モードでキー画像を確定するか、下部の「🗂 参照画像を選ぶ」から既存の画像を指定してください。</div>');
-    busy = false;
-    $("#send").disabled = false;
+    setBusy(false);
     return;
   }
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
@@ -754,8 +890,7 @@ async function send() {
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
-    busy = false;
-    $("#send").disabled = false;
+    setBusy(false);
   }
 }
 
@@ -769,7 +904,7 @@ async function plan(text) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-    let html = '<div class="meta">企画案</div>' + esc(j.reply || "（応答なし）");
+    let html = '<div class="meta">企画案</div>' + thinkHtml(j.thinking) + esc(j.reply || "（応答なし）");
     if (j.img_prompt) {
       lastImgPrompt = j.img_prompt;
       if (planStage === "image") {
@@ -778,8 +913,7 @@ async function plan(text) {
         // genImage が busy を管理する。ここで解除しないと send() が立てた
         // busy=true のまま genImage の `if (busy) return` に引っかかり、
         // 何も送信せず固まってしまう。
-        busy = false;
-        $("#send").disabled = false;
+        setBusy(false);
         genImage(bot);
         return;
       }
@@ -805,55 +939,74 @@ async function plan(text) {
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
   }
-  busy = false;
-  $("#send").disabled = false;
+  setBusy(false);
+}
+
+function imgEngine() {
+  const el = document.querySelector('input[name="imgengine"]:checked');
+  return el ? el.value : "qimg";
 }
 
 async function genImage(prevBot) {
   if (!lastImgPrompt || busy) return;
-  const bot = prevBot || addMsg("bot", '<div class="meta">Z-Image Turbo でキー画像を生成中…（数秒）</div>');
-  busy = true;
-  $("#send").disabled = true;
+  const eng = imgEngine();
+  const label = eng === "qimg" ? "Qwen-Image 2512（4候補・数十秒）" : "Z-Image Turbo（数秒）";
+  const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
+  setBusy(true);
   try {
     const r = await fetch("/api/zimg", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: lastImgPrompt})
+      body: JSON.stringify({text: lastImgPrompt, engine: eng})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     pollImage(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
-    busy = false;
-    $("#send").disabled = false;
+    setBusy(false);
   }
 }
 
 async function pollImage(id, bot) {
+  curJobId = id;
   try {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
     if (j.status === "success") {
-      const img = j.videos[0];
-      const fn = img.filename;
-      curImageFilename = fn;
+      const imgs = (j.videos || []).filter(v => v.kind === "image");
+      if (!imgs.length) {
+        bot.innerHTML = '<div class="meta">エラー</div><div class="err">画像が見つかりませんでした</div>';
+        curJobId = null;
+        setBusy(false);
+        return;
+      }
+      // 全候補をギャラリー表示して選べるようにする（最後の1枚だけ問題の修正）
+      curImageFilename = imgs[0].filename;
+      let grid = '<div class="imggrid">';
+      imgs.forEach((img, i) => {
+        grid +=
+          '<div class="imgcard' + (i === 0 ? " sel" : "") + '" data-fn="' + esc(img.filename) + '" onclick="pickKeyImage(this)">' +
+          '<img src="/api/view?filename=' + encodeURIComponent(img.filename) + '&type=' + encodeURIComponent(img.type || "output") + '">' +
+          '<div class="imgname">' + esc(img.filename) + "</div></div>";
+      });
+      grid += "</div>";
       bot.innerHTML =
-        '<div class="meta">キー画像 ✅（Z-Image Turbo・確認してね）</div>' +
-        '<img src="/api/view?filename=' + encodeURIComponent(fn) + '&type=' + encodeURIComponent(img.type || "output") + '">' +
+        '<div class="meta">キー画像 ✅（' + imgs.length + '枚・クリックで選択）</div>' +
+        grid +
         '<div class="row">' +
-        '<button class="ok" onclick="confirmImage()">✅ この画像で確定 → 動画へ</button>' +
+        '<button class="ok" onclick="confirmImage()">✅ この画像で確定 → 動画を相談</button>' +
         '<button class="rev" onclick="reviseImage()">🔁 修正する</button>' +
         "</div>";
       planStage = "image";
-      busy = false;
-      $("#send").disabled = false;
+      curJobId = null;
+      setBusy(false);
       return;
     }
     if (j.status === "error") {
       bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(j.error || "画像生成に失敗しました") + "</div>";
-      busy = false;
-      $("#send").disabled = false;
+      curJobId = null;
+      setBusy(false);
       return;
     }
     bot.querySelector(".meta").textContent = "キー画像生成中… " + (j.extra || "");
@@ -861,6 +1014,13 @@ async function pollImage(id, bot) {
   } catch (e) {
     setTimeout(() => pollImage(id, bot), 2000);
   }
+}
+
+function pickKeyImage(card) {
+  const grid = card.parentElement;
+  grid.querySelectorAll(".imgcard").forEach(c => c.classList.remove("sel"));
+  card.classList.add("sel");
+  curImageFilename = card.dataset.fn;
 }
 
 function reviseImage() {
@@ -871,9 +1031,8 @@ function reviseImage() {
 
 function confirmImage() {
   if (busy) return;
-  busy = true;
-  $("#send").disabled = true;
-  const bot = addMsg("bot", '<div class="meta">企画 LLM が動画プロンプトを作成中…（Z-Image はアンロード済み）</div>');
+  setBusy(true);
+  const bot = addMsg("bot", '<div class="meta">企画 LLM と動画の内容を相談中…（Z-Image はアンロード済み）</div>');
   (async () => {
     try {
       const r = await fetch("/api/plan", {
@@ -883,24 +1042,42 @@ function confirmImage() {
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-      let html = '<div class="meta">画像を確定 ✅（企画 LLM が画像を見て動画プロンプト作成）</div>' + esc(j.reply || "（応答なし）");
+      let html = '<div class="meta">画像を確定 ✅（ここから動画の内容を相談します）</div>' + thinkHtml(j.thinking) + esc(j.reply || "（応答なし）");
       if (j.final_prompt) {
         lastFinalPrompt = j.final_prompt;
         planStage = "video";
         html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
-        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます。' +
+      } else {
+        planStage = "video";
+        html += '<div class="hint">LLM の質問に答えて動画の内容を固めてください。「まとめて」「プロンプト確定」で [FINAL_PROMPT] を作ります。' +
           '画質・長さ・向きもチャットで調整できます（例：「もっと高画質で」「長めに」「縦長で」「30秒で」）。' +
-          '声・セリフ・音楽は下の 🎙 音声・セリフ設定でも指定できます。' +
-          '同一キャラを保ちたい場合は 🔗 参照モードにチェックを入れてから生成してください（確定したキー画像が参照になります）。' +
-          '過去に作った画像を使うなら「🗂 参照画像を選ぶ」から直接指定もできます。</div>';
+          '自分でプロンプトを書きたい場合は下の「✍ 手動プロンプト」から直接入力できます。</div>';
       }
+      html += '<button class="genplan" style="background:transparent;color:var(--accent);border:1px solid var(--accent)" onclick="showManualPrompt()">✍ 手動プロンプトで生成する</button>';
       bot.innerHTML = html;
     } catch (e) {
       bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
     }
-    busy = false;
-    $("#send").disabled = false;
+    setBusy(false);
   })();
+}
+
+function showManualPrompt() {
+  const bot = addMsg("bot",
+    '<div class="meta">✍ 手動プロンプト</div>' +
+    '<textarea id="manual-prompt" style="width:100%;height:110px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:13px" placeholder="動画プロンプトを英語で直接入力（例: [Shot 1] The woman turns to the camera and smiles, the camera slowly dollies in...）"></textarea>' +
+    '<div class="row"><button class="ok" onclick="useManualPrompt()">🎬 このプロンプトで生成 ▶</button></div>');
+  bot.querySelector("#manual-prompt").focus();
+}
+
+function useManualPrompt() {
+  const ta = document.querySelector("#manual-prompt");
+  const text = ta ? ta.value.trim() : "";
+  if (!text) return;
+  lastFinalPrompt = text;
+  planStage = "video";
+  addMsg("user", "✍ 手動プロンプトで生成: " + text);
+  genPlanLast();
 }
 
 function genPlanLast() {
@@ -908,8 +1085,7 @@ function genPlanLast() {
   if (!lastFinalPrompt) return;
   const finalPrompt = lastFinalPrompt;
   lastFinalPrompt = null;
-  busy = true;
-  $("#send").disabled = true;
+  setBusy(true);
   const mode = document.querySelector('input[name="mode"]:checked').value;
   const tag = $("#refmode").checked ? "🔗 参照モードで生成する: " : "✅ この企画で生成する: ";
   addMsg("user", tag + finalPrompt);
@@ -934,12 +1110,12 @@ async function doGenerate(mode, text, bot) {
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
-    busy = false;
-    $("#send").disabled = false;
+    setBusy(false);
   }
 }
 
 async function poll(id, bot) {
+  curJobId = id;
   try {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
@@ -949,15 +1125,15 @@ async function poll(id, bot) {
         '<video controls autoplay loop muted src="/api/view?filename=' + encodeURIComponent(v.filename) +
         '&type=' + encodeURIComponent(v.type || "output") + '"></video>' +
         '<div class="path">' + esc(v.path) + "</div>";
-      busy = false;
-      $("#send").disabled = false;
+      curJobId = null;
+      setBusy(false);
       startShutdown(90);
       return;
     }
     if (j.status === "error") {
       bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(j.error || "失敗しました") + "</div>";
-      busy = false;
-      $("#send").disabled = false;
+      curJobId = null;
+      setBusy(false);
       return;
     }
     // still running: refresh the eta text every poll
@@ -987,8 +1163,7 @@ async function poll(id, bot) {
 
 async function cancelJob(id, bot) {
   jobCancelled = true;
-  busy = false;
-  $("#send").disabled = false;
+  setBusy(false);
   try {
     await fetch("/api/cancel", {
       method: "POST",
@@ -996,10 +1171,20 @@ async function cancelJob(id, bot) {
       body: JSON.stringify({prompt_id: id})
     });
   } catch (e) {}
-  const meta = bot.querySelector(".meta");
-  if (meta) meta.textContent = "キャンセルしました（ComfyUI のジョブを中断・削除）";
-  const cb = bot.querySelector(".cancelbtn");
-  if (cb) cb.remove();
+  if (curJobId === id) curJobId = null;
+  if (bot) {
+    const meta = bot.querySelector(".meta");
+    if (meta) meta.textContent = "キャンセルしました（ComfyUI のジョブを中断・削除）";
+    const cb = bot.querySelector(".cancelbtn");
+    if (cb) cb.remove();
+  }
+}
+
+async function cancelCurrent() {
+  if (!curJobId) return;
+  const id = curJobId;
+  await cancelJob(id, null);
+  addMsg("bot", '<div class="meta">キャンセルしました。</div>');
 }
 
 function startShutdown(seconds) {
@@ -1067,7 +1252,24 @@ async function doShutdown(scope) {
 
 function hideShutdown() { $("#shutdown-box").style.display = "none"; }
 
-function resetPlan() {
+async function resetPlan() {
+  // 進行中の生成ジョブがあれば先にキャンセルする
+  const hadJob = !!curJobId;
+  if (curJobId) {
+    try {
+      await fetch("/api/cancel", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({prompt_id: curJobId})
+      });
+    } catch (e) {}
+    curJobId = null;
+  }
+  jobCancelled = true;
+  setBusy(false);
+  // 自動停止カウントダウンが残っていれば解除する
+  if (shutdownTimer) { clearInterval(shutdownTimer); shutdownTimer = null; }
+  $("#shutdown-box").style.display = "none";
   fetch("/api/plan", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -1076,7 +1278,11 @@ function resetPlan() {
   lastImgPrompt = null;
   lastFinalPrompt = null;
   planStage = "chat";
-  addMsg("bot", '<div class="meta">新しい企画</div>新しい企画を始めましょう。作りたい映像を教えてください。');
+  if (hadJob) {
+    addMsg("bot", '<div class="meta">新しい企画</div>進行中の生成をキャンセルし、新しい企画を始めます。作りたい映像を教えてください。');
+  } else {
+    addMsg("bot", '<div class="meta">新しい企画</div>新しい企画を始めましょう。作りたい映像を教えてください。');
+  }
 }
 
 $("#planmode").addEventListener("change", e => {
@@ -1328,7 +1534,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
-            reply, img_prompt, final_prompt, audio = self._plan_llm(text, endpoint, stage, image)
+            reply, img_prompt, final_prompt, audio, thinking = self._plan_llm(text, endpoint, stage, image)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
@@ -1336,7 +1542,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             reply = "動画プロンプトがまとまりました。下のボタンで生成できます。\n\n" + final_prompt
         if img_prompt and not reply:
             reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
-        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "audio": audio})
+        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "audio": audio, "thinking": thinking})
 
     def _plan_reset(self):
         global PLAN_HISTORY
@@ -1371,7 +1577,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 {"role": "system", "content": AUDIO_SYSTEM},
                 {"role": "user", "content": "映像企画: " + text},
             ],
-            "max_tokens": 400,
+            "max_tokens": 600,
             "temperature": 0.7,
         }).encode("utf-8")
         req_ = urllib.request.Request(
@@ -1408,7 +1614,7 @@ class ChatHandler(BaseHTTPRequestHandler):
     def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300):
         """Send the message (plus history) to the planning LLM.
 
-        Returns (reply_text, img_prompt, final_prompt).
+        Returns (reply_text, img_prompt, final_prompt, audio, thinking).
         - stage "chat"/"image": the model settles on the key-image prompt
           ([IMG_PROMPT] tags, or a tool-call prompt argument).
         - stage "video": the model settles on the final video prompt
@@ -1422,10 +1628,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             with SESSION_LOCK:
                 ip = SESSION.get("image_prompt") or ""
             user_text = (
-                "キー画像を確定しました。添付した画像（または以下の画像プロンプト）をベースに、"
-                "動画プロンプトを作成してください。画像の内容・構図を保ちつつ、"
-                "動き・カメラワーク・時間経過・雰囲気を加えた英語のプロンプトを "
-                "[FINAL_PROMPT] と [/FINAL_PROMPT] のタグで囲んで返してください。\n"
+                "キー画像を確定しました。添付した画像（または以下の画像プロンプト）が動画の1フレーム目になります。\n"
+                "ここからは【第2段階: 動画の相談】です。いきなり [FINAL_PROMPT] は作らず、"
+                "まずこの画像をどんな動画にするか（動き・カメラワーク・長さ・セリフ・音楽など）を"
+                "1〜2個の質問でユーザーと相談してください。\n"
                 f"画像プロンプト: {ip}"
             )
             # multimodal: attach the confirmed key image (base64) so the
@@ -1449,12 +1655,17 @@ class ChatHandler(BaseHTTPRequestHandler):
                         content = user_text
         with PLAN_LOCK:
             PLAN_HISTORY.append({"role": "user", "content": content})
-            # keep the context bounded; system prompt always first
-            history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-12:]
+            # keep the context bounded; system prompt always first. 6 turns is
+            # enough for the 2-stage flow and halves prompt-processing time
+            # (~36 t/s on CPU: every extra turn costs real seconds of latency).
+            history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-6:]
             body = json.dumps({
                 "messages": history,
-                "max_tokens": 512,
-                "temperature": 0.7,
+                # 2048: with --reasoning on the thinking tokens (capped at 256
+                # server-side) also count against this budget; 1024 truncated
+                # long [FINAL_PROMPT] blocks.
+                "max_tokens": 2048,
+                "temperature": 0.8,
             }).encode("utf-8")
             req = urllib.request.Request(
                 endpoint.rstrip("/") + "/v1/chat/completions",
@@ -1465,9 +1676,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 d = json.load(r)
             msg = d["choices"][0]["message"]
             content = msg.get("content") or ""
+            # with --reasoning on the server puts the think block here; show
+            # it in the UI as the model's "thinking" trace.
+            thinking = (msg.get("reasoning_content") or "").strip()
             # some reasoning models put the text in reasoning_content
             if not content.strip():
                 content = msg.get("reasoning_content") or ""
+                thinking = ""
             reply = _clean_plan_reply(content)
             audio = _parse_audio_set(reply)
             if audio:
@@ -1477,22 +1692,34 @@ class ChatHandler(BaseHTTPRequestHandler):
             img_prompt = None
             final_prompt = None
             if stage == "video":
-                m = FINAL_RE.search(reply)
-                final_prompt = m.group(1).strip() if m else None
+                final_prompt = _best_tag_match(FINAL_RE, reply)
+                if not final_prompt:
+                    final_prompt = _unclosed_tag(reply, "FINAL_PROMPT")
                 if not final_prompt:
                     final_prompt = _tool_prompt(content)
-                if not final_prompt and _looks_like_final(reply):
-                    final_prompt = reply
+                # NOTE: 相談中に「プロンプトっぽい英語」が返ってきても、明示的な
+                # [FINAL_PROMPT] タグ（またはツール呼び出し）がなければ確定プロンプト
+                # にしない。これで「どんな動画にするか決めずにプロンプトが出る」のを防ぐ。
             else:
-                m = IMG_FINAL_RE.search(reply)
-                img_prompt = m.group(1).strip() if m else None
+                img_prompt = _best_tag_match(IMG_FINAL_RE, reply)
                 if not img_prompt:
-                    m = FINAL_RE.search(reply)
-                    img_prompt = m.group(1).strip() if m else None
+                    img_prompt = _best_tag_match(FINAL_RE, reply)
+                if not img_prompt:
+                    img_prompt = _unclosed_tag(reply, "IMG_PROMPT")
                 if not img_prompt:
                     img_prompt = _tool_prompt(content)
                 if not img_prompt and _looks_like_final(reply):
                     img_prompt = reply
+            # a real prompt is never a few characters; discard garbage matches
+            # (e.g. the model quoting the tag names inside an explanation)
+            if img_prompt and len(img_prompt) < 15:
+                img_prompt = None
+            if final_prompt and len(final_prompt) < 15:
+                final_prompt = None
+            if img_prompt:
+                img_prompt = _strip_gen_params(img_prompt)
+            if final_prompt:
+                final_prompt = _strip_gen_params(final_prompt)
             if img_prompt:
                 with SESSION_LOCK:
                     SESSION["image_prompt"] = img_prompt
@@ -1503,7 +1730,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             # messages have context (a tool-call reply becomes its prompt text)
             history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
-            return reply, img_prompt, final_prompt, audio
+            return reply, img_prompt, final_prompt, audio, thinking
 
     # ---- R2V reference image ----------------------------------------
 
@@ -1595,27 +1822,33 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "画像プロンプトが空です"})
             return
+        engine = req.get("engine") or "zimg"
+        eng = IMG_ENGINES.get(engine)
+        if not eng:
+            self._json(400, {"error": "unknown image engine: " + engine})
+            return
+        dw, dh = eng["default_size"]
         try:
-            width = max(256, min(int(req.get("width") or 512), 1024))
-            height = max(256, min(int(req.get("height") or 320), 1024))
+            width = max(256, min(int(req.get("width") or dw), 1536))
+            height = max(256, min(int(req.get("height") or dh), 1536))
         except Exception:
-            width, height = 512, 320
+            width, height = dw, dh
         try:
-            with open(ZIMG_WORKFLOW, encoding="utf-8") as f:
+            with open(eng["workflow"], encoding="utf-8") as f:
                 wf = json.load(f)["prompt"]
         except Exception as e:
-            self._json(500, {"error": f"Z-Image ワークフロー読み込み失敗: {e}"})
+            self._json(500, {"error": f"{eng['label']} ワークフロー読み込み失敗: {e}"})
             return
-        wf[NODE_ZIMG_PROMPT]["inputs"]["text"] = text
-        wf[NODE_ZIMG_LATENT]["inputs"]["width"] = width
-        wf[NODE_ZIMG_LATENT]["inputs"]["height"] = height
-        wf[NODE_ZIMG_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
+        wf[eng["prompt"]]["inputs"]["text"] = text
+        wf[eng["latent"]]["inputs"]["width"] = width
+        wf[eng["latent"]]["inputs"]["height"] = height
+        wf[eng["seed"]]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
         self._free_comfy()
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             pid = json.loads(raw)["prompt_id"]
-            self.server.job_meta[pid] = {"mode": "zimg", "start": time.time(), "kind": "image"}
+            self.server.job_meta[pid] = {"mode": engine, "start": time.time(), "kind": "image"}
             self._json(200, {"prompt_id": pid})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
