@@ -34,6 +34,7 @@ test-*.out.log
 test-*.err.log
 tools/test-output*.json
 tools/test-output*.log
+tools/plan-quality-results.json
 
 # --- Local generated artifacts (Web GUI) ---
 config/models-config.json
