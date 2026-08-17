@@ -3,13 +3,18 @@
 # or [2] ck), then run this to get the chat page:
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1
 #
-# Planning mode optionally starts a local planning LLM (CPU-only, VRAM stays
-# free for ComfyUI). Choose the model with -PlanModel:
+# Planning mode optionally starts a local planning LLM. Choose the model with
+# -PlanModel:
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.5
+#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.8-27B-GPU
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Off
+#
+# Qwen3.5 runs on CPU (-ngl 0) and stays resident. Qwen3.8-27B-GPU runs on the
+# GPU during the planning phase only: h3-chat.py starts it on demand (port
+# 8191) and kills it before every generation so the video model gets the VRAM.
 
 param(
-    [ValidateSet("Qwen3.5", "Off")]
+    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -21,6 +26,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $chatPy = Join-Path $here "h3-chat.py"
 $port = 8189
 $planPort = 8190
+if ($PlanModel -eq "Qwen3.8-27B-GPU") { $planPort = 8191 }
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
@@ -29,6 +35,12 @@ $planModels = @{
         Label = "Qwen3.5-4B NSFW Literotica (えろ特化・視覚は mmproj 流用)"
         Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
         Mmproj = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf"
+    }
+    "Qwen3.8-27B-GPU" = @{
+        Label = "Qwen3.8-27B Abliterated (GPU・企画フェーズのみ・視覚なし)"
+        Path = "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+        Mmproj = $null
+        Gpu = $true
     }
 }
 
@@ -61,9 +73,10 @@ try {
     if ($r.StatusCode -eq 200) { $already = $true }
 } catch { }
 
-# Double-launch guard: chat UI and planning LLM both already running means
-# there is nothing left to do here.
-if ($already -and $PlanModel -ne "Off") {
+# Double-launch guard: chat UI (and, for the resident CPU planner, the
+# planning LLM) already running means there is nothing left to do here.
+# The GPU planner is started on demand by h3-chat.py, so it is not checked.
+if ($already -and $PlanModel -eq "Qwen3.5") {
     try {
         $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
         if ($r.StatusCode -eq 200) {
@@ -73,12 +86,35 @@ if ($already -and $PlanModel -ne "Off") {
         }
     } catch { }
 }
+elseif ($already -and $PlanModel -eq "Qwen3.8-27B-GPU") {
+    Write-Host "h3-chat is already running; nothing to start." -ForegroundColor Green
+    if (-not $NoBrowser) { Start-Process $url }
+    exit 0
+}
 
 # ---- planning LLM (optional) ---------------------------------------
 
 $planArgs = @()
 $skipPlanStart = $false
-if ($PlanModel -ne "Off") {
+# The GPU planner is launched on demand by h3-chat.py (LLAMADOCK_PLAN_GPU=1):
+# it must not hold VRAM while ComfyUI may still be generating.
+$planGpu = $PlanModel -eq "Qwen3.8-27B-GPU"
+$planDisabled = $false
+if ($planGpu) {
+    $model = $planModels[$PlanModel]
+    if (-not (Test-Path -LiteralPath $model.Path)) {
+        Write-Host "WARNING: planning model not found: $($model.Path)" -ForegroundColor Yellow
+        Write-Host "         Planning mode will be disabled. (Download it first in LM Studio.)" -ForegroundColor Yellow
+        $planGpu = $false
+        $planDisabled = $true
+    }
+    else {
+        Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort)." -ForegroundColor Cyan
+        $env:LLAMADOCK_PLAN_GPU = "1"
+        $skipPlanStart = $true
+    }
+}
+if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
     $model = $planModels[$PlanModel]
     if (-not (Test-Path -LiteralPath $model.Path)) {
         Write-Host "WARNING: planning model not found: $($model.Path)" -ForegroundColor Yellow
@@ -102,9 +138,10 @@ if ($PlanModel -ne "Off") {
         # CPU-only (-ngl 0) so ComfyUI keeps all VRAM. This 4B model is not a
         # reasoning model: with thinking enabled it re-reads its own system
         # prompt until the token budget runs out, then restarts thinking inside
-        # the answer (measured: 200s, no clean output). enable_thinking=false
-        # makes the chat template emit an empty think block so the model
-        # answers directly; --reasoning auto still parses any stray think tags.
+        # the answer (measured: 200s, no clean output). --reasoning off makes
+        # the chat template emit an empty think block so the model answers
+        # directly (this build maps --reasoning off to enable_thinking=false;
+        # the older --chat-template-kwargs form is deprecated).
         if (-not $skipPlanStart) {
         Write-Host "Starting planning LLM ($($model.Label)) on $planUrl ..." -ForegroundColor Cyan
         $serverArgs = @(
@@ -116,8 +153,7 @@ if ($PlanModel -ne "Off") {
             "-np", "1",
             "--mlock",
             "-ctk", "q8_0",
-            "--reasoning", "auto",
-            "--chat-template-kwargs", '{"enable_thinking": false}',
+            "--reasoning", "off",
             "--temp", "0.8",
             "--top-p", "0.95",
             "--min-p", "0.05",

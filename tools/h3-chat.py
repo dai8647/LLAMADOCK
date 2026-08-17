@@ -13,6 +13,14 @@ can shape the video concept conversationally before generating. When the LLM
 wraps its final prompt in [FINAL_PROMPT]...[/FINAL_PROMPT], the UI offers a
 "generate with this plan" button.
 
+Two planning LLMs are supported:
+  - default: Qwen3.5-4B on CPU (-ngl 0, port 8190), resident, vision-capable.
+  - LLAMADOCK_PLAN_GPU=1: Qwen3.8-27B-Abliterated on GPU (-ngl all, port
+    8191). Started on demand for the planning phase only and killed before
+    every ComfyUI generation, so the 14GB planner and the video model never
+    fight over VRAM. No vision projector: the confirmed key image is handed
+    off as its prompt text.
+
 Reference mode (R2V): when a key image has been confirmed in plan mode,
 ticking the reference checkbox generates the video with MiniMaxH3ReferenceToVideo
 using the confirmed key image as <Picture 1> (reference LoRA, no ref2va model
@@ -118,24 +126,45 @@ R2V_TAG_NOTE = (
 )
 
 # Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
-PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
-PLAN_PORT = 8190
+#
+# The planning LLM runs in one of two modes:
+#   cpu4b  (default): Qwen3.5-4B on CPU (-ngl 0), port 8190, pre-started and
+#                     always-on; has an mmproj so it can see the confirmed key
+#                     image.
+#   gpu27b (LLAMADOCK_PLAN_GPU=1): Qwen3.8-27B-Abliterated on GPU (-ngl all),
+#                     port 8191. Started on demand for the planning phase only
+#                     and killed before every ComfyUI generation, so the 14GB
+#                     planner and the video model never fight over VRAM. No
+#                     mmproj -> the key image is handed off as its text prompt.
+PLAN_GPU = os.environ.get("LLAMADOCK_PLAN_GPU", "") == "1"
+PLAN_PORT = 8191 if PLAN_GPU else 8190
+PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
 
 # ---- planning LLM auto-start -----------------------------------------
 # Mirrors the llama-server launch in tools\h3-chat.ps1 so plan mode works
 # even when h3-chat.py is started directly (without h3-chat.ps1 / llamadock).
-PLAN_MODEL_PATH = os.environ.get(
-    "LLAMADOCK_PLAN_MODEL",
-    r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
+_DEFAULT_PLAN_MODEL = (
+    r"C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+    if PLAN_GPU
+    else r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
 )
+PLAN_MODEL_PATH = os.environ.get("LLAMADOCK_PLAN_MODEL", _DEFAULT_PLAN_MODEL)
 PLAN_MMPROJ_PATH = os.environ.get(
     "LLAMADOCK_PLAN_MMPROJ",
+    "" if PLAN_GPU else
     r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf",
 )
 PLAN_SERVER_BIN = os.environ.get(
     "LLAMADOCK_PLAN_BIN",
+    r"C:\llama-tq3\build-rocm71\bin\llama-server.exe"
+    if PLAN_GPU else
     r"C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe",
 )
+# The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
+PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
+# 27B has no vision projector: the confirmed key image is described by its
+# prompt text instead of being attached as pixels.
+PLAN_HAS_VISION = not PLAN_GPU
 PLAN_START_LOCK = threading.Lock()
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
@@ -151,7 +180,11 @@ def _plan_alive():
 
 
 def _spawn_plan_llm():
-    """Launch llama-server (Qwen3.5 + mmproj, CPU-only) detached on 8190.
+    """Launch the planning llama-server detached on PLAN_PORT.
+
+    cpu4b mode: Qwen3.5 + mmproj, CPU-only (-ngl 0), stays resident.
+    gpu27b mode: Qwen3.8-27B on GPU (-ngl all), started on demand and killed
+    before every ComfyUI generation (see stop_plan_llm).
 
     Returns the Popen handle, or None when the binary/model is missing or
     the process could not be started.
@@ -161,42 +194,84 @@ def _spawn_plan_llm():
     args = [
         PLAN_SERVER_BIN, "-m", PLAN_MODEL_PATH,
         "--port", str(PLAN_PORT),
-        "-ngl", "0", "-c", "8192", "--no-webui",
-        "-np", "1", "--mlock", "-ctk", "q8_0",
-        # This 4B model is not a reasoning model: when the Qwen3.5 chat
-        # template injects a think-block opener it "thinks" by re-reading its
-        # own system prompt, burns the whole token budget, then restarts the
-        # thinking inside the answer (measured: 200s, no clean output).
-        # enable_thinking=false makes the template emit an empty think block
-        # so the model answers directly. --reasoning auto still parses any
-        # stray think tags into reasoning_content for the UI.
-        "--reasoning", "auto",
-        "--chat-template-kwargs", "{\"enable_thinking\": false}",
-        "--temp", "0.8", "--top-p", "0.95", "--min-p", "0.05", "--repeat-penalty", "1.05",
+        "-c", "8192", "--no-webui",
+        "-np", "1",
+        "--temp", "0.8", "--top-p", "0.95", "--min-p", "0.05",
     ]
-    if os.path.isfile(PLAN_MMPROJ_PATH):
-        # Qwen-VL needs >=1024 image tokens to resolve detail (server warns
-        # about this at startup); without it the model under-sees the key image.
-        args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
+    if PLAN_GPU:
+        # GPU planner: full offload, jinja template, thinking off (the 27B is
+        # a reasoning model; with thinking on it burns the token budget on
+        # reasoning_content and the plan tags never appear).
+        args += ["-ngl", "all", "--jinja", "--reasoning", "off"]
+    else:
+        args += [
+            "-ngl", "0", "--mlock", "-ctk", "q8_0",
+            # This 4B model is not a reasoning model: when the Qwen3.5 chat
+            # template injects a think-block opener it "thinks" by re-reading
+            # its own system prompt, burns the whole token budget, then
+            # restarts the thinking inside the answer (measured: 200s, no
+            # clean output). --reasoning off makes the template emit an empty
+            # think block so the model answers directly (this build maps
+            # --reasoning off to enable_thinking=false; the older
+            # --chat-template-kwargs form is deprecated).
+            "--reasoning", "off",
+            "--repeat-penalty", "1.05",
+        ]
+        if os.path.isfile(PLAN_MMPROJ_PATH):
+            # Qwen-VL needs >=1024 image tokens to resolve detail (server warns
+            # about this at startup); without it the model under-sees the key image.
+            args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
+    env = dict(os.environ)
+    if PLAN_GPU and os.path.isdir(PLAN_ROCM_BIN):
+        # The HIP build links amdhip64_7.dll from the ROCm runtime; without it
+        # on PATH the server exits with STATUS_DLL_NOT_FOUND.
+        env["PATH"] = PLAN_ROCM_BIN + os.pathsep + env.get("PATH", "")
     log_path = os.path.join(os.environ.get("TEMP", REPO), "h3_plan_llm.log")
     logf = open(log_path, "a", encoding="utf-8", errors="replace")
     try:
         if os.name == "nt":
             return subprocess.Popen(
                 args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
-                cwd=os.path.dirname(PLAN_SERVER_BIN),
+                cwd=os.path.dirname(PLAN_SERVER_BIN), env=env,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
         return subprocess.Popen(
             args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
-            cwd=os.path.dirname(PLAN_SERVER_BIN), start_new_session=True,
+            cwd=os.path.dirname(PLAN_SERVER_BIN), env=env, start_new_session=True,
         )
     except Exception:
         return None
 
 
+def stop_plan_llm():
+    """Stop the planning LLM and free its VRAM (gpu27b mode only).
+
+    Called before every ComfyUI generation: the 14GB GPU planner and the
+    video model cannot share the 16GB card. The next plan message restarts
+    it (~10s cold load). No-op in cpu4b mode (the CPU planner holds no VRAM).
+    """
+    global PLAN_PROC, PLAN_LAST_TRY
+    if not PLAN_GPU:
+        return
+    with PLAN_START_LOCK:
+        if PLAN_PROC is not None and PLAN_PROC.poll() is None:
+            try:
+                PLAN_PROC.terminate()
+                PLAN_PROC.wait(timeout=10)
+            except Exception:
+                try:
+                    PLAN_PROC.kill()
+                except Exception:
+                    pass
+        PLAN_PROC = None
+        # allow an immediate re-spawn on the next plan message
+        PLAN_LAST_TRY = 0.0
+    # belt and suspenders: also kill whatever answers on the plan port
+    ChatHandler._kill_port(PLAN_PORT)
+
+
 def ensure_plan_llm(wait_seconds=120):
-    """Make sure a planning LLM is up on 8190, auto-starting it if needed.
+    """Make sure a planning LLM is up on PLAN_PORT, auto-starting it if needed.
 
     Idempotent: will not spawn while a previously started llama-server is
     still alive, and will not retry a failed spawn more often than every 30s.
@@ -1490,6 +1565,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[NODE_UNET]["inputs"]["unet_name"] = DITS[dit]
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
+        # gpu27b planner: kill it so its 14GB leaves VRAM before the video
+        # model loads (no-op for the CPU 4B planner).
+        stop_plan_llm()
         # Free stale models (e.g. Z-Image Turbo) first so the H3 model has the
         # full VRAM - but only when nothing else is running, so we never
         # unload a model mid-generation.
@@ -1613,15 +1691,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         """Return the planning-LLM base URL to use.
 
         Prefers the configured --plan-url; otherwise auto-detects the standard
-        llama-server on port 8190, auto-starting it when missing, so plan mode
+        llama-server on PLAN_PORT, auto-starting it when missing, so plan mode
         works no matter how h3-chat.py was started. Returns None when no
         planning LLM is reachable.
         """
         if self.server.plan_url:
             return self.server.plan_url
         if probe:
-            # Give a first-request spawn a short window to come up.
-            if ensure_plan_llm(wait_seconds=30):
+            # The gpu27b planner needs ~14GB: make sure ComfyUI is not holding
+            # it before the load starts.
+            if PLAN_GPU and not _plan_alive():
+                self._free_comfy()
+            # Give a first-request spawn a short window to come up. The gpu27b
+            # planner cold-loads in ~10s but gets a longer window for safety.
+            if ensure_plan_llm(wait_seconds=90 if PLAN_GPU else 30):
                 return PLAN_URL_DEFAULT
             return None
         return PLAN_URL_DEFAULT if _plan_alive() else None
@@ -1650,8 +1733,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                 f"画像プロンプト: {ip}"
             )
             # multimodal: attach the confirmed key image (base64) so the
-            # planning LLM can actually see what was rendered
-            if image_fn:
+            # planning LLM can actually see what was rendered. The gpu27b
+            # planner has no vision projector, so it gets the prompt text only.
+            if image_fn and PLAN_HAS_VISION:
                 abspath = self.server.local_files.get(image_fn) or image_fn
                 if os.path.isfile(abspath):
                     try:
@@ -1860,6 +1944,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[eng["latent"]]["inputs"]["height"] = height
         wf[eng["seed"]]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
+        # gpu27b planner: free its VRAM before the image model loads.
+        stop_plan_llm()
         self._free_comfy()
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
@@ -2084,10 +2170,12 @@ def main():
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['quick']} など（キー画像→参照 LoRA）")
-    print(f"h3-chat: plan LLM = {server.plan_url or 'auto (8190)'}")
+    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')}")
     # Bring up the planning LLM in the background so the first plan-mode
     # message does not have to wait for the model load (~10-60s on CPU).
-    if not server.plan_url:
+    # gpu27b mode starts on demand instead: preloading it would hold 14GB of
+    # VRAM while ComfyUI may still be generating.
+    if not server.plan_url and not PLAN_GPU:
         threading.Thread(target=ensure_plan_llm, kwargs={"wait_seconds": 180}, daemon=True).start()
     print("h3-chat: Ctrl+C で停止")
     try:
