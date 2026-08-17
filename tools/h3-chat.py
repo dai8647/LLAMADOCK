@@ -491,6 +491,26 @@ HTML = """<!doctype html>
              color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 9px;
              font:inherit; font-size:12px; outline:none; }
   #audioset textarea { height:44px; resize:vertical; }
+  #refpick { margin-top:4px; display:flex; align-items:center; gap:8px; }
+  #refpick button { padding:6px 12px; font-size:12px; font-weight:600; background:transparent;
+                    color:var(--accent); border:1px solid var(--accent); border-radius:8px; }
+  #ref-sel { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
+           align-items:center; justify-content:center; z-index:50; }
+  .modal-box { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+               padding:16px; width:min(92vw,740px); max-height:82vh; display:flex;
+               flex-direction:column; }
+  .modal-box .meta { margin-bottom:10px; }
+  .modal-box > button { align-self:flex-end; padding:8px 18px; }
+  #refgrid { flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+             gap:10px; margin-bottom:12px; }
+  .refcard { border:1px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer;
+             background:var(--bg); }
+  .refcard:hover { border-color:var(--accent); }
+  .refcard img { width:100%; height:90px; object-fit:cover; display:block; background:#000; }
+  .refcard .refname { font-size:11px; padding:5px 6px 0; color:var(--text);
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .refcard .refdir { font-size:10px; padding:0 6px 6px; color:var(--muted); }
 </style>
 </head>
 <body>
@@ -506,6 +526,13 @@ HTML = """<!doctype html>
   <button onclick="stopComfy()">ComfyUI だけ停止</button>
   <button class="small" onclick="cancelStop()">キャンセル</button>
 </div>
+<div id="refmodal" class="modal">
+  <div class="modal-box">
+    <div class="meta">参照画像を選択（ComfyUI の output/・input/ にある画像から）</div>
+    <div id="refgrid"></div>
+    <button onclick="closeRefModal()">閉じる</button>
+  </div>
+</div>
 <footer>
   <div id="modes">
     <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
@@ -519,6 +546,10 @@ HTML = """<!doctype html>
     </div>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
     <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
+    <div id="refpick" class="plan">
+      <button type="button" onclick="pickRefImage()">🗂 参照画像を選ぶ</button>
+      <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
+    </div>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
     <details id="audioset">
       <summary>🎙 音声・セリフ設定（任意）</summary>
@@ -580,6 +611,37 @@ function audioSpec() {
   };
 }
 
+async function pickRefImage() {
+  try {
+    const r = await fetch("/api/refimages");
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    const grid = $("#refgrid");
+    grid.innerHTML = "";
+    for (const img of j.images || []) {
+      const c = document.createElement("div");
+      c.className = "refcard";
+      c.innerHTML =
+        '<img src="/api/refimg?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
+        '<div class="refname">' + esc(img.name) + '</div>' +
+        '<div class="refdir">' + esc(img.dir) + "</div>";
+      c.onclick = () => {
+        curImageFilename = img.path;
+        $("#ref-sel").textContent = img.name + "（" + img.dir + "）";
+        closeRefModal();
+      };
+      grid.appendChild(c);
+    }
+    if (!(j.images || []).length) {
+      grid.innerHTML = '<div class="hint">参照に使える画像がありません。ComfyUI output/ に生成結果、input/ に手動配置の画像を置いてください。</div>';
+    }
+    $("#refmodal").style.display = "flex";
+  } catch (e) {
+    alert("参照画像一覧の取得に失敗: " + e.message);
+  }
+}
+function closeRefModal() { $("#refmodal").style.display = "none"; }
+
 async function send() {
   const text = $("#input").value.trim();
   if (!text || busy) return;
@@ -589,7 +651,7 @@ async function send() {
   addMsg("user", esc(text));
   if ($("#planmode").checked) { plan(text); return; }
   if ($("#refmode").checked && !curImageFilename) {
-    addMsg("bot", '<div class="meta">参照モードを使うには、先に ✎ 企画モードでキー画像を確定してください（確定した画像が参照になります）。</div>');
+    addMsg("bot", '<div class="meta">参照画像が未設定です。✎ 企画モードでキー画像を確定するか、下部の「🗂 参照画像を選ぶ」から既存の画像を指定してください。</div>');
     busy = false;
     $("#send").disabled = false;
     return;
@@ -742,7 +804,8 @@ function confirmImage() {
         html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます。' +
           '画質・長さ・向きもチャットで調整できます（例：「もっと高画質で」「長めに」「縦長で」「30秒で」）。' +
           '声・セリフ・音楽は下の 🎙 音声・セリフ設定でも指定できます。' +
-          '同一キャラを保ちたい場合は 🔗 参照モードにチェックを入れてから生成してください（確定したキー画像が参照になります）。</div>';
+          '同一キャラを保ちたい場合は 🔗 参照モードにチェックを入れてから生成してください（確定したキー画像が参照になります）。' +
+          '過去に作った画像を使うなら「🗂 参照画像を選ぶ」から直接指定もできます。</div>';
       }
       bot.innerHTML = html;
     } catch (e) {
@@ -998,6 +1061,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._status(pid)
         elif parsed.path == "/api/view":
             self._view(parsed.query)
+        elif parsed.path == "/api/refimages":
+            self._json(200, {"images": self._ref_images()})
+        elif parsed.path == "/api/refimg":
+            self._refimg(parsed.query)
         else:
             self._json(404, {"error": "not found"})
 
@@ -1319,6 +1386,69 @@ class ChatHandler(BaseHTTPRequestHandler):
         name = "h3_ref_{}_{}".format(int(time.time()), os.path.basename(image_fn))
         shutil.copy2(src, os.path.join(in_dir, name))
         return name
+
+    REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+    def _ref_images(self):
+        """List images on disk (ComfyUI output/ and input/) so the UI can pick a
+        reference image directly without a fresh plan-mode confirmation."""
+        comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
+        out = []
+        for sub, kind in (("output", "output"), ("input", "input")):
+            d = os.path.join(comfy_root, sub)
+            if not os.path.isdir(d):
+                continue
+            for root, _, files in os.walk(d):
+                rel = os.path.relpath(root, d)
+                for fn in sorted(files, key=str.lower):
+                    if not fn.lower().endswith(self.REF_IMAGE_EXTS):
+                        continue
+                    p = os.path.join(root, fn)
+                    out.append({
+                        "path": p,
+                        "name": fn,
+                        "dir": kind + (("/" + rel.replace("\\", "/")) if rel != "." else ""),
+                    })
+        return out
+
+    def _refimg(self, query):
+        """Serve a reference image directly from disk by absolute path
+        (allowlisted to ComfyUI output/ and input/)."""
+        path = urllib.parse.parse_qs(query).get("path", [""])[0]
+        if not path:
+            self._json(400, {"error": "missing path"})
+            return
+        comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
+        allowed = [os.path.realpath(os.path.join(comfy_root, s)) for s in ("output", "input")]
+        real = os.path.realpath(path)
+        if not any(real == a or real.startswith(a + os.sep) for a in allowed):
+            self._json(403, {"error": "path not allowed"})
+            return
+        if not os.path.isfile(real):
+            self._json(404, {"error": "file not found"})
+            return
+        low = real.lower()
+        if low.endswith(".png"):
+            ctype = "image/png"
+        elif low.endswith(".gif"):
+            ctype = "image/gif"
+        elif low.endswith(".webp"):
+            ctype = "image/webp"
+        elif low.endswith((".jpg", ".jpeg")):
+            ctype = "image/jpeg"
+        else:
+            ctype = "application/octet-stream"
+        try:
+            with open(real, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            self._json(502, {"error": f"read failed: {e}"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     # ---- Z-Image key image ------------------------------------------
 
