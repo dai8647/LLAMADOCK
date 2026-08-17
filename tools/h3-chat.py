@@ -55,7 +55,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40, "qimg": 90}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40, "qimg": 1250}
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
 # workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
@@ -955,7 +955,7 @@ function imgEngine() {
 async function genImage(prevBot) {
   if (!lastImgPrompt || busy) return;
   const eng = imgEngine();
-  const label = eng === "qimg" ? "Qwen-Image 2512（4候補・数十秒）" : "Z-Image Turbo（数秒）";
+  const label = eng === "qimg" ? "Qwen-Image 2512（4候補・約20分）" : "Z-Image Turbo（数秒）";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
   try {
