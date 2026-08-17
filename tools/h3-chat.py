@@ -350,7 +350,10 @@ PLAN_SYSTEM = (
     "- タグは必ず1組だけ。タグ以外の補足説明は不要。固まるまでは普通の日本語で会話を続ける。"
     "【音声・セリフ・音楽】ユーザーの映像に合わせて、セリフ（誰が何を言うか）・声の質・効果音・環境音・音楽も企画に含める。"
     "- 打ち返しのときに「セリフは入れますか？誰が何を言いますか？」「声の質（年齢・性別・声質・トーン）」「効果音・環境音」「音楽」を確認する。"
+    "- ユーザーが指定しなかった項目は、あなたが映像に合うものを自然に決めて提案する（いちいち空にするな）。"
     "- ユーザーがセリフを指定したら、一字一句そのまま使う（翻訳・言い換え禁止）。"
+    "- [FINAL_PROMPT] を返すとき、その外に音声・セリフ設定を [AUDIO_SET] タグで必ず添える:"
+    "  [AUDIO_SET]\n  voice: 声の質（年齢・性別・声質・トーン・話速）\n  dialogue: セリフ（原文・誰が何を言うか）\n  sfx: 効果音・環境音\n  music: 音楽・BGM\n  [/AUDIO_SET]"
     "【第2段階: 動画プロンプト】ユーザーがキー画像を確定したら、その画像の内容・構図を保ったまま、"
     "動き・カメラワーク・時間経過・雰囲気・音声を加えた英語の動画プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲んで返す。"
     "- MiniMax H3 公式構造に従い、次の3フィールドを必ず含める:"
@@ -426,6 +429,45 @@ def _looks_like_final(text):
 
 FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)\[/FINAL_PROMPT\]", re.S)
 
+# Structured audio/dialogue proposal the planning LLM may append outside the
+# [FINAL_PROMPT] block (voice / dialogue / sfx / music), so the UI can
+# auto-fill the 🎙 settings instead of the user having to invent them.
+AUDIO_SET_RE = re.compile(r"\[AUDIO_SET\](.*?)\[/AUDIO_SET\]", re.S)
+AUDIO_KEYS = ("voice", "dialogue", "sfx", "music")
+
+
+def _parse_audio_set(text):
+    """Parse an [AUDIO_SET]...[/AUDIO_SET] block into {'voice','dialogue','sfx','music'}."""
+    m = AUDIO_SET_RE.search(text or "")
+    if not m:
+        return None
+    block = m.group(1)
+    out = {}
+    for key in AUDIO_KEYS:
+        vm = re.search(r"^[ \t]*" + re.escape(key) + r"[ \t]*[:：][ \t]*(.+?)[ \t]*$", block, re.M | re.I)
+        if vm:
+            val = vm.group(1).strip()
+            if val and val.lower() != "なし" and val.lower() != "none" and val.lower() != "n/a":
+                out[key] = val
+    return out or None
+
+
+# One-shot system prompt for the "🎙 自動で考える" button (direct generation
+# mode): propose voice / dialogue / sfx / music for a concept without touching
+# the plan-mode conversation history.
+AUDIO_SYSTEM = (
+    "あなたは映像の音響ディレクターです。与えられた映像企画・プロンプトに対して、"
+    "セリフ（誰が何を言うか）・声の質（年齢・性別・声質・トーン・話速）・効果音・環境音・音楽を"
+    "自然に企画してください。ユーザーが指定していなくても、映像に合うものをあなたが決めて提案します。"
+    "以下の形式で日本語で返してください（タグ以外の補足説明は不要）:\n"
+    "[AUDIO_SET]\n"
+    "voice: 声の質\n"
+    "dialogue: セリフ\n"
+    "sfx: 効果音・環境音\n"
+    "music: 音楽・BGM\n"
+    "[/AUDIO_SET]"
+)
+
 # Per-session conversation history for planning mode (single-user local UI).
 PLAN_HISTORY = []
 PLAN_LOCK = threading.Lock()
@@ -491,6 +533,9 @@ HTML = """<!doctype html>
              color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 9px;
              font:inherit; font-size:12px; outline:none; }
   #audioset textarea { height:44px; resize:vertical; }
+  #btn-au-auto { padding:8px 14px; font-size:12px; margin-top:8px; background:transparent;
+                 color:var(--ok); border:1px solid var(--ok); border-radius:8px; }
+  #au-status { font-size:11px; color:var(--muted); margin-left:8px; }
   #refpick { margin-top:4px; display:flex; align-items:center; gap:8px; }
   #refpick button { padding:6px 12px; font-size:12px; font-weight:600; background:transparent;
                     color:var(--accent); border:1px solid var(--accent); border-radius:8px; }
@@ -557,6 +602,8 @@ HTML = """<!doctype html>
       <textarea id="au-dialogue" placeholder="セリフ: 例：今夜は帰らないで"></textarea>
       <input type="text" id="au-sfx" placeholder="効果音・環境音: 例：夜の雨音・布擦れ・遠い車の音">
       <input type="text" id="au-music" placeholder="音楽: 例：ゆっくりしたピアノ">
+      <button type="button" id="btn-au-auto" onclick="autoAudio()">🎙 自動で考える（LLM）</button>
+      <span id="au-status" class="hint"></span>
     </details>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
@@ -609,6 +656,37 @@ function audioSpec() {
     sfx: $("#au-sfx").value.trim(),
     music: $("#au-music").value.trim()
   };
+}
+
+async function autoAudio() {
+  const btn = $("#btn-au-auto");
+  if (btn.disabled) return;
+  const concept = lastFinalPrompt || lastImgPrompt || $("#input").value.trim();
+  if (!concept) {
+    $("#au-status").textContent = "生成したい映像の説明を先に入力してください。";
+    return;
+  }
+  btn.disabled = true;
+  $("#au-status").textContent = "企画 LLM が音響を考え中…";
+  try {
+    const r = await fetch("/api/audio", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: concept})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    const a = j.audio || {};
+    let filled = 0;
+    if (a.voice) { $("#au-voice").value = a.voice; filled++; }
+    if (a.dialogue) { $("#au-dialogue").value = a.dialogue; filled++; }
+    if (a.sfx) { $("#au-sfx").value = a.sfx; filled++; }
+    if (a.music) { $("#au-music").value = a.music; filled++; }
+    $("#au-status").textContent = filled ? ("✅ 自動提案を反映（" + filled + "項目・編集可）") : "提案が取得できませんでした。";
+  } catch (e) {
+    $("#au-status").textContent = "エラー: " + e.message;
+  }
+  btn.disabled = false;
 }
 
 async function pickRefImage() {
@@ -713,6 +791,13 @@ async function plan(text) {
       lastFinalPrompt = j.final_prompt;
       planStage = "video";
       html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
+    }
+    if (j.audio && (j.audio.voice || j.audio.dialogue || j.audio.sfx || j.audio.music)) {
+      if (j.audio.voice) $("#au-voice").value = j.audio.voice;
+      if (j.audio.dialogue) $("#au-dialogue").value = j.audio.dialogue;
+      if (j.audio.sfx) $("#au-sfx").value = j.audio.sfx;
+      if (j.audio.music) $("#au-music").value = j.audio.music;
+      html += '<div class="meta">🎙 音声・セリフ設定を自動提案しました（下部の設定欄に反映・編集可）</div>';
     }
     bot.innerHTML = html;
   } catch (e) {
@@ -1076,6 +1161,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._zimg(parsed)
         elif parsed.path == "/api/plan":
             self._plan(parsed)
+        elif parsed.path == "/api/audio":
+            self._audio_propose(parsed)
         elif parsed.path == "/api/cancel":
             self._cancel(parsed)
         elif parsed.path == "/api/shutdown":
@@ -1239,7 +1326,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
-            reply, img_prompt, final_prompt = self._plan_llm(text, endpoint, stage, image)
+            reply, img_prompt, final_prompt, audio = self._plan_llm(text, endpoint, stage, image)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
@@ -1247,7 +1334,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             reply = "動画プロンプトがまとまりました。下のボタンで生成できます。\n\n" + final_prompt
         if img_prompt and not reply:
             reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
-        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt})
+        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "audio": audio})
 
     def _plan_reset(self):
         global PLAN_HISTORY
@@ -1259,6 +1346,45 @@ class ChatHandler(BaseHTTPRequestHandler):
             SESSION["mode_override"] = None
             SESSION["length_frames"] = None
             SESSION["resolution"] = None
+
+    def _audio_propose(self, parsed):
+        """One-shot '🎙 自動で考える': ask the planning LLM for a voice/dialogue/
+        sfx/music proposal for the given concept, without touching plan history."""
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        text = (req.get("text") or "").strip()
+        if not text:
+            self._json(400, {"error": "プロンプトが空です"})
+            return
+        endpoint = self._plan_endpoint()
+        if not endpoint:
+            self._json(503, {"error": "企画 LLM を起動できませんでした"})
+            return
+        self.server.autostop.poke()
+        body = json.dumps({
+            "messages": [
+                {"role": "system", "content": AUDIO_SYSTEM},
+                {"role": "user", "content": "映像企画: " + text},
+            ],
+            "max_tokens": 400,
+            "temperature": 0.7,
+        }).encode("utf-8")
+        req_ = urllib.request.Request(
+            endpoint.rstrip("/") + "/v1/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req_, timeout=120) as r:
+                d = json.load(r)
+            content = d["choices"][0]["message"].get("content") or ""
+            audio = _parse_audio_set(content)
+            self._json(200, {"audio": audio, "reply": content[:500]})
+        except Exception as e:
+            self._json(502, {"error": f"企画 LLM エラー: {e}"})
 
     def _plan_endpoint(self, probe=True):
         """Return the planning-LLM base URL to use.
@@ -1341,6 +1467,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not content.strip():
                 content = msg.get("reasoning_content") or ""
             reply = _clean_plan_reply(content)
+            audio = _parse_audio_set(reply)
+            if audio:
+                # don't show the raw tag block in the chat bubble
+                reply = AUDIO_SET_RE.sub("", reply)
+                reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
             img_prompt = None
             final_prompt = None
             if stage == "video":
@@ -1370,7 +1501,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             # messages have context (a tool-call reply becomes its prompt text)
             history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
-            return reply, img_prompt, final_prompt
+            return reply, img_prompt, final_prompt, audio
 
     # ---- R2V reference image ----------------------------------------
 
