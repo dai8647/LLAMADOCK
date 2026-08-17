@@ -161,7 +161,7 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **`tools/h3-chat.py`**（+ ランチャー `tools/h3-chat.ps1`）: ノード UI を触らずに
   プロンプトを打つだけで動画を作れるローカルチャットページ（`http://127.0.0.1:8189`）。
   ComfyUI の API をプロキシする小さなサーバーで、ブラウザの CORS 問題を回避。
-- **使い方**: ①`comfyui.bat` / `llamadock.bat` で [2] plan（または Enter=ck 起動後に手動）を選んで ComfyUI 起動
+- **使い方**: ①`comfyui.bat` / `llamadock.bat` で [1] plan（または Enter）を選んで ComfyUI 起動
   ②`powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1` ③ブラウザが開くので文章を入力→生成。
 - **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
   フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
