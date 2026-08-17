@@ -13,6 +13,11 @@ can shape the video concept conversationally before generating. When the LLM
 wraps its final prompt in [FINAL_PROMPT]...[/FINAL_PROMPT], the UI offers a
 "generate with this plan" button.
 
+Reference mode (R2V): when a key image has been confirmed in plan mode,
+ticking the reference checkbox generates the video with MiniMaxH3ReferenceToVideo
+using the confirmed key image as <Picture 1> (reference LoRA, no ref2va model
+needed). The image is copied into ComfyUI input/ so LoadImage can read it.
+
 Usage:
     python tools/h3-chat.py [--port 8189] [--comfy http://127.0.0.1:8188]
                              [--plan-url http://127.0.0.1:8190]
@@ -24,6 +29,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -59,6 +65,24 @@ NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
 NODE_ZIMG_SEED = "8"     # KSampler: seed
 NODE_ZIMG_SAVE = "10"    # SaveImage: output filename
+
+# R2V (reference-to-video) workflows: 確定したキー画像を参照画像にして同一キャラを維持する。
+# MiniMaxH3ReferenceToVideo ノード + 参照 LoRA（minimax_h3_ref_lora_rank_256_bf16）を
+# fl2va モデルに重ねる構成（ref2va モデル不要）。lite は 32B エンコーダ版にフォールバック。
+R2V_WORKFLOWS = {
+    "high": os.path.join(REPO, "h3_workflow_r2v.json"),
+    "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
+    "lite": os.path.join(REPO, "h3_workflow_r2v.json"),
+}
+NODE_R2V_IMAGE = "16"    # LoadImage: 参照画像（ComfyUI input/ にコピーしたファイル名を設定）
+NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
+# R2V はプロンプト内の <Picture N> タグで参照画像を指定する。企画 LLM が
+# タグを知らないので、生成時にタグの意味を追記して確実に同一キャラ指定にする。
+R2V_TAG_NOTE = (
+    "\n\n<Picture 1> is the confirmed key image. "
+    "Keep the subject's identity, face, hairstyle, outfit and appearance "
+    "consistent with <Picture 1> in every frame of the video."
+)
 
 # Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
 PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
@@ -295,6 +319,7 @@ HTML = """<!doctype html>
       <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
     </div>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
+    <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
@@ -347,13 +372,22 @@ async function send() {
   $("#input").value = "";
   addMsg("user", esc(text));
   if ($("#planmode").checked) { plan(text); return; }
+  if ($("#refmode").checked && !curImageFilename) {
+    addMsg("bot", '<div class="meta">参照モードを使うには、先に ✎ 企画モードでキー画像を確定してください（確定した画像が参照になります）。</div>');
+    busy = false;
+    $("#send").disabled = false;
+    return;
+  }
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   const mode = document.querySelector('input[name="mode"]:checked').value;
   try {
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: mode, text: text, dit: ditValue()})
+      body: JSON.stringify({
+        mode: mode, text: text, dit: ditValue(),
+        ref: $("#refmode").checked, image: curImageFilename
+      })
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -482,7 +516,8 @@ function confirmImage() {
         lastFinalPrompt = j.final_prompt;
         planStage = "video";
         html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
-        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます（例：カメラはゆっくり寄って）</div>';
+        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます（例：カメラはゆっくり寄って）。' +
+          '同一キャラを保ちたい場合は 🔗 参照モードにチェックを入れてから生成してください（確定したキー画像が参照になります）。</div>';
       }
       bot.innerHTML = html;
     } catch (e) {
@@ -501,7 +536,8 @@ function genPlanLast() {
   busy = true;
   $("#send").disabled = true;
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  addMsg("user", "✅ この企画で生成する: " + finalPrompt);
+  const tag = $("#refmode").checked ? "🔗 参照モードで生成する: " : "✅ この企画で生成する: ";
+  addMsg("user", tag + finalPrompt);
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   doGenerate(mode, finalPrompt, bot);
 }
@@ -511,7 +547,10 @@ async function doGenerate(mode, text, bot) {
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode: mode, text: text, dit: ditValue()})
+      body: JSON.stringify({
+        mode: mode, text: text, dit: ditValue(),
+        ref: $("#refmode").checked, image: curImageFilename
+      })
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -729,6 +768,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         mode = req.get("mode", "quick")
         dit = req.get("dit", "default")
         text = (req.get("text") or "").strip()
+        ref = req.get("ref") is True
+        image_fn = req.get("image") or None
         if mode not in WORKFLOWS:
             self._json(400, {"error": "unknown mode: " + mode})
             return
@@ -738,14 +779,33 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "プロンプトが空です"})
             return
-        try:
-            with open(WORKFLOWS[mode], encoding="utf-8") as f:
-                wf = json.load(f)["prompt"]
-        except Exception as e:
-            self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
-            return
+        if ref:
+            # 参照モード: 確定したキー画像を参照画像（<Picture 1>）として使う R2V 生成
+            if not image_fn:
+                self._json(400, {"error": "参照画像がありません（先に企画モードでキー画像を確定してください）"})
+                return
+            try:
+                with open(R2V_WORKFLOWS[mode], encoding="utf-8") as f:
+                    wf = json.load(f)["prompt"]
+            except Exception as e:
+                self._json(500, {"error": f"R2V ワークフロー読み込み失敗: {e}"})
+                return
+            try:
+                ref_name = self._stage_ref_image(image_fn)
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+                return
+            wf[NODE_R2V_IMAGE]["inputs"]["image"] = ref_name
+            wf[NODE_R2V_PROMPT]["inputs"]["prompt"] = text + R2V_TAG_NOTE
+        else:
+            try:
+                with open(WORKFLOWS[mode], encoding="utf-8") as f:
+                    wf = json.load(f)["prompt"]
+            except Exception as e:
+                self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
+                return
+            wf[NODE_PROMPT]["inputs"]["prompt"] = text
         wf[NODE_UNET]["inputs"]["unet_name"] = DITS[dit]
-        wf[NODE_PROMPT]["inputs"]["prompt"] = text
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
         # Free stale models (e.g. Z-Image Turbo) first so the H3 model has the
@@ -921,6 +981,21 @@ class ChatHandler(BaseHTTPRequestHandler):
             history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
             return reply, img_prompt, final_prompt
+
+    # ---- R2V reference image ----------------------------------------
+
+    def _stage_ref_image(self, image_fn):
+        """Copy the confirmed key image (ComfyUI output/) into ComfyUI input/ so
+        LoadImage can read it, and return the input-relative filename."""
+        comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
+        src = self.server.local_files.get(image_fn) or image_fn
+        if not os.path.isfile(src):
+            raise ValueError("参照画像が見つかりません: " + image_fn)
+        in_dir = os.path.join(comfy_root, "input")
+        os.makedirs(in_dir, exist_ok=True)
+        name = "h3_ref_{}_{}".format(int(time.time()), os.path.basename(image_fn))
+        shutil.copy2(src, os.path.join(in_dir, name))
+        return name
 
     # ---- Z-Image key image ------------------------------------------
 
@@ -1152,6 +1227,7 @@ def main():
     print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
+    print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['quick']} など（キー画像→参照 LoRA）")
     print(f"h3-chat: plan LLM = {server.plan_url or 'off'}")
     print("h3-chat: Ctrl+C で停止")
     try:

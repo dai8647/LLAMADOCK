@@ -63,9 +63,16 @@ GPU・メモリを解放します（ブラウザが閉じていてもサーバ�
 選択します。Qwen3.5 は mmproj 視覚エンコーダ付きで起動するため、**確定したキー画像を実際に見て**
 動画プロンプトを作成します。旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済みです。
 
+**🔗 参照モード（R2V）**: キー画像を確定した状態で参照モードにチェックを入れて生成すると、
+確定画像を **参照画像（`<Picture 1>`）** にして同一キャラ維持の動画が作れます。
+`MiniMaxH3ReferenceToVideo` + **参照 LoRA**（`minimax_h3_ref_lora_rank_256_bf16`、Kijai 製・
+`models\loras\` に配置）を fl2va モデルに重ねる構成で、**ref2va モデルの追加ダウンロードは不要**です。
+画像は自動で ComfyUI `input/` にコピーされ、プロンプト末尾にタグの説明が追記されます。
+詳細・設定（`ref_image_size` match/max・strength）は `docs/MiniMax-H3-Tuning.md` 参照。
+
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
-`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 13 個のバリアント
-（短尺音声付き `*_short_audio`・スーパー `*_super` 系を含む）の一覧・調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
+`h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 17 個のバリアント
+（短尺音声付き `*_short_audio`・スーパー `*_super` 系・**R2V 参照 `h3_workflow_r2v*.json`** を含む）の一覧・調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1

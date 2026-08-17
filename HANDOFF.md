@@ -53,6 +53,7 @@ cd C:\Users\dai86\Documents\ComfyUI
 | 動画 VAE | `vae\MiniMax-H3-video_vae_fp16.safetensors` | 5.2GB | |
 | 音声 VAE | `vae\minimax_h3_audio_vae_fp32.safetensors` | 605MB | |
 | LoRA | （ComfyUI）`models\loras\minimax_h3_turbo_4step_ckpt600_ema_V4.safetensors` | 620MB | Turbo LoRA（8step） |
+| **参照 LoRA** | （ComfyUI）`models\loras\minimax_h3_ref_lora_rank_256_bf16.safetensors` | 約 1.9GB | **R2V 用**（Kijai/MiniMax-H3-experimental の loras/）。fl2va モデルに重ねるだけで参照条件付き生成（ref2va モデル不要）。h3-chat の 🔗 参照モードで使用 |
 | ClipProj | （ComfyUI）`models\clip_projections\mmh3-4b-ClipProj-celeb-mlp.safetensors` | 304MB | clipproj 系 WF で使用 |
 
 ### キー画像（Z-Image Turbo NSFW）— ComfyUI `models\`
@@ -80,6 +81,7 @@ cd C:\Users\dai86\Documents\ComfyUI
 - 動画ワークフローは全て node `1`=UNETLoader。h3-chat の `/api/generate` が `dit` パラメータ（`default` / `10eros`）で `unet_name` を差し替える（`tools/h3-chat.py` の `DITS` 辞書）
 - `super_*`: 4B エンコーダ + ck（+triton）向け / `turbo_*`: 32B エンコーダ + Turbo LoRA / `clipproj_*`: 4B + ClipProj / `fast` / `bench` / `src`
 - `_short` は短尺、`_audio` は音声付き（音声 VAE 使用）
+- **`h3_workflow_r2v.json` / `h3_workflow_r2v_short.json`**: 参照モード（R2V）。`MiniMaxH3ReferenceToVideo` ノード + **参照 LoRA**（`minimax_h3_ref_lora_rank_256_bf16`）を fl2va モデルに重ねる（ref2va モデル不要）。node 16 = LoadImage（参照画像）、node 6 の `ref_images.ref_image_0` に接続。プロンプトは `<Picture 1>` タグで参照画像を指定（h3-chat が自動追記）
 - 動画は `ComfyUI\output\` に `h3_turbo_audio_*.mp4` として出力、キー画像は `zimg_*.png`
 
 ### カスタムノード（ComfyUI `custom_nodes\`）
@@ -150,14 +152,21 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 （`MCP_SEARCH_CACHE_TTL_MS`、既定 5 分・最大 200 件）を追加済み。キー設定時は auto で Serper が先頭、
 失敗時は DuckDuckGo / Brave / Bing にフォールバック。SSRF ガード（`tools/safe-fetch.mjs`）は維持。
 
+### h3-chat の R2V 参照モード（🔗 参照モード）
+
+企画モードでキー画像を確定すると、`tools/h3-chat.py` の 🔗 参照モードにチェックを入れて生成すると
+**確定キー画像を `<Picture 1>` 参照にして同一キャラ維持の動画**（`MiniMaxH3ReferenceToVideo`）が作れます。
+確定画像を ComfyUI `input/` にコピーして node 16（LoadImage）へ渡し、プロンプト末尾に
+`<Picture 1>` のタグ説明を自動追記。8step・Turbo LoRA + 参照 LoRA（fl2va モデルまま）。
+参考: javawock7618/comfy-MiniMax-H3-workflows（R2V 2608.18.1 を解析して移植）。
+
 ---
 
 ## 8. 次にやること（優先度順）
 
-1. **Web GUI のコミット＆プッシュ** — `web-ui/` 一式・`tools/mcp-smoke.mjs`・`package.json` の
-   `start:web` / `start`・`.gitignore`（`config/models-config.json` / `run-results.json`）・
-   `tools/test.ps1` の web-ui 構文チェック・`model-notes.json` の MiniMax H3 エントリ・
-   README / PARAMETER-CATALOG / MCP-ENDPOINTS の追記（本 HANDOFF.md §7 の内容が対象）
+1. **R2V（参照 LoRA）の実機検証** — 参照 LoRA を `models\loras\` に配置 → h3-chat の 🔗 参照モードで
+   キー画像 → 同一キャラ動画のスモーク（`h3_workflow_r2v_short.json`）→ フル（`h3_workflow_r2v.json`）。
+   品質・`ref_image_size`（match/max）・LoRA strength の A/B を `docs/MiniMax-H3-Tuning.md` に追記
 2. **Windows 実機での web-ui 検証** — Phase 1 コア配線（`LLAMADOCK_ENGINE_BIN`・GGUF 実パス解決）、
    `/api/launch` で実 llama-server 起動、`/api/connect` の Windows 実起動（現状 `simulated`）
 3. **全体ベンチのやり直し** — Z-Image + Qwen3.5 導入後、super/ck プロファイルの実測（旧実測: ck 17m19s vs default 19m26s）

@@ -303,3 +303,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\comfyui-tune.ps1 -Inst
 # KJNodes も導入（sage 系は CUDA 必須なので、主に他のユーティリティノード用）
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\comfyui-tune.ps1 -InstallKJNodes
 ```
+
+## 7. R2V（参照モード・参照 LoRA）— 2026-08-16 追加
+
+### 概要
+
+**参照画像（キー画像）→ 同一キャラ維持の動画**を生成する R2V モード。
+ComfyUI の `MiniMaxH3ReferenceToVideo` ノード（ref2va）を使うが、**専用の ref2va モデルは不要**。
+Kijai の **参照 LoRA**（`minimax_h3_ref_lora_rank_256_bf16.safetensors`）を fl2va モデルに
+`LoraLoaderModelOnly` で重ねるだけで参照条件付き生成が動く（javawock7618 の
+comfy-MiniMax-H3-workflows の Note より確認。`ref2va` モデルは別途あり、そちらは非対応機でも動くが未検証）。
+
+### 導入（Windows 機）
+
+1. 参照 LoRA をダウンロードして配置:
+   `https://huggingface.co/Kijai/MiniMax-H3-experimental/tree/main/loras` の
+   `minimax_h3_ref_lora_rank_256_bf16.safetensors` → `ComfyUI\models\loras\`
+2. ワークフロー（コミット済み）: `h3_workflow_r2v.json`（1344x768・48f・音声付き）/ `h3_workflow_r2v_short.json`（512x320・16f・fps12・音声付き）
+   - node 1 = UNETLoader（fl2va int8）→ node 11 = Turbo LoRA（strength 1.2）→ node 12 = **参照 LoRA**（strength 1.0）→ node 4 = SigmaShift（video 12 / audio 6）
+   - node 16 = LoadImage（参照画像。h3-chat が ComfyUI `input/` にコピーしたファイル名を設定）
+   - node 6 = `MiniMaxH3ReferenceToVideo`（`ref_images.ref_image_0` ← node 16。**API 形式はドット付きキー**。ComfyUI 0.33 の expandable 入力は `ref_images.ref_image_0` のような dotted path で受ける）
+   - プロンプトは `<Picture 1>` タグで参照画像を指定（h3-chat が末尾にタグ説明を自動追記）
+3. h3-chat で使用: 企画モードでキー画像を確定 → 🔗 参照モードにチェック → 生成
+   （`/api/generate` に `ref: true` + `image: <確定画像ファイル名>` を送る。`mode` は high→フル / quick→短尺 に自動で R2V ワークフローへ切替）
+
+### 注意・チューニング
+
+- **Spectrum はオフ推奨**（参照 LoRA 併用時。javawock7618 の Note 準拠。現行 r2v ワークフローは Spectrum 未適用）
+- **4–8 step 推奨**（現行は Turbo LoRA 込み 8 step・res_multistep/simple・σ video 12 / audio 6）
+- `ref_image_size`: `match` = 生成解像度に合わせ縮小（速い）/ `max` = 2048px 短辺まで保持（同一性↑・遅い）。
+  初回は `match` で検証し、顔の同一性が弱ければ `max` を試す
+- 参照 LoRA の `strength_model` は 0.8–1.2 の範囲で A/B する（初期値 1.0）
+- **LoRA スタック順は問わない**（`LoraLoaderModelOnly` は逐次適用）。Turbo + Ref の両方で問題なし
+- Sage-Attention（SolAttn_triton）は **CUDA 専用**のためこの機（RDNA3）では使わない。ck-attention のまま
+- 参照画像は `input/` に `h3_ref_<timestamp>_<元ファイル名>` でコピーされる（同名衝突なし・毎回新規）
+- 参照できるのは 1 枚（`ref_image_0`）。複数参照（最大 9 枚）や参照動画/音声は今後の拡張候補
