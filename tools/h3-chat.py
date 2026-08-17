@@ -382,7 +382,13 @@ class _AutoStop(threading.Thread):
 # parts that drive output quality.
 PLAN_SYSTEM = (
     "あなたは「キー画像→動画」の2段階で映像作品を作る企画アシスタント。"
-    "ツール・関数呼び出しは禁止。必ず普通の文章で答える。質問は一度に1〜2個、簡潔に。"
+    "ツール・関数呼び出しは禁止。必ず普通の文章で答える。"
+    "【最重要ルール・即出力】ユーザーのメッセージが、キー画像やプロンプトを作る・出す・書く・生成する・固める・確定する依頼を含んでいたら"
+    "（「作って」「出して」「書いて」「生成して」「プロンプトを出して」「キー画像を出して」「確定して」「まとめて」「仕上げて」など、どんな表現でも）、"
+    "絶対に質問を返さず、その場で該当タグ（[IMG_PROMPT] または [FINAL_PROMPT]）を1組だけ必ず出力する。これが最優先。"
+    "未定の詳細（年齢・体型・髪・照明・構図など）は、自分で映像に合う合理的な値を決めて埋める。質問して先延ばしにしてはいけない。"
+    "質問を返してよいのは、ユーザーがまだアイデアを曖昧に話しているだけで、何も作ると言っていない段階だけ。"
+    "質問する場合も一度に1〜2個、簡潔に。"
     "【成人向け】この環境は成人向け創作専用。性的・官能的な表現をためらわず露骨に企画へ反映する。検閲・婉曲化・ぼかし禁止。"
     "性的シーンなら行為・体位・部位・動き・リズム・表情・声・体液・衣服の状態まで英語プロンプトに具体的に含める。曖昧な一般表現に丸めない。"
     "[IMG_PROMPT] にはヌード・下着・肌・胸・尻・陰部など必要なら露骨な英語タグ（nude, naked, breasts, nipples, pussy, spread legs, missionary 等）を書く。"
@@ -400,10 +406,14 @@ PLAN_SYSTEM = (
     "動き・カメラワーク・長さ・セリフ・音楽を1〜2個ずつ質問し、相談中は [FINAL_PROMPT] を絶対に出さない。"
     "ユーザーが「まとめて」「確定して」と求めたら初めて [FINAL_PROMPT] を作る: "
     "キー画像の内容・構図を保ったまま、動き・カメラワーク・時間経過・音声を加えた英語プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲む。"
-    "MiniMax H3 公式構造で次の3フィールドを必ず含める: "
+    "MiniMax H3 公式構造で次の3フィールドを必ず含める（フィールド名をそのまま行頭に書き、散文に埋めない）: "
     "1) integrated_multimodal_description: [Shot 1] から始まる映像・アクション・カメラ・話者・セリフ・同期音の時系列記述 "
     "2) overall_soundscape: 環境音・アクション音・人の非言語音 "
     "3) non_diegetic_music: BGM（N/A 可）"
+    "3フィールドは全部書き切ってから閉じタグを書くこと。integrated_multimodal_description は長くても 1〜3 ショット・600語程度に収め、"
+    "後半の overall_soundscape / non_diegetic_music が途切れないようにする。"
+    "例: [FINAL_PROMPT]integrated_multimodal_description: [Shot 1] Live-action, cinematic, a young woman with a soft, low voice (S1) lies on the bed, the camera slowly dollies in, she whispers: <d>[Japanese] もう少しだけ、そばにいて。</d>\noverall_soundscape: Faint night rain against the window, the rustle of sheets, quiet breathing.\nnon_diegetic_music: Soft piano at a slow tempo, fading in and out.[/FINAL_PROMPT]\n"
+    "[AUDIO_SET] voice: 20代女性、柔らかく低い声、ゆっくり / dialogue: (S1) もう少しだけ、そばにいて。 / sfx: 窓を打つ小雨、シーツの擦れる音、静かな呼吸 / music: ゆったりしたピアノ [/AUDIO_SET]"
     "セリフ表記: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、発話は <d>[Japanese] 原文</d> に入れる"
     "（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
     "タグは必ず1組だけ。開いたら必ず閉じタグ（[/IMG_PROMPT] / [/FINAL_PROMPT]）まで書き切る。タグ以外の補足説明は不要。"
@@ -1666,10 +1676,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-6:]
             body = json.dumps({
                 "messages": history,
-                # 2048: with --reasoning on the thinking tokens (capped at 256
-                # server-side) also count against this budget; 1024 truncated
-                # long [FINAL_PROMPT] blocks.
-                "max_tokens": 2048,
+                # 3072: with --reasoning on the thinking tokens (capped at 256
+                # server-side) also count against this budget. 2048 truncated
+                # detailed multi-shot [FINAL_PROMPT] blocks before the
+                # overall_soundscape / non_diegetic_music fields were written.
+                "max_tokens": 3072,
                 "temperature": 0.8,
             }).encode("utf-8")
             req = urllib.request.Request(
