@@ -484,6 +484,9 @@ def _unclosed_tag(text, tag):
         s = line.strip()
         if s.startswith("---") or s.startswith("==="):
             break
+        # an XML-style closer ([/TAG] missed, model wrote </TAG>) still ends the block
+        if s == "</" + tag + ">" or s == "[/" + tag + "]":
+            break
         # stop at a line that is mostly non-ASCII (Japanese prose), but only
         # once we already captured some prompt text
         if lines and s and sum(1 for ch in s if ord(ch) > 127) / len(s) > 0.5:
@@ -517,7 +520,9 @@ def _tool_prompt(text):
         return None
     return ", ".join(keep)
 
-IMG_FINAL_RE = re.compile(r"\[IMG_PROMPT\](.*?)\[/IMG_PROMPT\]", re.S)
+# The model sometimes closes a tag XML-style (</TAG>) instead of the expected
+# bracket form ([/TAG]); accept both so the pair still matches cleanly.
+IMG_FINAL_RE = re.compile(r"\[IMG_PROMPT\](.*?)(?:\[/IMG_PROMPT\]|</IMG_PROMPT>)", re.S)
 
 # When LFM answers in plain text (no tool call), it often still writes the
 # finished English prompt. Treat a long mostly-ASCII description that reads
@@ -537,12 +542,12 @@ def _looks_like_final(text):
     low = text.lower()
     return any(k in low for k in VIDEO_KEYWORDS)
 
-FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)\[/FINAL_PROMPT\]", re.S)
+FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)(?:\[/FINAL_PROMPT\]|</FINAL_PROMPT>)", re.S)
 
 # Structured audio/dialogue proposal the planning LLM may append outside the
 # [FINAL_PROMPT] block (voice / dialogue / sfx / music), so the UI can
 # auto-fill the 🎙 settings instead of the user having to invent them.
-AUDIO_SET_RE = re.compile(r"\[AUDIO_SET\](.*?)\[/AUDIO_SET\]", re.S)
+AUDIO_SET_RE = re.compile(r"\[AUDIO_SET\](.*?)(?:\[/AUDIO_SET\]|</AUDIO_SET>)", re.S)
 AUDIO_KEYS = ("voice", "dialogue", "sfx", "music")
 
 
