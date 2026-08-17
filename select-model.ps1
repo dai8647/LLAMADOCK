@@ -1542,14 +1542,14 @@ function Select-ComfyUITuning {
         if ([string]::IsNullOrWhiteSpace($tuningInput)) {
             $script:ComfyProfileChoice = "ck"
             $script:PlanModeChoice = $true
-            $script:PlanModelChoice = "Qwen3.5"
+            $script:PlanModelChoice = Select-PlanModel
         }
         else {
             switch ($tuningInput) {
                 "1" {
                     $script:ComfyProfileChoice = "ck"
                     $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.5"
+                    $script:PlanModelChoice = Select-PlanModel
                 }
                 "2" { $script:ComfyProfileChoice = "ck"; $script:PlanModeChoice = $false }
                 "3" { $script:ComfyProfileChoice = "default"; $script:PlanModeChoice = $false }
@@ -1563,6 +1563,27 @@ function Select-ComfyUITuning {
             }
         }
     } while (-not $tuningValid)
+}
+
+function Select-PlanModel {
+    # Pick the planning LLM for plan mode. Qwen3.5-4B runs on CPU and stays
+    # resident (VRAM stays free, has vision). Qwen3.8-27B runs on the GPU
+    # during the planning phase only (higher quality, ~13.5 t/s) and is killed
+    # before every generation so the video model gets the VRAM back.
+    Write-Host ""
+    Write-Host "Planning LLM:" -ForegroundColor Green
+    Write-Host " [1] Qwen3.5-4B  - CPU, resident, vision-capable (default)"
+    Write-Host " [2] Qwen3.8-27B - GPU, planning phase only, higher quality (no vision)"
+    Write-Host ""
+    do {
+        $planInput = Read-Host "Select planning LLM (1-2), or press Enter for Qwen3.5-4B"
+        if ([string]::IsNullOrWhiteSpace($planInput) -or $planInput -eq "1") {
+            return "Qwen3.5"
+        }
+        if ($planInput -eq "2") {
+            return "Qwen3.8-27B-GPU"
+        }
+    } while ($true)
 }
 
 function Start-H3Chat {
@@ -1579,8 +1600,10 @@ function Start-H3Chat {
     if ($script:PlanModeChoice) {
         $h3chatPs1 = Join-Path $PSScriptRoot "tools\h3-chat.ps1"
         if (Test-Path -LiteralPath $h3chatPs1) {
-            # Double-launch guard: if both the chat UI and the planning LLM are
-            # already up there is nothing to start, just open the browser.
+            # Double-launch guard: if the chat UI (and, for the resident CPU
+            # planner, the planning LLM) is already up there is nothing to
+            # start, just open the browser. The GPU planner is started on
+            # demand by h3-chat.py, so only the chat UI is checked for it.
             $chatUpNow = $false
             $planUpNow = $false
             try {
@@ -1588,11 +1611,16 @@ function Start-H3Chat {
                 if ($h.StatusCode -eq 200) { $chatUpNow = $true }
             }
             catch { }
-            try {
-                $h = Invoke-WebRequest -Uri "http://127.0.0.1:8190/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-                if ($h.StatusCode -eq 200) { $planUpNow = $true }
+            if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU") {
+                $planUpNow = $true
             }
-            catch { }
+            else {
+                try {
+                    $h = Invoke-WebRequest -Uri "http://127.0.0.1:8190/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                    if ($h.StatusCode -eq 200) { $planUpNow = $true }
+                }
+                catch { }
+            }
             if (-not ($chatUpNow -and $planUpNow)) {
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1)..." -ForegroundColor Cyan
                 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $h3chatPs1 -PlanModel $script:PlanModelChoice -NoBrowser" -WindowStyle Hidden
