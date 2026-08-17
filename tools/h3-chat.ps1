@@ -99,8 +99,12 @@ if ($PlanModel -ne "Off") {
             }
         }
         catch { }
-        # CPU-only (-ngl 0) so ComfyUI keeps all VRAM; reasoning off so the
-        # tiny planning model answers immediately instead of thinking forever.
+        # CPU-only (-ngl 0) so ComfyUI keeps all VRAM. This 4B model is not a
+        # reasoning model: with thinking enabled it re-reads its own system
+        # prompt until the token budget runs out, then restarts thinking inside
+        # the answer (measured: 200s, no clean output). enable_thinking=false
+        # makes the chat template emit an empty think block so the model
+        # answers directly; --reasoning auto still parses any stray think tags.
         if (-not $skipPlanStart) {
         Write-Host "Starting planning LLM ($($model.Label)) on $planUrl ..." -ForegroundColor Cyan
         $serverArgs = @(
@@ -109,13 +113,21 @@ if ($PlanModel -ne "Off") {
             "-ngl", "0",
             "-c", "8192",
             "--no-webui",
-            "--reasoning", "off",
-            "--reasoning-budget", "0"
+            "-np", "1",
+            "--mlock",
+            "-ctk", "q8_0",
+            "--reasoning", "auto",
+            "--chat-template-kwargs", '{"enable_thinking": false}',
+            "--temp", "0.8",
+            "--top-p", "0.95",
+            "--min-p", "0.05",
+            "--repeat-penalty", "1.05"
         )
         # multimodal models (Qwen3.5 etc.): attach the vision projector so the
-        # planning LLM can actually see the confirmed key image.
+        # planning LLM can actually see the confirmed key image. Qwen-VL needs
+        # >=1024 image tokens to resolve detail (server warns at startup).
         if ($model.Mmproj -and (Test-Path -LiteralPath $model.Mmproj)) {
-            $serverArgs += @("--mmproj", $model.Mmproj)
+            $serverArgs += @("--mmproj", $model.Mmproj, "--image-min-tokens", "1024")
         }
         Start-Process -FilePath $planServer -ArgumentList $serverArgs -WorkingDirectory (Split-Path -Parent $planServer) -WindowStyle Hidden
         # wait for the model to finish loading (up to ~60s)

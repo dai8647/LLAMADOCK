@@ -54,7 +54,7 @@ main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0
 
 | 方法 | 内容 |
 | --- | --- |
-| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**速い順**: `[1] super` / `[2] ck` / `[3] fast` / `[4] default` / `[5] bench` / `[6] custom`（生フラグ入力。triton は 2026-08-16 にアンインストール済みのためメニューから削除）。Enter で default。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ |
+| **起動時メニュー（対話式）** | `comfyui.bat` / `llamadock.bat` で ComfyUI を起動するとき、フラグ未固定なら毎回表示。**2026-08-17 に 4 項目へ縮小**: `[1] plan`（推奨。ck + 企画モード）/ `[2] ck`（実測 17m19s）/ `[3] default` / `[4] custom`（生フラグ入力）。Enter で **plan**（実測最速の ck + 企画モードがそのまま立ち上がる）。stdin がリダイレクトされている（スクリプト/ベンチ実行）ときは自動スキップ。`super` / `fast` / `triton` / `bench` はメニューから削除したが、`LLAMADOCK_COMFY_PROFILE` で引き続き指定可能（スクリプト実行向け） |
 | `LLAMADOCK_COMFY_PROFILE=fast` | 上記 + `--fast fp16_accumulation --force-non-blocking`（AMD でも有効な項目のみ。ComfyUI は「未テスト・品質劣化の可能性」と明記 → **ベンチしてから採用**）。設定すると起動時メニューはスキップ |
 | `LLAMADOCK_COMFY_PROFILE=triton` | 上記 + `--enable-triton-backend`。**デフォルト無効**: triton 3.7.x でもこの GPU の H3 INT8 経路はクラッシュするため、`LLAMADOCK_COMFY_TRITON=1` のときだけ付与（詳細は triton 節） |
 | `LLAMADOCK_COMFY_PROFILE=super` | 上記 + `--use-ck-attention`。triton は同じく opt-in なので、**この機では ck 相当にフォールバック**（動作中の最速構成）。ワークフローは `h3_workflow_super.json`（Turbo LoRA + ClipProj・8step）と組むと全部載せ |
@@ -161,7 +161,7 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **`tools/h3-chat.py`**（+ ランチャー `tools/h3-chat.ps1`）: ノード UI を触らずに
   プロンプトを打つだけで動画を作れるローカルチャットページ（`http://127.0.0.1:8189`）。
   ComfyUI の API をプロキシする小さなサーバーで、ブラウザの CORS 問題を回避。
-- **使い方**: ①`comfyui.bat` / `llamadock.bat` で [1] super（または [2] ck）を選んで ComfyUI 起動
+- **使い方**: ①`comfyui.bat` / `llamadock.bat` で [2] plan（または Enter=ck 起動後に手動）を選んで ComfyUI 起動
   ②`powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1` ③ブラウザが開くので文章を入力→生成。
 - **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
   フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
