@@ -48,7 +48,14 @@ WORKFLOWS = {
     "quick": os.path.join(REPO, "h3_workflow_turbo_short_audio.json"),
     # 4B Heretic encoder: lightest on VRAM
     "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
+    # 4B encoder + short/res (quicklite): fastest option, light on VRAM
+    "quicklite": os.path.join(REPO, "h3_workflow_super_short_audio.json"),
 }
+
+# Estimated generation time (seconds) used for the remaining-time display
+# before real measurements exist for this session. Updated live from actual
+# run times (see _status / job_meta).
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40}
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
 # workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
@@ -73,6 +80,7 @@ R2V_WORKFLOWS = {
     "high": os.path.join(REPO, "h3_workflow_r2v.json"),
     "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
     "lite": os.path.join(REPO, "h3_workflow_r2v.json"),
+    "quicklite": os.path.join(REPO, "h3_workflow_r2v_short.json"),
 }
 NODE_R2V_IMAGE = "16"    # LoadImage: 参照画像（ComfyUI input/ にコピーしたファイル名を設定）
 NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
@@ -93,11 +101,11 @@ PLAN_PORT = 8190
 # even when h3-chat.py is started directly (without h3-chat.ps1 / llamadock).
 PLAN_MODEL_PATH = os.environ.get(
     "LLAMADOCK_PLAN_MODEL",
-    r"C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf",
+    r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
 )
 PLAN_MMPROJ_PATH = os.environ.get(
     "LLAMADOCK_PLAN_MMPROJ",
-    r"C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+    r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf",
 )
 PLAN_SERVER_BIN = os.environ.get(
     "LLAMADOCK_PLAN_BIN",
@@ -180,7 +188,95 @@ NODE_SEED = "7"       # KSampler: seed
 NODE_SAVE = "10"      # SaveVideo: output filename
 
 # Per-session plan state (single-user local UI): image -> video pipeline.
-SESSION = {"image_prompt": None, "video_prompt": None}
+SESSION = {
+    "image_prompt": None, "video_prompt": None,
+    "mode_override": None,     # チャットで「高画質/速く」等と指示したときのモード上書き
+    "length_frames": None,     # チャットで「長く/短く/N秒」と指示したときのフレーム数上書き
+    "resolution": None,        # (width, height) アスペクト上書き
+}
+
+# ---- チャットでの画質・長さ調整 --------------------------------------
+# キー画像を確定した後、チャットで「もっと高画質で」「長めに」「縦長で」などと
+# 指示すると、プロンプトの文言だけでなく生成パラメータ（モード/フレーム数/解像度）
+# もここで解釈して反映する。
+
+
+def _align_h3_frames(n):
+    """MiniMax H3 のフレームグリッド (17k+5) にスナップする。"""
+    n = max(5, int(n))
+    return 5 + 17 * max(0, round((n - 5) / 17))
+
+
+def _parse_tweak(text):
+    """自然言語の画質・長さ・アスペクト指示をパラメータへ変換する。
+
+    Returns None または {'mode'?, 'length_frames'?, 'resolution'?, 'label': 表示用}。
+    """
+    t = text or ""
+    tw = {}
+    label = []
+    # 画質
+    if re.search(r"高画質|高精度|精細|きれい|フル尺|フルで", t):
+        tw["mode"] = "high"; label.append("高精度 32B")
+    elif re.search(r"省VRAM|軽量|4B", t):
+        tw["mode"] = "lite"; label.append("軽量 4B")
+    elif re.search(r"最速|チョロッと|さらっと", t):
+        tw["mode"] = "quicklite"; label.append("クイック 4B")
+    elif re.search(r"クイック|低画質|粗く|速く|サクッと", t):
+        tw["mode"] = "quick"; label.append("クイック 32B")
+    # 長さ（N秒 / N分 / 長く / 短く）
+    m = re.search(r"(\d+)\s*秒", t)
+    if m:
+        frames = _align_h3_frames(int(m.group(1)) * 24)
+        tw["length_frames"] = frames
+        label.append(f"長さ 約{int(m.group(1))}秒")
+    else:
+        m = re.search(r"(\d+)\s*分", t)
+        if m:
+            frames = _align_h3_frames(int(m.group(1)) * 60 * 24)
+            tw["length_frames"] = frames
+            label.append(f"長さ 約{int(m.group(1))}分")
+        elif re.search(r"(もっと)?長く|延ば|伸ば|長め", t):
+            tw["length_frames"] = 100 if re.search(r"もっと|かなり|だいぶ", t) else 48
+            label.append(f"長さ 約{round(tw['length_frames'] / 24)}秒")
+        elif re.search(r"短く|短め|コンパクトに", t):
+            tw["length_frames"] = 16
+            label.append("長さ 約0.7秒（短め）")
+    # アスペクト
+    if re.search(r"縦長|9:16|ポートレート|タテ", t):
+        tw["resolution"] = (768, 1344); label.append("縦長 9:16")
+    elif re.search(r"正方形|1:1|スクエア", t):
+        tw["resolution"] = (768, 768); label.append("正方形 1:1")
+    elif re.search(r"横長|16:9|ワイド|ヨコ", t):
+        tw["resolution"] = (1344, 768); label.append("横長 16:9")
+    if not tw:
+        return None
+    tw["label"] = "・".join(label)
+    return tw
+
+
+def _audio_block(audio):
+    """UI の音声・セリフ設定をプロンプト末尾に追加するブロックを作る。"""
+    if not isinstance(audio, dict):
+        return ""
+    dlg = (audio.get("dialogue") or "").strip()
+    voice = (audio.get("voice") or "").strip()
+    sfx = (audio.get("sfx") or "").strip()
+    music = (audio.get("music") or "").strip()
+    if not any([dlg, voice, sfx, music]):
+        return ""
+    if dlg and "<d>" not in dlg:
+        dlg = f"The speaker (S1) says: <d>[Japanese] {dlg}</d>"
+    lines = ["", "Audio direction (must be followed):"]
+    if voice:
+        lines.append("- Voice: " + voice)
+    if dlg:
+        lines.append("- Dialogue: " + dlg)
+    if sfx:
+        lines.append("- Soundscape/SFX: " + sfx)
+    if music:
+        lines.append("- Music: " + music)
+    return "\n".join(lines)
 SESSION_LOCK = threading.Lock()
 
 # Server-side safety net: when a video finishes and nothing new is started,
@@ -252,9 +348,19 @@ PLAN_SYSTEM = (
     "- キー画像の内容が固まったら、英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す。"
     "  （例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, footprints in wet sand, low-angle cinematic composition[/IMG_PROMPT]）"
     "- タグは必ず1組だけ。タグ以外の補足説明は不要。固まるまでは普通の日本語で会話を続ける。"
+    "【音声・セリフ・音楽】ユーザーの映像に合わせて、セリフ（誰が何を言うか）・声の質・効果音・環境音・音楽も企画に含める。"
+    "- 打ち返しのときに「セリフは入れますか？誰が何を言いますか？」「声の質（年齢・性別・声質・トーン）」「効果音・環境音」「音楽」を確認する。"
+    "- ユーザーがセリフを指定したら、一字一句そのまま使う（翻訳・言い換え禁止）。"
     "【第2段階: 動画プロンプト】ユーザーがキー画像を確定したら、その画像の内容・構図を保ったまま、"
-    "動き・カメラワーク・時間経過・雰囲気を加えた英語の動画プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲んで返す。"
-    "  （例: [FINAL_PROMPT]A shiba inu runs along the shoreline at sunset, its paws leaving footprints in the wet sand, the camera slowly dollies in, warm golden light glinting off gentle waves[/FINAL_PROMPT]）"
+    "動き・カメラワーク・時間経過・雰囲気・音声を加えた英語の動画プロンプトを [FINAL_PROMPT] と [/FINAL_PROMPT] で囲んで返す。"
+    "- MiniMax H3 公式構造に従い、次の3フィールドを必ず含める:"
+    "  1) integrated_multimodal_description: [Shot 1] から始まる映像・アクション・カメラ・話者・セリフ・同期音の時系列記述"
+    "  2) overall_soundscape: 環境音・アクション音・人の非言語音（風・雨・足音・布擦れ・息遣いなど）"
+    "  3) non_diegetic_music: 観客にしか聞こえないBGM（N/A 可）"
+    "- セリフ表記（公式ルール）: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、"
+    "  実際の発話は <d>[Japanese] 原文</d> に入れる（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
+    "  ユーザー指定のセリフは原文のまま。声だけ先に出したい場合は off-screen voiceover を使う。"
+    "- 例: [FINAL_PROMPT]integrated_multimodal_description: [Shot 1] Live-action, cinematic, a young woman with a soft, low voice (S1) lies on the bed, the camera slowly dollies in, she whispers: <d>[Japanese] もう少しだけ、そばにいて。</d>\noverall_soundscape: Faint night rain against the window, the rustle of sheets, quiet breathing.\nnon_diegetic_music: Soft piano at a slow tempo, fading in and out.[/FINAL_PROMPT]"
     "- タグは必ず1組だけ。タグ以外の補足説明は不要。"
 )
 
@@ -379,6 +485,12 @@ HTML = """<!doctype html>
   .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
   .hint { color:var(--muted); font-size:11px; }
   .ditrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px; }
+  #audioset { margin-top:6px; font-size:12px; color:var(--muted); }
+  #audioset summary { cursor:pointer; font-weight:600; }
+  #audioset input, #audioset textarea { display:block; width:100%; margin-top:5px; background:var(--panel);
+             color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 9px;
+             font:inherit; font-size:12px; outline:none; }
+  #audioset textarea { height:44px; resize:vertical; }
 </style>
 </head>
 <body>
@@ -397,8 +509,9 @@ HTML = """<!doctype html>
 <footer>
   <div id="modes">
     <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
-    <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約1分）</label>
-    <label><input type="radio" name="mode" value="lite"> 軽量 4B（省VRAM・約9分）</label>
+    <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約2〜4分）</label>
+    <label><input type="radio" name="mode" value="quicklite"> クイック 4B（最速・短尺・省VRAM）</label>
+    <label><input type="radio" name="mode" value="lite"> 軽量 4B（フル・省VRAM・約9分）</label>
     <div class="ditrow">
       <span class="hint">動画モデル:</span>
       <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
@@ -407,6 +520,13 @@ HTML = """<!doctype html>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
     <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
+    <details id="audioset">
+      <summary>🎙 音声・セリフ設定（任意）</summary>
+      <input type="text" id="au-voice" placeholder="声: 例：低めの落ち着いた声・息を含むささやき">
+      <textarea id="au-dialogue" placeholder="セリフ: 例：今夜は帰らないで"></textarea>
+      <input type="text" id="au-sfx" placeholder="効果音・環境音: 例：夜の雨音・布擦れ・遠い車の音">
+      <input type="text" id="au-music" placeholder="音楽: 例：ゆっくりしたピアノ">
+    </details>
   </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
@@ -451,6 +571,15 @@ function ditValue() {
   return el ? el.value : "default";
 }
 
+function audioSpec() {
+  return {
+    dialogue: $("#au-dialogue").value.trim(),
+    voice: $("#au-voice").value.trim(),
+    sfx: $("#au-sfx").value.trim(),
+    music: $("#au-music").value.trim()
+  };
+}
+
 async function send() {
   const text = $("#input").value.trim();
   if (!text || busy) return;
@@ -474,7 +603,8 @@ async function send() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        ref: $("#refmode").checked, image: curImageFilename
+        ref: $("#refmode").checked, image: curImageFilename,
+        audio: audioSpec()
       })
     });
     const j = await r.json();
@@ -609,7 +739,9 @@ function confirmImage() {
         lastFinalPrompt = j.final_prompt;
         planStage = "video";
         html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
-        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます（例：カメラはゆっくり寄って）。' +
+        html += '<div class="hint">動画プロンプトを調整したければ、このまま日本語で指示できます。' +
+          '画質・長さ・向きもチャットで調整できます（例：「もっと高画質で」「長めに」「縦長で」「30秒で」）。' +
+          '声・セリフ・音楽は下の 🎙 音声・セリフ設定でも指定できます。' +
           '同一キャラを保ちたい場合は 🔗 参照モードにチェックを入れてから生成してください（確定したキー画像が参照になります）。</div>';
       }
       bot.innerHTML = html;
@@ -643,7 +775,8 @@ async function doGenerate(mode, text, bot) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        ref: $("#refmode").checked, image: curImageFilename
+        ref: $("#refmode").checked, image: curImageFilename,
+        audio: audioSpec()
       })
     });
     const j = await r.json();
@@ -678,7 +811,15 @@ async function poll(id, bot) {
       return;
     }
     // still running: refresh the eta text every poll
-    bot.querySelector(".meta").textContent = "生成中… " + (j.extra || "") + "（待機中: " + j.pending + " 件）";
+    const el = Math.floor((j.elapsed_sec || 0) / 60);
+    const es = String((j.elapsed_sec || 0) % 60).padStart(2, "0");
+    const eta = j.eta_sec || 0;
+    let etaTxt;
+    if (eta <= (j.elapsed_sec || 0)) etaTxt = "予定より長引いています…";
+    else if (eta >= 60) etaTxt = "残り 約" + Math.round(eta / 60) + "分";
+    else etaTxt = "残り 約" + eta + "秒";
+    bot.querySelector(".meta").textContent =
+      "生成中… " + etaTxt + "（経過 " + el + ":" + es + "・待機中: " + j.pending + " 件）";
     if (jobCancelled) return;   // キャンセル済み: ポーリング停止
     // show a cancel button once so a stuck/stale queue item can be cleared
     if (!bot.querySelector(".cancelbtn")) {
@@ -914,11 +1055,14 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "invalid JSON"})
             return
         mode = req.get("mode", "quick")
+        # チャットで「高画質で/長めに」等と指示していたら、その上書きを優先する
+        eff_mode = SESSION.get("mode_override") or mode
         dit = req.get("dit", "default")
         text = (req.get("text") or "").strip()
         ref = req.get("ref") is True
         image_fn = req.get("image") or None
-        if mode not in WORKFLOWS:
+        audio = req.get("audio") or {}
+        if mode not in WORKFLOWS or eff_mode not in WORKFLOWS:
             self._json(400, {"error": "unknown mode: " + mode})
             return
         if dit not in DITS:
@@ -927,13 +1071,15 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "プロンプトが空です"})
             return
+        # UI の音声・セリフ設定をプロンプトにマージ
+        text += _audio_block(audio)
         if ref:
             # 参照モード: 確定したキー画像を参照画像（<Picture 1>）として使う R2V 生成
             if not image_fn:
                 self._json(400, {"error": "参照画像がありません（先に企画モードでキー画像を確定してください）"})
                 return
             try:
-                with open(R2V_WORKFLOWS[mode], encoding="utf-8") as f:
+                with open(R2V_WORKFLOWS[eff_mode], encoding="utf-8") as f:
                     wf = json.load(f)["prompt"]
             except Exception as e:
                 self._json(500, {"error": f"R2V ワークフロー読み込み失敗: {e}"})
@@ -947,12 +1093,23 @@ class ChatHandler(BaseHTTPRequestHandler):
             wf[NODE_R2V_PROMPT]["inputs"]["prompt"] = text + R2V_TAG_NOTE
         else:
             try:
-                with open(WORKFLOWS[mode], encoding="utf-8") as f:
+                with open(WORKFLOWS[eff_mode], encoding="utf-8") as f:
                     wf = json.load(f)["prompt"]
             except Exception as e:
                 self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
                 return
             wf[NODE_PROMPT]["inputs"]["prompt"] = text
+        # チャットで指示した長さ・解像度の上書きを反映
+        if SESSION.get("length_frames"):
+            for n in wf.values():
+                if n.get("class_type") in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo") and "length" in n.get("inputs", {}):
+                    n["inputs"]["length"] = SESSION["length_frames"]
+        if SESSION.get("resolution"):
+            w_, h_ = SESSION["resolution"]
+            for n in wf.values():
+                if n.get("class_type") in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"):
+                    n["inputs"]["width"] = w_
+                    n["inputs"]["height"] = h_
         wf[NODE_UNET]["inputs"]["unet_name"] = DITS[dit]
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
@@ -968,7 +1125,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             pass
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
-            self._json(200, {"prompt_id": json.loads(raw)["prompt_id"]})
+            pid = json.loads(raw)["prompt_id"]
+            self.server.job_meta[pid] = {"mode": eff_mode, "start": time.time(), "kind": "video"}
+            self._json(200, {"prompt_id": pid})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
@@ -999,6 +1158,19 @@ class ChatHandler(BaseHTTPRequestHandler):
             # キー画像が確定: Z-Image Turbo をアンロードして VRAM を解放してから
             # 企画 LLM に動画プロンプトを作らせる。
             self._free_comfy()
+        tweak_note = ""
+        if stage == "video" and text != "__CONFIRM_IMAGE__":
+            # 画像確定後のチャットで「高画質/長め/縦長」等の指示をパラメータに反映
+            tw = _parse_tweak(text)
+            if tw:
+                with SESSION_LOCK:
+                    if tw.get("mode"):
+                        SESSION["mode_override"] = tw["mode"]
+                    if tw.get("length_frames"):
+                        SESSION["length_frames"] = tw["length_frames"]
+                    if tw.get("resolution"):
+                        SESSION["resolution"] = tw["resolution"]
+                tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
             reply, img_prompt, final_prompt = self._plan_llm(text, endpoint, stage, image)
         except Exception as e:
@@ -1008,7 +1180,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             reply = "動画プロンプトがまとまりました。下のボタンで生成できます。\n\n" + final_prompt
         if img_prompt and not reply:
             reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
-        self._json(200, {"reply": reply, "img_prompt": img_prompt, "final_prompt": final_prompt})
+        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt})
 
     def _plan_reset(self):
         global PLAN_HISTORY
@@ -1017,6 +1189,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         with SESSION_LOCK:
             SESSION["image_prompt"] = None
             SESSION["video_prompt"] = None
+            SESSION["mode_override"] = None
+            SESSION["length_frames"] = None
+            SESSION["resolution"] = None
 
     def _plan_endpoint(self, probe=True):
         """Return the planning-LLM base URL to use.
@@ -1176,7 +1351,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         self._free_comfy()
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
-            self._json(200, {"prompt_id": json.loads(raw)["prompt_id"]})
+            pid = json.loads(raw)["prompt_id"]
+            self.server.job_meta[pid] = {"mode": "zimg", "start": time.time(), "kind": "image"}
+            self._json(200, {"prompt_id": pid})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
@@ -1244,7 +1421,19 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     # ---- status / view -----------------------------------------------
 
+    def _eta_base(self, mode):
+        """Median of past run times for this mode, or a session default."""
+        times = self.server.run_times.get(mode) or []
+        if times:
+            s = sorted(times)
+            return s[len(s) // 2]
+        return ETA_DEFAULTS.get(mode, 300)
+
     def _status(self, pid):
+        meta = self.server.job_meta.get(pid) or {}
+        mode = meta.get("mode") or "video"
+        elapsed = int(time.time() - meta["start"]) if meta.get("start") else 0
+        eta = self._eta_base(mode)
         try:
             # running or queued?
             _, raw, _ = self._comfy("GET", "/queue", timeout=10)
@@ -1261,7 +1450,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         except Exception:
             entry = None
         if not entry:
-            self._json(200, {"status": "running", "extra": "", "pending": n_pending})
+            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": eta})
             return
         st = entry.get("status", {})
         if st.get("status_str") == "error":
@@ -1272,7 +1461,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "error", "error": msg or "生成に失敗しました"})
             return
         if not st.get("completed"):
-            self._json(200, {"status": "running", "extra": "", "pending": n_pending})
+            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": eta})
             return
         videos = []
         comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
@@ -1293,6 +1482,11 @@ class ChatHandler(BaseHTTPRequestHandler):
                                 "kind": "image" if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) else "video",
                                 "path": abspath,
                             })
+        # 実測時間を記録して次回の残り時間表示（ETA）に使う
+        if elapsed > 10:
+            self.server.run_times.setdefault(mode, []).append(elapsed)
+            self.server.run_times[mode] = self.server.run_times[mode][-20:]
+        self.server.job_meta.pop(pid, None)
         # 動画が完成してキューが空なら、自動停止のタイマーをスタート
         # （画像だけの完了では起動しない: ユーザーが画像を確認中の場合がある）
         has_video = any(v.get("kind") == "video" for v in videos)
@@ -1369,6 +1563,8 @@ def main():
     server.comfy_base = args.comfy.rstrip("/")
     server.plan_url = args.plan_url.rstrip("/") if args.plan_url else None
     server.local_files = {}
+    server.job_meta = {}     # prompt_id -> {mode, start, kind} (ETA 用)
+    server.run_times = {}    # mode -> [実測秒] (ETA 用・セッション内メモリ)
     server.autostop = _AutoStop(server)
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")

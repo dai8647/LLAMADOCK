@@ -17,7 +17,7 @@
 
 | 系統 | モデル | いつ動く | どこで切る |
 |---|---|---|---|
-| 企画 LLM | Qwen3.5-4B Uncensored Q8（4.4GB）+ mmproj 視覚（675MB） | 企画モードの会話・画像認識・プロンプト作成 | 自動停止 or セッション [4] |
+| 企画 LLM | Qwen3.5-4B NSFW Literotica i1-Q6_K（3.3GB）+ mmproj 視覚（675MB） | 企画モードの会話・画像認識・プロンプト作成 | 自動停止 or セッション [4] |
 | キー画像 | Z-Image NSFW GGUF Q8（7.2GB） | 企画モードでキー画像生成（15〜35 秒） | 動画生成直前にアンロード（VRAM 解放） |
 | 動画 DiT | PinkCherry int8（21GB）/ **10Eros NVFP4（12.5GB）** | 動画生成時（数分） | 自動停止 or [4] |
 | 動画付属 | turbo LoRA / 参照 LoRA（R2V）・テキストエンコーダ（4B fp8 / 32B NVFP4） | 動画生成時に DiT に重ねる | DiT と一緒 |

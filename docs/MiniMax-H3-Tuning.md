@@ -183,7 +183,7 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
   実際に見た上で**動画プロンプトを作成します（`h3-chat.py` が `data:image/...` 形式で添付）。
   旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済み（ツール呼び出し形式のパースは
   他モデル対応として h3-chat.py に残してあります）。モデル導入元:
-  `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（Reddit で 0/465 拒否）。
+  `Sinbad-The-Sailor/Qwen3.5-4B-NSFW-ARA-Heretic-Literotica`（えろ文芸特化・Literotica / erotica チューニング）。旧 `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive` は差し替えで削除済み。
 - **視覚入力の検証テスト**（`tools/test-plan-vision.py`）: 合成画像（既知の色・形）を直接見せて
   記述が一致するか（[A]）と、テキストプロンプト無しでキー画像だけを確定パスに通して最終動画
   プロンプトが画像内容を反映するか（[B]）を自動チェックします。企画 LLM + h3-chat 起動中に
