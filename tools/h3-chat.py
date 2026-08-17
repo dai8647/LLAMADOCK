@@ -88,6 +88,92 @@ R2V_TAG_NOTE = (
 PLAN_URL_DEFAULT = "http://127.0.0.1:8190"
 PLAN_PORT = 8190
 
+# ---- planning LLM auto-start -----------------------------------------
+# Mirrors the llama-server launch in tools\h3-chat.ps1 so plan mode works
+# even when h3-chat.py is started directly (without h3-chat.ps1 / llamadock).
+PLAN_MODEL_PATH = os.environ.get(
+    "LLAMADOCK_PLAN_MODEL",
+    r"C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf",
+)
+PLAN_MMPROJ_PATH = os.environ.get(
+    "LLAMADOCK_PLAN_MMPROJ",
+    r"C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf",
+)
+PLAN_SERVER_BIN = os.environ.get(
+    "LLAMADOCK_PLAN_BIN",
+    r"C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe",
+)
+PLAN_START_LOCK = threading.Lock()
+PLAN_PROC = None
+PLAN_LAST_TRY = 0.0
+
+
+def _plan_alive():
+    """True when a planning LLM answers on the default port."""
+    try:
+        with urllib.request.urlopen(PLAN_URL_DEFAULT + "/v1/models", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _spawn_plan_llm():
+    """Launch llama-server (Qwen3.5 + mmproj, CPU-only) detached on 8190.
+
+    Returns the Popen handle, or None when the binary/model is missing or
+    the process could not be started.
+    """
+    if not os.path.isfile(PLAN_SERVER_BIN) or not os.path.isfile(PLAN_MODEL_PATH):
+        return None
+    args = [
+        PLAN_SERVER_BIN, "-m", PLAN_MODEL_PATH,
+        "--port", str(PLAN_PORT),
+        "-ngl", "0", "-c", "8192", "--no-webui",
+        "--reasoning", "off", "--reasoning-budget", "0",
+    ]
+    if os.path.isfile(PLAN_MMPROJ_PATH):
+        args += ["--mmproj", PLAN_MMPROJ_PATH]
+    log_path = os.path.join(os.environ.get("TEMP", REPO), "h3_plan_llm.log")
+    logf = open(log_path, "a", encoding="utf-8", errors="replace")
+    try:
+        if os.name == "nt":
+            return subprocess.Popen(
+                args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+                cwd=os.path.dirname(PLAN_SERVER_BIN),
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        return subprocess.Popen(
+            args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+            cwd=os.path.dirname(PLAN_SERVER_BIN), start_new_session=True,
+        )
+    except Exception:
+        return None
+
+
+def ensure_plan_llm(wait_seconds=120):
+    """Make sure a planning LLM is up on 8190, auto-starting it if needed.
+
+    Idempotent: will not spawn while a previously started llama-server is
+    still alive, and will not retry a failed spawn more often than every 30s.
+    Returns True when the endpoint answers.
+    """
+    if _plan_alive():
+        return True
+    global PLAN_PROC, PLAN_LAST_TRY
+    with PLAN_START_LOCK:
+        dead = PLAN_PROC is None or PLAN_PROC.poll() is not None
+        if dead and time.time() - PLAN_LAST_TRY > 30:
+            PLAN_PROC = _spawn_plan_llm()
+            PLAN_LAST_TRY = time.time()
+            if PLAN_PROC is None:
+                return False
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        if _plan_alive():
+            return True
+        time.sleep(2)
+    return False
+
 # ComfyUI node ids in the super workflows
 NODE_PROMPT = "6"     # MiniMaxH3ImageToVideo: user prompt
 NODE_SEED = "7"       # KSampler: seed
@@ -328,6 +414,7 @@ HTML = """<!doctype html>
 <script>
 const $ = s => document.querySelector(s);
 let busy = false;
+let jobCancelled = false;
 let lastImgPrompt = null;
 let lastFinalPrompt = null;
 let curImageFilename = null;
@@ -381,6 +468,7 @@ async function send() {
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   const mode = document.querySelector('input[name="mode"]:checked').value;
   try {
+    jobCancelled = false;
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -415,8 +503,13 @@ async function plan(text) {
       if (planStage === "image") {
         // 修正リクエスト: 新しい画像プロンプトでキー画像を再生成する
         bot.innerHTML = html + '<div class="meta">キー画像を再生成します…</div>';
+        // genImage が busy を管理する。ここで解除しないと send() が立てた
+        // busy=true のまま genImage の `if (busy) return` に引っかかり、
+        // 何も送信せず固まってしまう。
+        busy = false;
+        $("#send").disabled = false;
         genImage(bot);
-        return;   // genImage が busy を管理する
+        return;
       }
       planStage = "image";
       html += '<button class="genplan" onclick="genImage()">🖼 キー画像を生成 ▶</button>';
@@ -544,6 +637,7 @@ function genPlanLast() {
 
 async function doGenerate(mode, text, bot) {
   try {
+    jobCancelled = false;
     const r = await fetch("/api/generate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -585,10 +679,36 @@ async function poll(id, bot) {
     }
     // still running: refresh the eta text every poll
     bot.querySelector(".meta").textContent = "生成中… " + (j.extra || "") + "（待機中: " + j.pending + " 件）";
+    if (jobCancelled) return;   // キャンセル済み: ポーリング停止
+    // show a cancel button once so a stuck/stale queue item can be cleared
+    if (!bot.querySelector(".cancelbtn")) {
+      const b = document.createElement("button");
+      b.className = "warn small cancelbtn";
+      b.textContent = "✕ キャンセル";
+      b.onclick = () => cancelJob(id, bot);
+      bot.appendChild(b);
+    }
     setTimeout(() => poll(id, bot), 3000);
   } catch (e) {
     setTimeout(() => poll(id, bot), 3000);
   }
+}
+
+async function cancelJob(id, bot) {
+  jobCancelled = true;
+  busy = false;
+  $("#send").disabled = false;
+  try {
+    await fetch("/api/cancel", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({prompt_id: id})
+    });
+  } catch (e) {}
+  const meta = bot.querySelector(".meta");
+  if (meta) meta.textContent = "キャンセルしました（ComfyUI のジョブを中断・削除）";
+  const cb = bot.querySelector(".cancelbtn");
+  if (cb) cb.remove();
 }
 
 function startShutdown(seconds) {
@@ -748,10 +868,38 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._zimg(parsed)
         elif parsed.path == "/api/plan":
             self._plan(parsed)
+        elif parsed.path == "/api/cancel":
+            self._cancel(parsed)
         elif parsed.path == "/api/shutdown":
             self._shutdown(parsed)
         else:
             self._json(404, {"error": "not found"})
+
+    def _cancel(self, parsed):
+        """Cancel a stuck/running ComfyUI job.
+
+        Sends /interrupt (stops the current executor, which is what frees a
+        queue item stuck in "running") and best-effort deletes the pending
+        item from the queue by prompt id.
+        """
+        try:
+            req = self._read_json_body()
+        except Exception:
+            req = {}
+        pid = (req or {}).get("prompt_id")
+        out = {"ok": True, "interrupted": False, "deleted": False}
+        try:
+            self._comfy("POST", "/interrupt", {}, timeout=10)
+            out["interrupted"] = True
+        except Exception:
+            pass
+        if pid:
+            try:
+                self._comfy("POST", "/queue", {"delete": [pid]}, timeout=10)
+                out["deleted"] = True
+            except Exception:
+                pass
+        self._json(200, out)
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -843,7 +991,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         endpoint = self._plan_endpoint()
         if not endpoint:
-            self._json(503, {"error": "企画 LLM が接続されていません（h3-chat.ps1 で起動してください）"})
+            self._json(503, {"error": "企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）"})
             return
         self.server.autostop.poke()
         image = req.get("image") or None   # 確定したキー画像のファイル名（視覚入力）
@@ -874,18 +1022,18 @@ class ChatHandler(BaseHTTPRequestHandler):
         """Return the planning-LLM base URL to use.
 
         Prefers the configured --plan-url; otherwise auto-detects the standard
-        llama-server on port 8190 so plan mode works no matter how h3-chat.py
-        was started. Returns None when no planning LLM is reachable.
+        llama-server on port 8190, auto-starting it when missing, so plan mode
+        works no matter how h3-chat.py was started. Returns None when no
+        planning LLM is reachable.
         """
         if self.server.plan_url:
             return self.server.plan_url
-        try:
-            with urllib.request.urlopen(PLAN_URL_DEFAULT + "/v1/models", timeout=2) as r:
-                if r.status == 200:
-                    return PLAN_URL_DEFAULT
-        except Exception:
-            pass
-        return None
+        if probe:
+            # Give a first-request spawn a short window to come up.
+            if ensure_plan_llm(wait_seconds=30):
+                return PLAN_URL_DEFAULT
+            return None
+        return PLAN_URL_DEFAULT if _plan_alive() else None
 
     def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300):
         """Send the message (plus history) to the planning LLM.
@@ -1228,7 +1376,11 @@ def main():
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['quick']} など（キー画像→参照 LoRA）")
-    print(f"h3-chat: plan LLM = {server.plan_url or 'off'}")
+    print(f"h3-chat: plan LLM = {server.plan_url or 'auto (8190)'}")
+    # Bring up the planning LLM in the background so the first plan-mode
+    # message does not have to wait for the model load (~10-60s on CPU).
+    if not server.plan_url:
+        threading.Thread(target=ensure_plan_llm, kwargs={"wait_seconds": 180}, daemon=True).start()
     print("h3-chat: Ctrl+C で停止")
     try:
         server.serve_forever()
