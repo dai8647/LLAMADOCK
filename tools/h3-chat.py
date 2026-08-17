@@ -76,11 +76,13 @@ NODE_ZIMG_SAVE = "10"    # SaveImage: output filename
 # R2V (reference-to-video) workflows: 確定したキー画像を参照画像にして同一キャラを維持する。
 # MiniMaxH3ReferenceToVideo ノード + 参照 LoRA（minimax_h3_ref_lora_rank_256_bf16）を
 # fl2va モデルに重ねる構成（ref2va モデル不要）。lite は 32B エンコーダ版にフォールバック。
+# quicklite は 4B エンコーダ + ClipProj 射影（mmh3-4b-ClipProj-celeb-mlp）で 32B を代替し、約 1/3 の時間に。
+# 4B を生で渡すと次元不一致（30720 vs 5120）で失敗するため ClipProjApply が必須。
 R2V_WORKFLOWS = {
     "high": os.path.join(REPO, "h3_workflow_r2v.json"),
     "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
     "lite": os.path.join(REPO, "h3_workflow_r2v.json"),
-    "quicklite": os.path.join(REPO, "h3_workflow_r2v_short.json"),
+    "quicklite": os.path.join(REPO, "h3_workflow_r2v_short_4b.json"),
 }
 NODE_R2V_IMAGE = "16"    # LoadImage: 参照画像（ComfyUI input/ にコピーしたファイル名を設定）
 NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
