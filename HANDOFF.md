@@ -63,11 +63,13 @@ cd C:\Users\dai86\Documents\ComfyUI
 | テキストエンコーダ | `text_encoders\qwen_3_4b_fp8_mixed.safetensors` | 5.6GB | CLIPLoader type=`lumina2` |
 | VAE | `vae\ae.safetensors` | 335MB | |
 
-### 企画 LLM — `C:\Users\dai86\.lmstudio\models\HauhauCS\`
+### 企画 LLM — `C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\`
 | ファイル | サイズ | 備考 |
 |---|---|---|
-| `Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf` | 4.4GB | 唯一の企画 LLM（Reddit で 0/465 拒否） |
-| `...\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf` | 675MB | 視覚エンコーダ（キー画像を見る） |
+| `Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf` | 3.3GB | 唯一の企画 LLM（えろ文芸特化・Literotica / erotica チューニング） |
+| `mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf` | 675MB | 視覚エンコーダ（旧 Qwen3.5-4B-Uncensored の mmproj を流用。同アーキテクチャで正常動作） |
+
+旧 `Qwen3.5-4B-Uncensored-HauhauCS-Aggressive`（4.4GB）は NSFW 特化モデルへの差し替えで削除済み。
 
 - 企画 LLM は **CPU 推論**（`-ngl 0`・`--reasoning off`）で VRAM を ComfyUI に全残し
 - llama-server は **openPangu フォーク**（Qwen3.5 = Gated DeltaNet 対応が必要、`llama.cpp-openPangu-2.0-*`）。vanilla 版では Qwen3.5 が動かない

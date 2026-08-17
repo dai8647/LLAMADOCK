@@ -26,9 +26,9 @@ $planUrl = "http://127.0.0.1:$planPort"
 
 $planModels = @{
     "Qwen3.5" = @{
-        Label = "Qwen3.5-4B Uncensored (NSFW・視覚対応)"
-        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.5-4B-Uncensored-HauhauCS-Aggressive\mmproj-Qwen3.5-4B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+        Label = "Qwen3.5-4B NSFW Literotica (えろ特化・視覚は mmproj 流用)"
+        Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf"
     }
 }
 

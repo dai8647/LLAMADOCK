@@ -40,7 +40,7 @@
       "inputs": {
         "clip": ["13", 0],
         "vae": ["3", 0],
-        "prompt": "[ADULT SCENE PROMPT - replace me] Describe in natural language, in this order: the subject and their appearance, the intimate action and its pace, camera position and movement (e.g. slow dolly-in, static close-up), lighting (e.g. warm soft bedroom light), skin detail and mood.",
+        "prompt": "[ADULT SCENE PROMPT - replace me] Describe in natural language, in this order: the subject and their appearance, the intimate action and its pace, camera position and movement (e.g. slow dolly-in, static close-up), lighting (e.g. warm soft bedroom light), skin detail and mood. Then describe the synchronized audio in the same block: dialogue (spoken lines in double quotes with speaker IDs (S1)/(S2) and voice tone, e.g. The woman (S1) says: <d>[Japanese] ...</d>), sound effects/environment, and background music.",
         "width": 1344,
         "height": 768,
         "length": 48

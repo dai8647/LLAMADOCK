@@ -70,7 +70,7 @@
         "vae": ["3", 0],
         "audio_vae": ["14", 0],
         "ref_images.ref_image_0": ["16", 0],
-        "prompt": "[REFERENCE VIDEO PROMPT - replace me] Describe the shot in natural language. <Picture 1> is the reference image: keep the subject's identity, face, outfit and appearance consistent with <Picture 1>. Then describe the action, camera position and movement, lighting, skin detail and mood.",
+        "prompt": "[REFERENCE VIDEO PROMPT - replace me] Describe the shot in natural language. <Picture 1> is the reference image: keep the subject's identity, face, outfit and appearance consistent with <Picture 1>. Then describe the action, camera position and movement, lighting, skin detail and mood. Then describe the synchronized audio: dialogue (spoken lines in double quotes with speaker IDs and voice tone), sound effects/environment, and background music.",
         "width": 512,
         "height": 320,
         "length": 16,
