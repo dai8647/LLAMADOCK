@@ -40,6 +40,7 @@ export const CLIENTS = [
   { id: "DeepResearch", label: "Deep Research", desc: "Odysseus", kind: "web", port: 7000, health: { path: "/" } },
   { id: "LlamaAgent", label: "Llama Agent", desc: "反復調査", kind: "cli" },
   { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 5173, standalone: true, health: { path: "/" } },
+  { id: "ZCode", label: "ZCode", desc: "Z.ai コーディング (デスクトップ)", kind: "desktop" },
   // standalone: the client runs its own server and does not need a running
   // llama-server — mirrors select-model.ps1's Open-ComfyUIClient comment
   // ("ComfyUI runs its own server on :8188 and does not depend on the
@@ -145,6 +146,25 @@ function windowsPlan(spec, { model, workspace, harness, prompt }) {
       const npx = process.platform === "win32" ? "npx.cmd" : "npx";
       const args = ["--yes", "@deepseek-ai/dsh@latest", "web"];
       return { exe: npx, args, cwd: root, display: `${npx} ${args.join(" ")}` };
+    }
+    case "ZCode": {
+      // ZCode is a desktop exe — search common Windows install paths.
+      const localAppData = process.env.LOCALAPPDATA || "";
+      const programFiles = process.env.PROGRAMFILES || "";
+      const programFilesX86 = process.env["PROGRAMFILES(X86)"] || "";
+      const appData = process.env.APPDATA || "";
+      const searchPaths = [
+        path.join(localAppData, "Programs", "ZCode", "ZCode.exe"),
+        path.join(localAppData, "ZCode", "ZCode.exe"),
+        path.join(programFiles, "ZCode", "ZCode.exe"),
+        path.join(programFilesX86, "ZCode", "ZCode.exe"),
+        path.join(appData, "ZCode", "ZCode.exe"),
+      ];
+      const found = searchPaths.find((p) => p && existsSync(p));
+      if (!found) {
+        return null; // will be handled as not_found in caller
+      }
+      return { exe: found, args: [], cwd: root, display: `${q(found)}` };
     }
     default:
       return null;

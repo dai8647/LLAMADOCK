@@ -23,6 +23,7 @@
 |---|---|---|---|
 | ComfyUI | 8188 | `select-model.ps1`（ck プロファイル） | 動画・画像生成本体 |
 | **DeepSeek Harness** | 5173 | `npx @deepseek-ai/dsh@latest web` | エージェントハーネス（npx 自動インストール＋自動アップデート） |
+| **ZCode** | — | `ZCode.exe`（デスクトップ） | Z.ai コーディングエージェント（OpenAI 互換 API 対応） |
 | h3-chat（Web UI） | 8189 | `tools/h3-chat.ps1` | 企画チャット + 生成ボタン UI |
 | 企画 LLM（llama-server） | 8190 | `tools/h3-chat.ps1` | Qwen3.5 企画（CPU・mmproj 視覚付き） |
 
@@ -141,7 +142,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 | `arg-builder.js` | スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング） |
 | `results-store.js` | 実測 tok/s・VRAM を `config/run-results.json`（gitignore）に蓄積、成功 3 回以上で「推奨（実測）」認定 |
-| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/DeepResearch/LlamaAgent/ComfyUI の起動契約（ComfyUI は standalone） |
+| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/DeepResearch/LlamaAgent/ComfyUI/DeepSeekHarness/ZCode の起動契約（ComfyUI は standalone） |
 | `mock-llama-server.mjs` | 非 Windows 用シミュレーション llama-server（計測ループ検証用） |
 | `app.js` / `index.html` / `style.css` | 3カラム・ダークテーマ UI |
 
@@ -173,6 +174,14 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 - **起動**: `npx @deepseek-ai/dsh@latest web`（初回は自動インストール、以降は自動アップデート）
 - **ポート**: 5173（既定）
 - **ワークスペース**: `select-model.ps1` メニュー [8] または web-ui 右カラムから起動可能
+
+### ZCode（Z.ai コーディングエージェント）
+
+- **種別**: デスクトップアプリ（ZCode.exe）
+- **公式**: https://zcode.z.ai
+- **接続**: OpenAI 互換プロバイダ → Base URL: `http://127.0.0.1:8090/v1`
+- **ワークスペース**: `select-model.ps1` メニュー [9] または web-ui 右カラムから起動可能
+- **初回設定**: ZCode 起動後、Settings → Model Settings → Add Provider → OpenAI Compatible → Base URL を入力（手動）
 - **更新**: `tools/dsh-update.ps1` が起動時にバックグラウンドでバージョンチェック＋更新を実行
 
 ## 8. 次にやること（優先度順）
