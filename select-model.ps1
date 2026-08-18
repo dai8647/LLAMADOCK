@@ -1782,6 +1782,17 @@ function Open-ZCodeClient {
     # Supports OpenAI-compatible providers: user configures Base URL
     # in ZCode Settings → Model Settings → Third-Party Providers.
 
+    
+    # --- Auto-configure ZCode config.json ---
+    $zcodeSetupScript = Join-Path $PSScriptRoot "tools\zcode-setup.ps1"
+    if (Test-Path -LiteralPath $zcodeSetupScript) {
+        Write-Host "Configuring ZCode provider..." -ForegroundColor DarkGray
+        try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $zcodeSetupScript -BaseUrl "$ClientBaseUrl" 2>&1 | Write-Host -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  (config setup skipped)" -ForegroundColor DarkGray
+        }
+    }
     $zcodeSearchPaths = @(
         "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe",
         "$env:LOCALAPPDATA\ZCode\ZCode.exe",
