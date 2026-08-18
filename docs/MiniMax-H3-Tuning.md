@@ -178,12 +178,14 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
      （画像の内容・構図を保ちつつ動き・カメラ・時間経過を追加）→「🎬 この企画で生成 ▶」で生成。
   ⑤ 動画完成後は**自動停止**: ブラウザ側 90 秒カウントダウン（即停止/ComfyUI のみ/キャンセル可）、
      ブラウザが閉じていてもサーバー側が 180 秒後に ComfyUI・企画 LLM を停止し GPU・メモリを解放。
-  企画 LLM は `tools/h3-chat.ps1` の `-PlanModel` で選択（**`Qwen3.5`** Qwen3.5-4B Uncensored・NSFW・視覚対応・デフォルト / `Off` 無効）。
-  Qwen3.5 は `--mmproj`（視覚エンコーダ 675MB）付きで起動し、**確定したキー画像を base64 で送って
-  実際に見た上で**動画プロンプトを作成します（`h3-chat.py` が `data:image/...` 形式で添付）。
-  旧 LFM / DirtyMuse は Qwen3.5 に一本化したため削除済み（ツール呼び出し形式のパースは
-  他モデル対応として h3-chat.py に残してあります）。モデル導入元:
-  `Sinbad-The-Sailor/Qwen3.5-4B-NSFW-ARA-Heretic-Literotica`（えろ文芸特化・Literotica / erotica チューニング）。旧 `HauhauCS/Qwen3.5-4B-Uncensored-HauhauCS-Aggressive` は差し替えで削除済み。
+  企画 LLM は `tools/h3-chat.ps1` の `-PlanModel` で選択:
+  - **`Qwen3.5`**（デフォルト）: Qwen3.5-4B NSFW Literotica（CPU・8190・`--mmproj` 視覚対応・常駐）
+  - **`Qwen3.8-27B-GPU`**: Qwen3.8-27B Abliterated（GPU・8191・企画フェーズのみ・視覚なし）。推論 effort を `medium` に固定（`--chat-template-kwargs '{"reasoning_effort":"medium"}'` + `--reasoning-budget 1536`。hama-jp/qwen38-reasoning-effort 参照）。
+  - **`Off`**: 企画 LLM 不使用
+
+  CPU Qwen3.5 は `--mmproj`（視覚エンコーダ 675MB）付きで起動し、**確定したキー画像を base64 で送って
+  実際に見た上で**動画プロンプトを作成します。GPU 27B は視覚なしのため、画像プロンプト文面ベースで
+  動画プロンプトを作成します。旧 LFM / DirtyMuse は削除済み。
 - **視覚入力の検証テスト**（`tools/test-plan-vision.py`）: 合成画像（既知の色・形）を直接見せて
   記述が一致するか（[A]）と、テキストプロンプト無しでキー画像だけを確定パスに通して最終動画
   プロンプトが画像内容を反映するか（[B]）を自動チェックします。企画 LLM + h3-chat 起動中に
