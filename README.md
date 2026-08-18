@@ -73,6 +73,13 @@ llama-server を立ち上げ、リクエスト時に再接続も試みる）。�
 画像は自動で ComfyUI `input/` にコピーされ、プロンプト末尾にタグの説明が追記されます。
 詳細・設定（`ref_image_size` match/max・strength）は `docs/MiniMax-H3-Tuning.md` 参照。
 
+**⚡ ハイスピード / 高精度モード切替**: チャット欄のラジオボタンで品質を選べます。
+- **high**（高精度）: turbo LoRA + 8step + 1344×768（約9分）
+- **quick**（標準）: turbo LoRA + 8step + 512×320（約4分）
+- **lite**（軽量）: turbo LoRA + 8step + 1344×768（super ワークフロー）
+- **fast**（最高画質）: **Spectrum + 20step（ターボ LoRA なし）** + 1344×768（アーティファクトなし）
+- チャットで「最速」「最高画質」等の自然語言指示でも切替可能（`fast_quick` = fast + 短尺）
+
 MiniMax H3 の高速化（Spectrum / **Turbo LoRA** / **ClipProj** の A/B ワークフロー
 `h3_workflow_fast.json` / `h3_workflow_turbo.json` / `h3_workflow_clipproj.json` / `h3_workflow_super.json` 含む計 17 個のバリアント
 （短尺音声付き `*_short_audio`・スーパー `*_super` 系・**R2V 参照 `h3_workflow_r2v*.json`** を含む）の一覧・調査結果・導入方法は **`docs/MiniMax-H3-Tuning.md`** に、現状把握は以下にまとめています。

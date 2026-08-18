@@ -54,7 +54,7 @@ llamadock（select-model.ps1）
      → 企画 LLM が英語の動画プロンプトを作成（Qwen3.5 CPU モードはキー画像を【視覚で見て】。
        GPU 27B は視覚なしのため画像プロンプト文面ベース）
      ↓
-⑥ 動画生成（ComfyUI: H3 DiT + turbo LoRA [+ 参照 LoRA]）quick ≈4分 / high ≈9分
+⑥ 動画生成（ComfyUI: H3 DiT + turbo LoRA [+ 参照 LoRA]）quick ≈4分 / high ≈9分 / fast ≈12分（Spectrum） / **fast ≈12分（Spectrum・20step・ターボなし・最高画質）**
      ↓
 ⑦ 完成 → 自動停止カウントダウン
 ```
