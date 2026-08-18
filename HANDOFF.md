@@ -27,7 +27,7 @@
 
 - **メインメニュー**: `select-model.ps1`（＝ `llamadock`）
   - チューニングメニュー「ComfyUI tuning」（2026-08-17 から 4 項目に縮小）: `[1] plan`（推奨・ck + 企画モード）/ `[2] ck` / `[3] default` / `[4] custom`。Enter で plan。super / fast / triton / bench は `LLAMADOCK_COMFY_PROFILE` でスクリプト指定可
-  - `[1] plan` を選ぶと h3-chat（企画 LLM 付き）が起動し、8189 が ready になってからブラウザが自動で開く。企画 LLM は Qwen3.5（CPU・8190・常駐・視覚対応）か Qwen3.8-27B（GPU・8191・企画フェーズのみ起動・高品質・視覚なし）を選択できる
+  - `[1] plan` を選ぶと h3-chat（企画 LLM 付き）が起動し、8189 が ready になってからブラウザが自動で開く。企画 LLM は Qwen3.5（CPU・8190・常駐・視覚対応）か Qwen3.8-27B（GPU・8191・企画フェーズのみ起動・高品質・推論 effort=medium・視覚なし）を選択できる
 - **h3-chat.ps1**: `-NoBrowser` スイッチ対応 / 8190 が既に動いていれば llama-server を再利用 / 両方起動済みなら即終了（二重起動防止 3 層）
 - **自動停止**: 動画完了 → ブラウザに 90 秒カウントダウン（🛑今すぐ終了 / ComfyUI だけ / キャンセル）→ サーバー側安全網として **180 秒後に** `/free`（モデルアンロード → VRAM 解放）→ ComfyUI・企画 LLM・h3-chat を全部 kill。ブラウザを閉じていても発動する
   - 実装: `tools/h3-chat.py` の `_status` 内タイマー + `_shutdown` / `POST /free`

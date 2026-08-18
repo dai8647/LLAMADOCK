@@ -199,10 +199,17 @@ def _spawn_plan_llm():
         "--temp", "0.8", "--top-p", "0.95", "--min-p", "0.05",
     ]
     if PLAN_GPU:
-        # GPU planner: full offload, jinja template, thinking off (the 27B is
-        # a reasoning model; with thinking on it burns the token budget on
-        # reasoning_content and the plan tags never appear).
-        args += ["-ngl", "all", "--jinja", "--reasoning", "off"]
+        # GPU planner: full offload, jinja template, medium reasoning effort.
+        # hama-jp's research (github.com/hama-jp/qwen38-reasoning-effort)
+        # shows --reasoning off pushes thinking INTO the answer text (3x output
+        # tokens, 3x slower). medium effort keeps thinking separate and short
+        # (~312 tokens median vs 29k at xhigh default). Budget 1536 tokens as a
+        # safety net against runaway thinking (Qwen3.8-27B defaults to xhigh).
+        args += [
+            "-ngl", "all", "--jinja",
+            "--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
+            "--reasoning-budget", "1536",
+        ]
     else:
         args += [
             "-ngl", "0", "--mlock", "-ctk", "q8_0",
@@ -1760,10 +1767,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-6:]
             body = json.dumps({
                 "messages": history,
-                # 3072: with --reasoning on the thinking tokens (capped at 256
-                # server-side) also count against this budget. 2048 truncated
-                # detailed multi-shot [FINAL_PROMPT] blocks before the
-                # overall_soundscape / non_diegetic_music fields were written.
+                # 3072: with medium reasoning effort, thinking is ~312 tokens
+                # (median) with a 1536 safety cap, leaving ~1536 for the answer
+                # — plenty for [FINAL_PROMPT] blocks (~500-800 tokens).
                 "max_tokens": 3072,
                 "temperature": 0.8,
             }).encode("utf-8")
@@ -1776,8 +1782,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 d = json.load(r)
             msg = d["choices"][0]["message"]
             content = msg.get("content") or ""
-            # with --reasoning on the server puts the think block here; show
-            # it in the UI as the model's "thinking" trace.
+            # Medium reasoning: server returns a short thinking block
+            # (~312 tokens median); show it in the UI as a collapsible trace.
             thinking = (msg.get("reasoning_content") or "").strip()
             # some reasoning models put the text in reasoning_content
             if not content.strip():
