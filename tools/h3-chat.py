@@ -58,12 +58,15 @@ WORKFLOWS = {
     "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
     # 4B encoder + short/res (quicklite): fastest option, light on VRAM
     "quicklite": os.path.join(REPO, "h3_workflow_super_short_audio.json"),
+    # Spectrum + 20 steps (no turbo LoRA): highest quality, no LoRA artifacts
+    "fast": os.path.join(REPO, "h3_workflow_fast_audio.json"),
+    "fast_quick": os.path.join(REPO, "h3_workflow_fast_short_audio.json"),
 }
 
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "zimg": 40, "qimg": 1250}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250}
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
 # workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
@@ -114,6 +117,8 @@ R2V_WORKFLOWS = {
     "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
     "lite": os.path.join(REPO, "h3_workflow_r2v.json"),
     "quicklite": os.path.join(REPO, "h3_workflow_r2v_short_4b.json"),
+    "fast": os.path.join(REPO, "h3_workflow_r2v_fast.json"),
+    "fast_quick": os.path.join(REPO, "h3_workflow_r2v_fast_short.json"),
 }
 NODE_R2V_IMAGE = "16"    # LoadImage: 参照画像（ComfyUI input/ にコピーしたファイル名を設定）
 NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
@@ -335,7 +340,9 @@ def _parse_tweak(text):
     tw = {}
     label = []
     # 画質
-    if re.search(r"高画質|高精度|精細|きれい|フル尺|フルで", t):
+    if re.search(r"最高画質|ターボなし|spectrum|20ステップ|20steps", t):
+        tw["mode"] = "fast"; label.append("高画質 spectrum")
+    elif re.search(r"高画質|高精度|精細|きれい|フル尺|フルで", t):
         tw["mode"] = "high"; label.append("高精度 32B")
     elif re.search(r"省VRAM|軽量|4B", t):
         tw["mode"] = "lite"; label.append("軽量 4B")
@@ -368,6 +375,9 @@ def _parse_tweak(text):
         tw["resolution"] = (768, 768); label.append("正方形 1:1")
     elif re.search(r"横長|16:9|ワイド|ヨコ", t):
         tw["resolution"] = (1344, 768); label.append("横長 16:9")
+    # fast + short length → fast_quick (spectrum short variant)
+    if tw.get("mode") == "fast" and tw.get("length_frames", 48) <= 20:
+        tw["mode"] = "fast_quick"
     if not tw:
         return None
     tw["label"] = "・".join(label)
@@ -797,10 +807,12 @@ HTML = """<!doctype html>
 </div>
 <footer>
   <div id="modes">
-    <label><input type="radio" name="mode" value="high" checked> 高精度 32B（フル・約9分・日本語に強い）</label>
+    <label><input type="radio" name="mode" value="fast" checked> 高画質 spectrum（フル・約15分・ターボなし最高画質）</label>
+    <label><input type="radio" name="mode" value="high"> 高精度 32B（フル・約9分・ターボ高速）</label>
+    <label><input type="radio" name="mode" value="fast_quick"> 高画質 spectrum（短尺・約6分・ターボなし）</label>
     <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約2〜4分）</label>
-    <label><input type="radio" name="mode" value="quicklite"> クイック 4B（最速・短尺・省VRAM）</label>
     <label><input type="radio" name="mode" value="lite"> 軽量 4B（フル・省VRAM・約9分）</label>
+    <label><input type="radio" name="mode" value="quicklite"> クイック 4B（最速・短尺・省VRAM）</label>
     <div class="ditrow">
       <span class="hint">動画モデル:</span>
       <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
@@ -2172,10 +2184,10 @@ def main():
     server.autostop = _AutoStop(server)
     url = f"http://127.0.0.1:{args.port}"
     print(f"h3-chat: {url}")
-    print(f"h3-chat: ComfyUI = {server.comfy_base}  (high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
+    print(f"h3-chat: ComfyUI = {server.comfy_base}  (fast={WORKFLOWS['fast']} high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
-    print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['quick']} など（キー画像→参照 LoRA）")
+    print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['fast']} など（キー画像→参照 LoRA）")
     print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')}")
     # Bring up the planning LLM in the background so the first plan-mode
     # message does not have to wait for the model load (~10-60s on CPU).

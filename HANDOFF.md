@@ -81,9 +81,11 @@ cd C:\Users\dai86\Documents\ComfyUI
 
 - `h3_workflow_zimage.json`: キー画像生成（UnetLoaderGGUF + CLIPLoader lumina2 + VAE + ModelSamplingAuraFlow shift=3 + KSampler 8step/cfg1/res_multistep + ConditioningZeroOut）
 - 動画ワークフローは全て node `1`=UNETLoader。h3-chat の `/api/generate` が `dit` パラメータ（`default` / `10eros`）で `unet_name` を差し替える（`tools/h3-chat.py` の `DITS` 辞書）
-- `super_*`: 4B エンコーダ + ck（+triton）向け / `turbo_*`: 32B エンコーダ + Turbo LoRA / `clipproj_*`: 4B + ClipProj / `fast` / `bench` / `src`
+- `super_*`: 4B エンコーダ + ck（+triton）向け / `turbo_*`: 32B エンコーダ + Turbo LoRA / `clipproj_*`: 4B + ClipProj / `fast_*`: **spectrum + 20step（ターボLoRAなし・最高画質）** / `bench` / `src`
 - `_short` は短尺、`_audio` は音声付き（音声 VAE 使用）
+- **`h3_workflow_fast*.json`**（新規）: SpectrumApplyMiniMaxH3 で VRAM 節約しつつ 20step/euler/simple。Turbo LoRA を使わないためアーティファクトなし。fast=1344×768 48f、fast_short=512×320 16f
 - **`h3_workflow_r2v.json` / `h3_workflow_r2v_short.json`**: 参照モード（R2V）。`MiniMaxH3ReferenceToVideo` ノード + **参照 LoRA**（`minimax_h3_ref_lora_rank_256_bf16`）を fl2va モデルに重ねる（ref2va モデル不要）。node 16 = LoadImage（参照画像）、node 6 の `ref_images.ref_image_0` に接続。プロンプトは `<Picture 1>` タグで参照画像を指定（h3-chat が自動追記）
+- **`h3_workflow_r2v_fast*.json`**（新規）: 参照モード + spectrum + 20step（ターボなし）。キャラ一貫性と最高画質を両立
 - 動画は `ComfyUI\output\` に `h3_turbo_audio_*.mp4` として出力、キー画像は `zimg_*.png`
 
 ### カスタムノード（ComfyUI `custom_nodes\`）
