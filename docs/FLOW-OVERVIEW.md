@@ -10,8 +10,9 @@
 | **8188** | ComfyUI | 動画生成・キー画像生成の実行エンジン | GPU（VRAM 全部使う） |
 | **8189** | h3-chat（Python） | ブラウザで開くチャット UI。ComfyUI へのプロキシ | CPU |
 | **8190** | 企画 LLM（llama-server + Qwen3.5） | 日本語企画会話・キー画像の視覚認識・英語プロンプト作成 | **CPU（-ngl 0）** |
+| **8191** | 企画 LLM（Qwen3.8-27B・オンデマンド） | 高品質な企画（視覚なし）。企画フェーズだけ起動し生成前に自動停止 | **GPU（企画中のみ・約14GB）** |
 
-企画 LLM が CPU 推論なのは **VRAM を ComfyUI に全部残すため**（RX 7800 XT 16GB 前提）。
+企画 LLM が CPU 推論なのは **VRAM を ComfyUI に全部残すため**（RX 7800 XT 16GB 前提）。GPU 27B（8191）は企画中だけ VRAM を使い、動画・画像生成の直前に h3-chat が kill する（14GB が生成モデルと干渉しない）。
 
 ## 2. 動画スタックで使うモデル（4 系統）
 
@@ -26,15 +27,16 @@
 
 ```
 llamadock（select-model.ps1）
- └ [7] plan を選択
+ └ [1] plan（または Enter）を選択
      ├─ ComfyUI を起動（ck チューニング付き）→ 8188
      └─ h3-chat.ps1 を呼ぶ
-          ├─ 企画 LLM（llama-server）を起動 → 8190（Qwen3.5 + mmproj・CPU）
+          ├─ 企画 LLM（llama-server）を起動 → 8190（Qwen3.5 + mmproj・CPU）または
+          │   GPU 27B 選択時は h3-chat.py が 8191 にオンデマンド起動
           └─ h3-chat を起動 → 8189
      準備ができたらブラウザで 8189 を自動オープン
 ```
 
-- **h3-chat.py 単体起動**でも、8190 が落ちていれば**自動で llama-server を起動**する（起動時バックグラウンド + リクエスト時再接続）。
+- **h3-chat.py 単体起動**でも、8190 が落ちていれば**自動で llama-server を起動**する（起動時バックグラウンド + リクエスト時再接続）。GPU 27B モード（`LLAMADOCK_PLAN_GPU=1`）は 8191 へオンデマンド起動し、生成前に自動停止。
 - 二重起動ガード: 8189 と 8190 が両方生きてれば何も起動せずブラウザを開くだけ。llama-server も再利用。
 
 ## 4. 生成フロー（企画モード・フル）
@@ -49,7 +51,8 @@ llamadock（select-model.ps1）
 ④ 画像を確認 → 必要なら修正指示（企画 LLM が再考）
      ↓
 ⑤ 確定 → Z-Image をアンロード（VRAM 解放）
-     → 企画 LLM がキー画像を【視覚で見て】英語の動画プロンプトを作成
+     → 企画 LLM が英語の動画プロンプトを作成（Qwen3.5 CPU モードはキー画像を【視覚で見て】。
+       GPU 27B は視覚なしのため画像プロンプト文面ベース）
      ↓
 ⑥ 動画生成（ComfyUI: H3 DiT + turbo LoRA [+ 参照 LoRA]）quick ≈4分 / high ≈9分
      ↓

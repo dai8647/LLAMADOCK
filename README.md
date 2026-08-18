@@ -39,8 +39,8 @@ ComfyUIだけを起動する場合は、モデル選択を省略できます。
 ### MiniMax H3 の高速化
 
 ComfyUI の起動フラグは調査に基づく既定値（`--reserve-vram 1.0`、`--lowvram` なし）が自動適用されます。
-起動時に「ComfyUI tuning」メニュー（**速い順**: super / ck / fast / default / bench / custom / **plan**。triton はアンインストール済みのため削除）で対話的に切り替えられるほか、
-`[7] plan` を選ぶと **ck + 企画モード** で起動し、h3-chat（企画 LLM `Qwen3.5` 付き）を自動で開きます。両方起動済みなら二重起動せずブラウザを開くだけです。
+起動時に「ComfyUI tuning」メニュー（**推奨順**: `[1] plan`（ck + 企画モード・Enter でも可）/ `[2] ck` / `[3] default` / `[4] custom`。super / fast / triton / bench は `LLAMADOCK_COMFY_PROFILE` で指定可）で対話的に切り替えられます。
+`[1] plan` を選ぶと **ck + 企画モード** で起動し、h3-chat（企画 LLM 付き）を自動で開きます。企画 LLM は **Qwen3.5-4B**（CPU・8190・視覚対応・常駐）と **Qwen3.8-27B**（GPU・8191・企画フェーズのみ・高品質）を選択でき、27B は生成直前に h3-chat が自動停止して VRAM を空けます。両方起動済みなら二重起動せずブラウザを開くだけです。
 セッションメニューで `[4] Stop server and exit` を選ぶと、**ComfyUI / h3-chat / 企画 LLM も全部停止して GPU・RAM を解放するか**を確認します。
 プロファイル／環境変数でも指定できます（`LLAMADOCK_COMFY_PROFILE=super|ck|fast|bench|triton`、
 `LLAMADOCK_COMFY_FLAGS`、`-ComfyUIFlags`）。`ck` は `--use-ck-attention`（comfy-kitchen attention、
