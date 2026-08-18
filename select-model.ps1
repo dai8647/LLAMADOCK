@@ -1775,6 +1775,57 @@ function Open-DeepSeekHarnessClient {
         "@deepseek-ai/dsh@latest",
         "web"
     )
+
+function Open-ZCodeClient {
+    # ZCode — Z.ai coding agent (desktop exe).
+    # https://zcode.z.ai
+    # Supports OpenAI-compatible providers: user configures Base URL
+    # in ZCode Settings → Model Settings → Third-Party Providers.
+
+    $zcodeSearchPaths = @(
+        "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe",
+        "$env:LOCALAPPDATA\ZCode\ZCode.exe",
+        "$env:PROGRAMFILES\ZCode\ZCode.exe",
+        "$env:PROGRAMFILES(X86)\ZCode\ZCode.exe",
+        "$env:APPDATA\ZCode\ZCode.exe",
+        "$env:USERPROFILE\AppData\Local\ZCode\ZCode.exe",
+        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ZCode.exe"
+    )
+
+    $zcodePath = $null
+    foreach ($p in $zcodeSearchPaths) {
+        if ($p -and (Test-Path -LiteralPath $p)) {
+            $zcodePath = $p
+            break
+        }
+    }
+
+    if (-not $zcodePath) {
+        $found = Get-Command ZCode.exe -ErrorAction SilentlyContinue
+        if ($found) { $zcodePath = $found.Source }
+    }
+
+    if (-not $zcodePath) {
+        Write-Host "ZCode.exe was not found. Install from https://zcode.z.ai" -ForegroundColor Yellow
+        Write-Host "After installing, launch ZCode and configure:" -ForegroundColor DarkGray
+        Write-Host "  Settings → Model Settings → Add Provider → OpenAI Compatible" -ForegroundColor DarkGray
+        Write-Host "  Base URL: http://127.0.0.1:8090/v1" -ForegroundColor DarkGray
+        return $null
+    }
+
+    Write-Host "Opening ZCode..." -ForegroundColor Cyan
+    Write-Host "  ZCode: $zcodePath" -ForegroundColor DarkGray
+    Write-Host "  llama-server: $ClientBaseUrl" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "ZCode接続設定（初回のみ手動）:" -ForegroundColor Yellow
+    Write-Host "  1. ZCode内で Settings → Model Settings を開く" -ForegroundColor Yellow
+    Write-Host '  2. Add Provider → "OpenAI Compatible" を選択' -ForegroundColor Yellow
+    Write-Host "  3. Base URL: http://127.0.0.1:8090/v1" -ForegroundColor Yellow
+    Write-Host "  4. API Key: not-needed" -ForegroundColor Yellow
+    Write-Host "  5. モデル名を入力（例: $($ModelName ?? 'local-model')）" -ForegroundColor Yellow
+    Write-Host ""
+    return Start-Process -FilePath $zcodePath -WorkingDirectory $PSScriptRoot -PassThru
+}
 }
 
 function Open-WorkspaceClient {
@@ -1791,6 +1842,7 @@ function Open-WorkspaceClient {
         }
         "OpenClaude" { return Open-OpenClaudeClient -ModelName $ModelName }
         "DeepSeekHarness" { return Open-DeepSeekHarnessClient }
+        "ZCode" { return Open-ZCodeClient }
         default {
             Set-ClineLocalModel -ModelName $ModelName
             return Open-ClineClient
@@ -1846,9 +1898,9 @@ function Select-WorkspaceForSession {
     } while ($choice -notin @("1", "2", "3", "4", "5"))
     if ($choice -eq "1") { return @("relaunch", "") }
     if ($choice -eq "2") {
-        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Deep Research  [6] Llama Agent  [7] ComfyUI"
+        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Deep Research  [6] Llama Agent  [7] ComfyUI  [8] DeepSeek Harness  [9] ZCode"
         $workspace = Read-Host "Select workspace"
-        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
+        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI", "DeepSeekHarness", "ZCode")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
@@ -2822,10 +2874,11 @@ if ($ClientMode -eq "Prompt") {
     Write-Host " [6] Llama Agent - terminal agent with deep web evidence"
     Write-Host " [7] ComfyUI - MiniMax H3 video and audio generation"
     Write-Host " [8] DeepSeek Harness - agent harness framework (auto-update)"
+    Write-Host " [9] ZCode - Z.ai coding agent (desktop)"
     Write-Host ""
 
     do {
-        $clientInput = Read-Host "Select workspace (1-8), or press Enter for Cline"
+        $clientInput = Read-Host "Select workspace (1-9), or press Enter for Cline"
         if ([string]::IsNullOrWhiteSpace($clientInput)) {
             $clientSelection = 1
             $clientValid = $true
@@ -2834,7 +2887,7 @@ if ($ClientMode -eq "Prompt") {
             $clientSelection = 0
             $clientValid = [int]::TryParse($clientInput, [ref]$clientSelection)
         }
-    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 8)
+    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 9)
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
@@ -2843,6 +2896,7 @@ if ($ClientMode -eq "Prompt") {
     elseif ($clientSelection -eq 5) { $ClientMode = "DeepResearch" }
     elseif ($clientSelection -eq 6) { $ClientMode = "LlamaAgent" }
     elseif ($clientSelection -eq 7) { $ClientMode = "ComfyUI" }
+    elseif ($clientSelection -eq 9) { $ClientMode = "ZCode" }
     else { $ClientMode = "DeepSeekHarness" }
 }
 
