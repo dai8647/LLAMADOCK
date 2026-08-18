@@ -17,6 +17,7 @@
 | **Llama Agent** | ターミナル型エージェント + 反復 Web 調査ハーネス |
 | **Deep Research** | Odysseus によるローカル LLM リサーチ UI |
 | **ComfyUI** | MiniMax H3 ビデオ / オーディオ生成 |
+| **DeepSeek Harness** | エージェントハーネス（npx 自動インストール＋自動アップデート） |
 
 ---
 
@@ -212,7 +213,7 @@ npm run start:mcp    # MCP ウェブ検索サーバー（http://127.0.0.1:3100/m
 ### ワークスペース接続（`POST /api/connect`）
 
 起動中のサーバーに対して Cline / OpenCode / OpenClaude / Open WebUI / Deep Research /
-Llama Agent / ComfyUI を接続します（右カラムの「ワークスペース接続」）。
+Llama Agent / DeepSeek Harness / ComfyUI を接続します（右カラムの「ワークスペース接続」）。
 
 - **Windows**: `web-ui/client-manager.js` が `select-model.ps1` の `Open-*Client` と同じ起動経路を
   （detached で）実行します。Cline / OpenCode / OpenClaude は `tools/llamadock-client-shell.ps1`、

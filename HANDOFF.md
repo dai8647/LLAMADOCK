@@ -22,6 +22,7 @@
 | サービス | ポート | 起動元 | 内容 |
 |---|---|---|---|
 | ComfyUI | 8188 | `select-model.ps1`（ck プロファイル） | 動画・画像生成本体 |
+| **DeepSeek Harness** | 5173 | `npx @deepseek-ai/dsh@latest web` | エージェントハーネス（npx 自動インストール＋自動アップデート） |
 | h3-chat（Web UI） | 8189 | `tools/h3-chat.ps1` | 企画チャット + 生成ボタン UI |
 | 企画 LLM（llama-server） | 8190 | `tools/h3-chat.ps1` | Qwen3.5 企画（CPU・mmproj 視覚付き） |
 
@@ -165,6 +166,14 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 参考: javawock7618/comfy-MiniMax-H3-workflows（R2V 2608.18.1 を解析して移植）。
 
 ---
+
+
+### DeepSeek Harness（エージェントハーネス）
+- **URL**: https://deepseek.com/harness/en/
+- **起動**: `npx @deepseek-ai/dsh@latest web`（初回は自動インストール、以降は自動アップデート）
+- **ポート**: 5173（既定）
+- **ワークスペース**: `select-model.ps1` メニュー [8] または web-ui 右カラムから起動可能
+- **更新**: `tools/dsh-update.ps1` が起動時にバックグラウンドでバージョンチェック＋更新を実行
 
 ## 8. 次にやること（優先度順）
 

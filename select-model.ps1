@@ -1759,6 +1759,24 @@ function Open-ComfyUIClient {
     return $process
 }
 
+
+function Open-DeepSeekHarnessClient {
+    # DeepSeek Harness — agent harness framework (npx auto-install + auto-update).
+    # https://deepseek.com/harness/en/
+    $dshCheck = Join-Path $PSScriptRoot "tools\dsh-update.ps1"
+    if (Test-Path -LiteralPath $dshCheck) {
+        # Run update check in background (non-blocking)
+        Start-Job -ScriptBlock { param($p) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p } -ArgumentList $dshCheck | Out-Null
+    }
+    Write-Host "Opening DeepSeek Harness..." -ForegroundColor Cyan
+    $npx = if ($IsWindows -or $env:OS -eq "Windows_NT") { "npx.cmd" } else { "npx" }
+    return Start-Process -FilePath $npx -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @(
+        "--yes",
+        "@deepseek-ai/dsh@latest",
+        "web"
+    )
+}
+
 function Open-WorkspaceClient {
     param([string]$Mode, [string]$ModelPath, [string]$ModelName)
 
@@ -1772,6 +1790,7 @@ function Open-WorkspaceClient {
             return Open-OpenCodeClient -ModelName $ModelName -Harness:$harnessFlag
         }
         "OpenClaude" { return Open-OpenClaudeClient -ModelName $ModelName }
+        "DeepSeekHarness" { return Open-DeepSeekHarnessClient }
         default {
             Set-ClineLocalModel -ModelName $ModelName
             return Open-ClineClient
@@ -1829,7 +1848,7 @@ function Select-WorkspaceForSession {
     if ($choice -eq "2") {
         Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Deep Research  [6] Llama Agent  [7] ComfyUI"
         $workspace = Read-Host "Select workspace"
-        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")
+        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
@@ -2802,10 +2821,11 @@ if ($ClientMode -eq "Prompt") {
     Write-Host " [5] Deep Research - Odysseus research UI"
     Write-Host " [6] Llama Agent - terminal agent with deep web evidence"
     Write-Host " [7] ComfyUI - MiniMax H3 video and audio generation"
+    Write-Host " [8] DeepSeek Harness - agent harness framework (auto-update)"
     Write-Host ""
 
     do {
-        $clientInput = Read-Host "Select workspace (1-7), or press Enter for Cline"
+        $clientInput = Read-Host "Select workspace (1-8), or press Enter for Cline"
         if ([string]::IsNullOrWhiteSpace($clientInput)) {
             $clientSelection = 1
             $clientValid = $true
@@ -2814,7 +2834,7 @@ if ($ClientMode -eq "Prompt") {
             $clientSelection = 0
             $clientValid = [int]::TryParse($clientInput, [ref]$clientSelection)
         }
-    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 7)
+    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 8)
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
@@ -2822,7 +2842,8 @@ if ($ClientMode -eq "Prompt") {
     elseif ($clientSelection -eq 4) { $ClientMode = "WebUI" }
     elseif ($clientSelection -eq 5) { $ClientMode = "DeepResearch" }
     elseif ($clientSelection -eq 6) { $ClientMode = "LlamaAgent" }
-    else { $ClientMode = "ComfyUI" }
+    elseif ($clientSelection -eq 7) { $ClientMode = "ComfyUI" }
+    else { $ClientMode = "DeepSeekHarness" }
 }
 
 if (-not $isQuickLaunch) {
