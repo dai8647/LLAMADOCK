@@ -1575,7 +1575,8 @@ function Get-PlanModelCandidates {
     if (-not (Test-Path -LiteralPath $scanRoot)) { return @() }
     $pinned = @(
         "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
-        "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+        "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf",
+        "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
     )
     $files = Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
@@ -1619,8 +1620,9 @@ function Select-PlanModel {
     Write-Host "Planning LLM:" -ForegroundColor Green
     Write-Host " [1] Qwen3.5-4B  - CPU, resident, vision-capable (default)"
     Write-Host " [2] Qwen3.8-27B - GPU, planning phase only, higher quality (no vision)"
+    Write-Host " [3] Qwen3.8-27B Vision - GPU, planning phase only, vision + KV q8/q4 (lemonyins)"
     $candidates = Get-PlanModelCandidates
-    $idx = 3
+    $idx = 4
     foreach ($c in $candidates) {
         $tag = if ($c.Gpu) { "GPU" } else { "CPU" }
         $vis = if ($c.Mmproj) { "視覚あり" } else { "視覚なし" }
@@ -1628,7 +1630,7 @@ function Select-PlanModel {
         $idx++
     }
     Write-Host ""
-    $max = 2 + $candidates.Count
+    $max = 3 + $candidates.Count
     do {
         $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for Qwen3.5-4B"
         if ([string]::IsNullOrWhiteSpace($planInput) -or $planInput -eq "1") {
@@ -1637,9 +1639,12 @@ function Select-PlanModel {
         if ($planInput -eq "2") {
             return "Qwen3.8-27B-GPU"
         }
+        if ($planInput -eq "3") {
+            return "Qwen3.8-27B-GPU-Vision"
+        }
         $n = 0
-        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 3 -and $n -le $max) {
-            $chosen = $candidates[$n - 3]
+        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 4 -and $n -le $max) {
+            $chosen = $candidates[$n - 4]
             $script:PlanModelCustom = @{
                 Path   = $chosen.Path
                 Mmproj = $chosen.Mmproj
@@ -1677,6 +1682,7 @@ function Start-H3Chat {
             }
             catch { }
             if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or
+                $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or
                 ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) {
                 $planUpNow = $true
             }

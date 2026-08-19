@@ -18,7 +18,7 @@
 # で渡される（select-model.ps1 の Start-H3Chat が設定）。
 
 param(
-    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Custom", "Off")]
+    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Custom", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -41,6 +41,12 @@ $planModels = @{
         Label = "Qwen3.8-27B Abliterated (GPU・企画フェーズのみ・視覚なし)"
         Path = "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
         Mmproj = $null
+        Gpu = $true
+    }
+    "Qwen3.8-27B-GPU-Vision" = @{
+        Label = "Qwen3.8-27B ULTIMATE-UNCENSORED (GPU・企画フェーズのみ・視覚あり・KV q8/q4)"
+        Path = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\mmproj-BF16.gguf"
         Gpu = $true
     }
 }
@@ -67,7 +73,7 @@ if ($PlanModel -eq "Custom") {
 }
 
 # GPU planner（27B / Custom GPU）は 8191、CPU planner は 8190。
-if ($PlanModel -eq "Qwen3.8-27B-GPU" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
+if ($PlanModel -eq "Qwen3.8-27B-GPU" -or $PlanModel -eq "Qwen3.8-27B-GPU-Vision" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
     $planPort = 8191
 }
 $url = "http://127.0.0.1:$port"
@@ -105,8 +111,9 @@ try {
 # Double-launch guard: chat UI (and, for the resident CPU planner, the
 # planning LLM) already running means there is nothing left to do here.
 # The GPU planner is started on demand by h3-chat.py, so it is not checked.
-$planIsGpuModel = ($PlanModel -eq "Qwen3.8-27B-GPU") -or
-                  ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)
+# Use the model's .Gpu flag rather than enumerating names, so new GPU planners
+# (e.g. Qwen3.8-27B-GPU-Vision) are picked up automatically.
+$planIsGpuModel = [bool]($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu)
 if ($already -and -not $planIsGpuModel -and $PlanModel -ne "Off") {
     try {
         $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
@@ -142,6 +149,10 @@ if ($planGpu) {
     else {
         Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort)." -ForegroundColor Cyan
         $env:LLAMADOCK_PLAN_GPU = "1"
+        # Pass the chosen model + mmproj to h3-chat.py so it launches THIS
+        # model (its hardcoded default is the finex666 27B, no vision).
+        $env:LLAMADOCK_PLAN_MODEL = $model.Path
+        if ($model.Mmproj) { $env:LLAMADOCK_PLAN_MMPROJ = $model.Mmproj } else { $env:LLAMADOCK_PLAN_MMPROJ = "" }
         $skipPlanStart = $true
     }
 }

@@ -167,9 +167,10 @@ PLAN_SERVER_BIN = os.environ.get(
 )
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
-# 27B has no vision projector: the confirmed key image is described by its
-# prompt text instead of being attached as pixels.
-PLAN_HAS_VISION = not PLAN_GPU
+# Vision is available whenever an mmproj is configured, regardless of CPU/GPU
+# mode. The old rule (vision = not GPU) broke the 27B vision model, which runs
+# on GPU but ships its own mmproj.
+PLAN_HAS_VISION = bool(PLAN_MMPROJ_PATH)
 PLAN_START_LOCK = threading.Lock()
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
@@ -215,6 +216,15 @@ def _spawn_plan_llm():
             "--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
             "--reasoning-budget", "1536",
         ]
+        # Asymmetric KV compression (K q8 / V q4) + Flash Attention. The 27B
+        # IQ4 model + mmproj is ~14.1GB on a 16GB card; compressing the KV
+        # cache frees the headroom vision image tokens need. V quantization
+        # requires Flash Attention (see docs/LlamaDock-Runbook.md).
+        args += ["-fa", "on", "-ctk", "q8_0", "-ctv", "q4_0"]
+        if PLAN_MMPROJ_PATH and os.path.isfile(PLAN_MMPROJ_PATH):
+            # Vision-capable 27B (lemonyins ULTIMATE-UNCENSORED ships its own
+            # mmproj). Attach it so the planner can see the confirmed key image.
+            args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     else:
         args += [
             "-ngl", "0", "--mlock", "-ctk", "q8_0",
