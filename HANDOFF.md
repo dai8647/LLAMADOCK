@@ -1,4 +1,4 @@
-# LlamaDock / MiniMax-H3 ハンドオフ（2026-08-16）
+# LlamaDock / MiniMax-H3 ハンドオフ（2026-08-19 更新）
 
 この文書は「GitHub クラウド上の AI が現状を読んで作業を引き継げる」ことを目的に書かれている。
 コードや設定の変更後は必ずこの文書も更新すること。
@@ -111,7 +111,7 @@ node tools/mcp-smoke.mjs
 ```
 - `test-plan-vision.py`: ①合成画像を直接見せて記述照合 ②テキスト手がかりゼロで確定パスに通し、最終動画プロンプトが画像内容（色・被写体）と一致するか照合
 - `tools/mcp-smoke.mjs`: MCP サーバーを実起動して `search_web` / `search_and_fetch` / `fetch_url` / `deep_research` を叩き、全項目 PASS を確認
-- 最終コミット: `86c9513`（本 HANDOFF.md を追加したコミット）
+- 最終コミット: `1d886e0`（ZCode auto-configure）
 
 ---
 
@@ -197,3 +197,30 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 6. **GitHub クラウド移行準備** — 絶対パスの抽象化（環境変数 or 設定ファイル化）、Windows 固有コマンドの分離、CI での test.ps1 / test-plan-vision.py 実行
 7. **企画モード UX 改善** — キー画像の複数案生成と比較選択、生成プロンプトのプレビュー編集
 8. **新モデル調査** — 「拒否無しでもっと軽い MiniMax」「より軽量な Z-Image / テキストエンコーダ」の Reddit/GitHub 調査（必要時のみ）
+
+---
+
+## 9. E2E テスト結果（2026-08-18 実施）
+
+3 パターンの E2E テストを実施し、全パターン成功:
+
+| パターン | 企画LLM | 画像生成 | 企画LLM(動画) | 動画生成 |
+|---|---|---|---|---|
+| R1_playful_innocent | 74s | 80s | 97s | 903s (~15分) |
+| R2_reluctant | 62s | 90s | 108s | 331s (~5.5分) |
+| R3_crying | 68s | 40s | 110s | 1163s (~19分) |
+
+品質比較テスト:
+- 10Eros NVFP4: 1940s (~32分) — int8 との比較用
+- Qwen-Image 2512: 1143s (~19分) — Z-Image との比較用
+
+FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
+音声 RMS 分析（tmp-audio-analyze.py）で R2/R3 の喘ぎ声品質を評価済み。
+
+### h3-chat UI 改善（未コミット → 本コミットで反映）
+- セグメントコントロール（動画モード 4 択 → 6 択 pill UI）
+- 長さ選択ドロップダウン（5/10/15 秒）
+- 詳細設定パネル折り畳み（動画モデル・キー画像エンジン）
+- プロンプト強化: 服装整合性・表情多様性・素人感（handheld camera, amateur style）
+- 音声解析パーサー修正（multi-line/single-line 両対応）
+- 企画 LLM 候補の自動検出（.lmstudio\models スキャン）

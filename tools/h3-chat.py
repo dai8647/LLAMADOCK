@@ -486,6 +486,16 @@ PLAN_SYSTEM = (
     "[IMG_PROMPT] にはヌード・下着・肌・胸・尻・陰部など必要なら露骨な英語タグ（nude, naked, breasts, nipples, pussy, spread legs, missionary 等）を書く。"
     "[FINAL_PROMPT] には性行為の動き（thrusting, bouncing, grinding）、リズム、カメラアングル、喘ぎ声・息遣い・愛液などの音響を時系列で書く。"
     "被写体は全員成人（adult）。未成年を示す表現は絶対に使わない。ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
+    "【服装・小物の整合性】キー画像と動画で衣服・下着・小物の状態が矛盾しないよう一貫させる。"
+    "ヌードシーンなら [IMG_PROMPT] と [FINAL_PROMPT] の両方に explicitly fully nude, no clothing, no underwear と明記し、"
+    "下着・衣服が途中で出現しないよう釘を刺す。着衣シーンならその衣服を両プロンプトで同じ単語で繰り返す。"
+    "【表情・感情の多様性】表情は「気持ちよさそう」一辺倒にしない。シーンに合わせて"
+    "イヤイヤながら（reluctant, protesting but yielding）、泣きながら（tears streaming, crying face）、"
+    "無邪気に楽しむ（playful, innocent giggle）、照れる（blushing, shy smile）、恍惚（ecstatic, eyes rolling back）など"
+    "具体的な感情を1つ選んで英語で明記する。ユーザーが感情を指定したらそれを最優先で反映する。"
+    "【リアルさ・素人感】AI っぽさを消すため、素人撮影・アマチュア動画風の質感を積極的に取り入れる: "
+    "handheld camera with slight shake, amateur home-video look, natural imperfect skin texture, candid unposed feel。"
+    "完璧すぎる肌・左右対称すぎる顔・不自然な光沢は避ける。"
     "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
     "固まったら英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す（例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, low-angle cinematic composition[/IMG_PROMPT]）。"
     "タグは必ず1組だけ。固まるまでは日本語で会話を続ける。"
@@ -654,18 +664,29 @@ AUDIO_KEYS = ("voice", "dialogue", "sfx", "music")
 
 
 def _parse_audio_set(text):
-    """Parse an [AUDIO_SET]...[/AUDIO_SET] block into {'voice','dialogue','sfx','music'}."""
+    """Parse an [AUDIO_SET]...[/AUDIO_SET] block into {'voice','dialogue','sfx','music'}.
+
+    Handles both layouts the planning LLM emits:
+      multi-line:  voice: ...\ndialogue: ...\nsfx: ...\nmusic: ...
+      single-line: voice: ... / dialogue: ... / sfx: ... / music: ...
+    We locate each known key marker and capture up to the next marker (or the
+    end), so values that themselves contain colons (e.g. "S1: ...") are kept
+    intact instead of being mis-split.
+    """
     m = AUDIO_SET_RE.search(text or "")
     if not m:
         return None
     block = m.group(1)
     out = {}
-    for key in AUDIO_KEYS:
-        vm = re.search(r"^[ \t]*" + re.escape(key) + r"[ \t]*[:：][ \t]*(.+?)[ \t]*$", block, re.M | re.I)
-        if vm:
-            val = vm.group(1).strip()
-            if val and val.lower() != "なし" and val.lower() != "none" and val.lower() != "n/a":
-                out[key] = val
+    key_pat = re.compile(r"(voice|dialogue|sfx|music)[ \t]*[:：]", re.I)
+    matches = list(key_pat.finditer(block))
+    for i, km in enumerate(matches):
+        key = km.group(1).lower()
+        start = km.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(block)
+        val = block[start:end].strip().strip("/").strip()
+        if val and val.lower() not in ("なし", "none", "n/a"):
+            out[key] = val
     return out or None
 
 
@@ -746,6 +767,23 @@ HTML = """<!doctype html>
   details.thinkbox { margin:6px 0; border:1px solid var(--line); border-radius:8px; padding:6px 10px; background:rgba(255,255,255,0.02); }
   details.thinkbox summary { cursor:pointer; color:var(--muted); font-size:11px; user-select:none; }
   details.thinkbox pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); font-size:11px; margin:6px 0 0; max-height:220px; overflow:auto; }
+  # セグメントコントロール（動画モード4択を横並び pill に）
+  .seg { display:flex; gap:3px; background:var(--panel); border:1px solid var(--line);
+         border-radius:10px; padding:3px; }
+  .segbtn { flex:1; }
+  .segbtn input { display:none; }
+  .segbtn span { display:block; text-align:center; font-size:11px; color:var(--muted);
+                 padding:5px 6px; border-radius:8px; cursor:pointer; line-height:1.35; }
+  .segbtn span:hover { color:var(--text); }
+  .segbtn input:checked + span { background:var(--accent); color:#fff; }
+  .segbtn small { display:block; font-size:9px; opacity:.75; }
+  #advset { margin-top:6px; font-size:12px; color:var(--muted); }
+  #advset summary { cursor:pointer; font-weight:600; }
+  #advset .advgroup { margin-top:6px; }
+  #advset label { display:flex; gap:6px; align-items:center; margin-top:3px; cursor:pointer; }
+  #lenbox { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px; color:var(--muted); }
+  #lenbox select { background:var(--panel); color:var(--text); border:1px solid var(--line);
+                   border-radius:8px; padding:4px 8px; font:inherit; font-size:12px; outline:none; }
   .ditrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px; }
   #audioset { margin-top:6px; font-size:12px; color:var(--muted); }
   #audioset summary { cursor:pointer; font-weight:600; }
@@ -807,21 +845,37 @@ HTML = """<!doctype html>
 </div>
 <footer>
   <div id="modes">
-    <label><input type="radio" name="mode" value="fast" checked> 高画質 spectrum（フル・約15分・ターボなし最高画質）</label>
-    <label><input type="radio" name="mode" value="high"> 高精度 32B（フル・約9分・ターボ高速）</label>
-    <label><input type="radio" name="mode" value="fast_quick"> 高画質 spectrum（短尺・約6分・ターボなし）</label>
-    <label><input type="radio" name="mode" value="quick"> クイック 32B（短尺・約2〜4分）</label>
-    <label><input type="radio" name="mode" value="lite"> 軽量 4B（フル・省VRAM・約9分）</label>
-    <label><input type="radio" name="mode" value="quicklite"> クイック 4B（最速・短尺・省VRAM）</label>
-    <div class="ditrow">
-      <span class="hint">動画モデル:</span>
-      <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
-      <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
+    <div class="seg">
+      <label class="segbtn"><input type="radio" name="mode" value="fast" checked><span>最高画質<small>spectrum・約15分</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="high"><span>高精度<small>32B・約9分</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="fast_quick"><span>高画質<small>spectrum・短尺</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="quick"><span>クイック<small>32B・2〜4分</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="lite"><span>軽量<small>4B・約9分</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="quicklite"><span>最速<small>4B・短尺</small></span></label>
     </div>
-    <div class="ditrow">
-      <span class="hint">キー画像:</span>
-      <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
-      <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+    <details id="advset">
+      <summary>⚙ 詳細設定（動画モデル・キー画像エンジン）</summary>
+      <div class="advgroup">
+        <span class="hint">動画モデル:</span>
+        <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
+        <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
+      </div>
+      <div class="advgroup">
+        <span class="hint">キー画像:</span>
+        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
+        <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+      </div>
+    </details>
+    </div>
+    <div id="lenbox">
+      <span>長さ:</span>
+      <select id="len-sel" onchange="onLenChange()">
+        <option value="">モードの既定</option>
+        <option value="5">約5秒</option>
+        <option value="10">約10秒</option>
+        <option value="15">約15秒</option>
+      </select>
+      <span id="len-note" class="hint"></span>
     </div>
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
     <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
@@ -831,6 +885,19 @@ HTML = """<!doctype html>
     </div>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
     <button id="btn-manual" class="small" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font-size:12px" onclick="showManualPrompt()">✍ 手動プロンプト</button>
+    <details id="advset">
+      <summary>⚙ 詳細設定（動画モデル・キー画像エンジン）</summary>
+      <div class="advgroup">
+        <span class="hint">動画モデル:</span>
+        <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
+        <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
+      </div>
+      <div class="advgroup">
+        <span class="hint">キー画像:</span>
+        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
+        <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+      </div>
+    </details>
     <details id="audioset">
       <summary>🎙 音声・セリフ設定（任意）</summary>
       <input type="text" id="au-voice" placeholder="声: 例：低めの落ち着いた声・息を含むささやき">
@@ -905,6 +972,17 @@ function audioSpec() {
     sfx: $("#au-sfx").value.trim(),
     music: $("#au-music").value.trim()
   };
+}
+
+// 「長さ」ドロップダウン: 空ならモードの既定、選べばその秒数（H3 の
+// フレームグリッドへはサーバー側でスナップされる）。
+function lenValue() {
+  const v = $("#len-sel").value;
+  return v ? parseInt(v, 10) : null;
+}
+function onLenChange() {
+  const v = $("#len-sel").value;
+  $("#len-note").textContent = v ? "（約" + v + "秒で生成）" : "";
 }
 
 async function autoAudio() {
@@ -991,7 +1069,7 @@ async function send() {
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
         ref: $("#refmode").checked, image: curImageFilename,
-        audio: audioSpec()
+        audio: audioSpec(), length: lenValue()
       })
     });
     const j = await r.json();
@@ -1211,7 +1289,7 @@ async function doGenerate(mode, text, bot) {
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
         ref: $("#refmode").checked, image: curImageFilename,
-        audio: audioSpec()
+        audio: audioSpec(), length: lenValue()
       })
     });
     const j = await r.json();
@@ -1570,11 +1648,29 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
                 return
             wf[NODE_PROMPT]["inputs"]["prompt"] = text
-        # チャットで指示した長さ・解像度の上書きを反映
+        # チャットで指示した長さ・解像度の上書きを反映。UI の「長さ」ドロップ
+        # ダウン（req["length"]、秒）もここで受け取る。チャット指示がより具体的
+        # なので SESSION 側を優先する。
+        eff_frames = None
+        if req.get("length"):
+            try:
+                eff_frames = _align_h3_frames(int(req["length"]) * 24)
+            except Exception:
+                pass
         if SESSION.get("length_frames"):
+            eff_frames = SESSION["length_frames"]
+        if eff_frames:
             for n in wf.values():
-                if n.get("class_type") in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo") and "length" in n.get("inputs", {}):
-                    n["inputs"]["length"] = SESSION["length_frames"]
+                ct = n.get("class_type")
+                if ct in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo") and "length" in n.get("inputs", {}):
+                    n["inputs"]["length"] = eff_frames
+                # 音声VAEは「フレーム数/24」秒の音声を出力する（24fps前提の
+                # タイムライン）。short系ワークフローは fps=12 で保存するため、
+                # そのままだと映像だけが2倍に引き伸ばされて口の動きが半速になり、
+                # 音声の途中で映像が余って後半が無音になる。秒数指定は実尺の
+                # 指定なので、24fps保存に揃えて 映像の長さ==音声の長さ にする。
+                if ct == "CreateVideo":
+                    n["inputs"]["fps"] = 24
         if SESSION.get("resolution"):
             w_, h_ = SESSION["resolution"]
             for n in wf.values():
