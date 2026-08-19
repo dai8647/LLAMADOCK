@@ -274,3 +274,4 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - プロンプト強化: 服装整合性・表情多様性・素人感（handheld camera, amateur style）
 - 音声解析パーサー修正（multi-line/single-line 両対応）
 - 企画 LLM 候補の自動検出（.lmstudio\models スキャン）
+- 企画 LLM パラメータ UI 化: KV Key/Value 圧縮、Flash Attention、Reasoning Effort/Budget を詳細設定パネルから変更可能（`/api/plan-settings` エンドポイント経由）
