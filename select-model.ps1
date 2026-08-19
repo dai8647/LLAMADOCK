@@ -1907,7 +1907,7 @@ function Open-ZCodeClient {
     Write-Host '  2. Add Provider → "OpenAI Compatible" を選択' -ForegroundColor Yellow
     Write-Host "  3. Base URL: http://127.0.0.1:8090/v1" -ForegroundColor Yellow
     Write-Host "  4. API Key: not-needed" -ForegroundColor Yellow
-    Write-Host "  5. モデル名を入力（例: $($ModelName ?? 'local-model')）" -ForegroundColor Yellow
+    Write-Host "  5. モデル名を入力（例: $(if ($ModelName) { $ModelName } else { 'local-model' })）" -ForegroundColor Yellow
     Write-Host ""
     return Start-Process -FilePath $zcodePath -WorkingDirectory $PSScriptRoot -PassThru
 }
