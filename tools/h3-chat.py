@@ -172,6 +172,14 @@ PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm
 # on GPU but ships its own mmproj.
 PLAN_HAS_VISION = bool(PLAN_MMPROJ_PATH)
 PLAN_START_LOCK = threading.Lock()
+# Runtime-adjustable planner launch parameters (set via /api/plan-settings).
+PLAN_SETTINGS = {
+    "ctk": "q8_0",       # KV cache key quantization (q8_0, q4_0, f16, none)
+    "ctv": "q4_0",       # KV cache value quantization (q8_0, q4_0, f16, none)
+    "fa": True,           # Flash Attention
+    "reasoning_effort": "medium",  # off, low, medium, xhigh
+    "reasoning_budget": 1536,       # max thinking tokens
+}
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
 
@@ -213,14 +221,17 @@ def _spawn_plan_llm():
         # safety net against runaway thinking (Qwen3.8-27B defaults to xhigh).
         args += [
             "-ngl", "all", "--jinja",
-            "--chat-template-kwargs", json.dumps({"reasoning_effort": "medium"}),
-            "--reasoning-budget", "1536",
+            "--chat-template-kwargs", json.dumps({"reasoning_effort": PLAN_SETTINGS["reasoning_effort"]}),
+            "--reasoning-budget", str(PLAN_SETTINGS["reasoning_budget"]),
         ]
-        # Asymmetric KV compression (K q8 / V q4) + Flash Attention. The 27B
-        # IQ4 model + mmproj is ~14.1GB on a 16GB card; compressing the KV
-        # cache frees the headroom vision image tokens need. V quantization
-        # requires Flash Attention (see docs/LlamaDock-Runbook.md).
-        args += ["-fa", "on", "-ctk", "q8_0", "-ctv", "q4_0"]
+        # KV cache compression + Flash Attention (configurable via UI).
+        # V quantization requires Flash Attention (see docs/LlamaDock-Runbook.md).
+        if PLAN_SETTINGS["fa"]:
+            args += ["-fa", "on"]
+        if PLAN_SETTINGS["ctk"] and PLAN_SETTINGS["ctk"] != "none":
+            args += ["-ctk", PLAN_SETTINGS["ctk"]]
+        if PLAN_SETTINGS["ctv"] and PLAN_SETTINGS["ctv"] != "none":
+            args += ["-ctv", PLAN_SETTINGS["ctv"]]
         if PLAN_MMPROJ_PATH and os.path.isfile(PLAN_MMPROJ_PATH):
             # Vision-capable 27B (lemonyins ULTIMATE-UNCENSORED ships its own
             # mmproj). Attach it so the planner can see the confirmed key image.
@@ -791,6 +802,7 @@ HTML = """<!doctype html>
   #advset summary { cursor:pointer; font-weight:600; }
   #advset .advgroup { margin-top:6px; }
   #advset label { display:flex; gap:6px; align-items:center; margin-top:3px; cursor:pointer; }
+  #planparams select, #planparams input[type=number] { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:2px 4px; font-size:11px; }
   #lenbox { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px; color:var(--muted); }
   #lenbox select { background:var(--panel); color:var(--text); border:1px solid var(--line);
                    border-radius:8px; padding:4px 8px; font:inherit; font-size:12px; outline:none; }
@@ -875,6 +887,14 @@ HTML = """<!doctype html>
         <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
         <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
       </div>
+      <div class="advgroup" id="planparams">
+        <span class="hint">企画 LLM パラメータ:</span>
+        <label>KV Key:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label>KV Value:<select id="p-ctv" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> Flash Attention</label>
+        <label>Reasoning:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
+        <label>Budget:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
+      </div>
     </details>
     </div>
     <div id="lenbox">
@@ -906,6 +926,14 @@ HTML = """<!doctype html>
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
         <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+      </div>
+      <div class="advgroup" id="planparams">
+        <span class="hint">企画 LLM パラメータ:</span>
+        <label>KV Key:<select id="p-ctk2" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label>KV Value:<select id="p-ctv2" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label><input type="checkbox" id="p-fa2" checked onchange="sendPlanSettings()"> Flash Attention</label>
+        <label>Reasoning:<select id="p-reasoning2" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
+        <label>Budget:<input type="number" id="p-budget2" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
       </div>
     </details>
     <details id="audioset">
@@ -989,11 +1017,36 @@ function audioSpec() {
 function lenValue() {
   const v = $("#len-sel").value;
   return v ? parseInt(v, 10) : null;
-}
-function onLenChange() {
+}function onLenChange() {
   const v = $("#len-sel").value;
   $("#len-note").textContent = v ? "（約" + v + "秒で生成）" : "";
 }
+
+// Send planner KV/FA/reasoning settings to the backend.
+// Uses p-ctk/p-ctv (plan mode) or p-ctk2/p-ctv2 (chat mode) depending
+// on which panel is visible.
+function sendPlanSettings() {
+  const isPlan = $("#planmode").checked;
+  const suffix = isPlan ? "" : "2";
+  const ctk = $("#p-ctk" + suffix);
+  const ctv = $("#p-ctv" + suffix);
+  const fa = $("#p-fa" + suffix);
+  const re = $("#p-reasoning" + suffix);
+  const rb = $("#p-budget" + suffix);
+  if (!ctk) return;
+  fetch("/api/plan-settings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      ctk: ctk.value, ctv: ctv.value,
+      fa: fa.checked, reasoning_effort: re.value,
+      reasoning_budget: parseInt(rb.value, 10) || 1536
+    })
+  }).catch(() => {});
+}
+
+
+
 
 async function autoAudio() {
   const btn = $("#btn-au-auto");
@@ -1097,25 +1150,20 @@ async function plan(text) {
     const r = await fetch("/api/plan", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: text, stage: planStage})
+      body: JSON.stringify({text: text, stage: planStage, image: curImageFilename})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     let html = '<div class="meta">企画案</div>' + thinkHtml(j.thinking) + esc(j.reply || "（応答なし）");
     if (j.img_prompt) {
       lastImgPrompt = j.img_prompt;
-      if (planStage === "image") {
-        // 修正リクエスト: 新しい画像プロンプトでキー画像を再生成する
-        bot.innerHTML = html + '<div class="meta">キー画像を再生成します…</div>';
-        // genImage が busy を管理する。ここで解除しないと send() が立てた
-        // busy=true のまま genImage の `if (busy) return` に引っかかり、
-        // 何も送信せず固まってしまう。
-        setBusy(false);
-        genImage(bot);
-        return;
-      }
+      const revising = (planStage === "image");
       planStage = "image";
-      html += '<button class="genplan" onclick="genImage()">🖼 キー画像を生成 ▶</button>';
+      // 修正時も自動で再生成せず、必ずボタンを出す（ユーザーが確認してから
+      // 生成を始める）。自動 genImage は qimg（約20分）を勝手に回して
+      // 「再生成します…」のまま固まる原因になっていた。
+      html += '<button class="genplan" onclick="genImage()">' +
+        (revising ? "🖼 このプロンプトで再生成 ▶" : "🖼 キー画像を生成 ▶") + "</button>";
       html += '<div class="hint">画像を確認して OK なら確定、気に入らなければ「🔁 修正する」で修正できます。</div>';
     } else if (j.final_prompt) {
       // Store the prompt in a module variable instead of inlining it into the
@@ -1570,6 +1618,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._audio_propose(parsed)
         elif parsed.path == "/api/cancel":
             self._cancel(parsed)
+        elif parsed.path == "/api/plan-settings":
+            self._plan_settings(parsed)
         elif parsed.path == "/api/shutdown":
             self._shutdown(parsed)
         else:
@@ -1606,6 +1656,31 @@ class ChatHandler(BaseHTTPRequestHandler):
         if length > 1_000_000:
             raise ValueError("body too large")
         return json.loads(self.rfile.read(length) or b"{}")
+
+    def _plan_settings(self, parsed):
+        """Update planner launch parameters (KV compression, FA, reasoning)."""
+        global PLAN_SETTINGS
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        allowed_ctk = {"q8_0", "q4_0", "f16", "none"}
+        allowed_reasoning = {"off", "low", "medium", "xhigh"}
+        if "ctk" in req and req["ctk"] in allowed_ctk:
+            PLAN_SETTINGS["ctk"] = req["ctk"]
+        if "ctv" in req and req["ctv"] in allowed_ctk:
+            PLAN_SETTINGS["ctv"] = req["ctv"]
+        if "fa" in req:
+            PLAN_SETTINGS["fa"] = bool(req["fa"])
+        if "reasoning_effort" in req and req["reasoning_effort"] in allowed_reasoning:
+            PLAN_SETTINGS["reasoning_effort"] = req["reasoning_effort"]
+        if "reasoning_budget" in req:
+            try:
+                PLAN_SETTINGS["reasoning_budget"] = max(0, min(32768, int(req["reasoning_budget"])))
+            except (ValueError, TypeError):
+                pass
+        self._json(200, PLAN_SETTINGS)
 
     def _generate(self, parsed):
         try:
@@ -1834,6 +1909,35 @@ class ChatHandler(BaseHTTPRequestHandler):
             return None
         return PLAN_URL_DEFAULT if _plan_alive() else None
 
+    def _attach_plan_image(self, text, image_fn, note=None):
+        """Attach image_fn as a base64 image part so a vision-capable planning
+        LLM can see it. Returns text unchanged when vision is unavailable or
+        the file cannot be read. image_fn may be a bare filename (resolved via
+        local_files) or an absolute path (reference-image picker). When `note`
+        is given it is prepended to the text part (only if the image actually
+        attaches) so the planner knows what the image is for."""
+        if not (image_fn and PLAN_HAS_VISION):
+            return text
+        abspath = self.server.local_files.get(image_fn) or image_fn
+        if not os.path.isfile(abspath):
+            return text
+        try:
+            with open(abspath, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+        except Exception:
+            return text
+        ext = os.path.splitext(image_fn)[1].lower().lstrip(".")
+        if ext == "jpg":
+            ext = "jpeg"
+        if ext not in ("png", "jpeg", "webp"):
+            ext = "png"
+        if note:
+            text = note + "\n" + text
+        return [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}},
+        ]
+
     def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300):
         """Send the message (plus history) to the planning LLM.
 
@@ -1857,32 +1961,43 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "1〜2個の質問でユーザーと相談してください。\n"
                 f"画像プロンプト: {ip}"
             )
-            # multimodal: attach the confirmed key image (base64) so the
-            # planning LLM can actually see what was rendered. The gpu27b
-            # planner has no vision projector, so it gets the prompt text only.
-            if image_fn and PLAN_HAS_VISION:
-                abspath = self.server.local_files.get(image_fn) or image_fn
-                if os.path.isfile(abspath):
-                    try:
-                        with open(abspath, "rb") as f:
-                            b64 = base64.b64encode(f.read()).decode("ascii")
-                        ext = os.path.splitext(image_fn)[1].lower().lstrip(".")
-                        if ext == "jpg":
-                            ext = "jpeg"
-                        if ext not in ("png", "jpeg", "webp"):
-                            ext = "png"
-                        content = [
-                            {"type": "text", "text": user_text},
-                            {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}},
-                        ]
-                    except Exception:
-                        content = user_text
+        # multimodal: attach the image (base64) on every turn where one is
+        # available — the confirmed key image, or the reference image the user
+        # picked via 🗂 — so the planner can see it while planning/revising,
+        # not only after confirmation. Planners without a vision projector
+        # (PLAN_HAS_VISION false) get the prompt text only.
+        ref_note = None
+        if image_fn and stage in ("chat", "image") and user_text != "__CONFIRM_IMAGE__":
+            ref_note = (
+                "【添付画像】ユーザーが指定した参照画像です。この画像の被写体・外見・"
+                "服装・雰囲気を企画のベースにしてください（同一キャラ・同一ルックを維持）。"
+                "ユーザーの指示と矛盾しない限り、参照画像の内容を [IMG_PROMPT] に反映すること。"
+            )
+        content = self._attach_plan_image(user_text, image_fn, note=ref_note)
         with PLAN_LOCK:
             PLAN_HISTORY.append({"role": "user", "content": content})
             # keep the context bounded; system prompt always first. 6 turns is
             # enough for the 2-stage flow and halves prompt-processing time
             # (~36 t/s on CPU: every extra turn costs real seconds of latency).
             history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-6:]
+            # An image costs ~1024+ tokens every time it appears. The planner
+            # only needs to see it once, so keep the image part in the newest
+            # user turn only and downgrade older copies to a text placeholder
+            # (otherwise repeated turns with the same reference image bloat
+            # the 8192 context and can overflow it).
+            last_user_idx = max(
+                (i for i, m in enumerate(history) if m["role"] == "user"),
+                default=-1,
+            )
+            for i, m in enumerate(history):
+                if i != last_user_idx and isinstance(m.get("content"), list):
+                    m = dict(m)
+                    m["content"] = [
+                        p if p.get("type") == "text"
+                        else {"type": "text", "text": "[画像: 直近のターンに添付済み]"}
+                        for p in m["content"]
+                    ]
+                    history[i] = m
             body = json.dumps({
                 "messages": history,
                 # 3072: with medium reasoning effort, thinking is ~312 tokens
