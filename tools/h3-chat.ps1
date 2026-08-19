@@ -1,4 +1,4 @@
-# h3-chat.ps1 - Launch the MiniMax H3 chat-to-video UI.
+﻿# h3-chat.ps1 - Launch the MiniMax H3 chat-to-video UI.
 # Requires ComfyUI to be running first (comfyui.bat / llamadock.bat -> [1] super
 # or [2] ck), then run this to get the chat page:
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1
@@ -7,14 +7,18 @@
 # -PlanModel:
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.5
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.8-27B-GPU
+#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Custom
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Off
 #
 # Qwen3.5 runs on CPU (-ngl 0) and stays resident. Qwen3.8-27B-GPU runs on the
 # GPU during the planning phase only: h3-chat.py starts it on demand (port
 # 8191) and kills it before every generation so the video model gets the VRAM.
+# Custom = select-model.ps1 が .lmstudio\models から自動検出したモデル。
+# パスは環境変数 LLAMADOCK_PLAN_MODEL / LLAMADOCK_PLAN_MMPROJ / LLAMADOCK_PLAN_GPU
+# で渡される（select-model.ps1 の Start-H3Chat が設定）。
 
 param(
-    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Off")]
+    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Custom", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -26,9 +30,6 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $chatPy = Join-Path $here "h3-chat.py"
 $port = 8189
 $planPort = 8190
-if ($PlanModel -eq "Qwen3.8-27B-GPU") { $planPort = 8191 }
-$url = "http://127.0.0.1:$port"
-$planUrl = "http://127.0.0.1:$planPort"
 
 $planModels = @{
     "Qwen3.5" = @{
@@ -43,6 +44,34 @@ $planModels = @{
         Gpu = $true
     }
 }
+
+# Custom: select-model.ps1 が自動検出したモデル。パス等は環境変数で届く。
+# 環境変数が無ければ企画モードを無効化して Qwen3.5 相当の扱いにフォールバック。
+if ($PlanModel -eq "Custom") {
+    $customPath = $env:LLAMADOCK_PLAN_MODEL
+    if ([string]::IsNullOrWhiteSpace($customPath) -or -not (Test-Path -LiteralPath $customPath)) {
+        Write-Host "WARNING: -PlanModel Custom だが LLAMADOCK_PLAN_MODEL が未設定/見つからないため、企画モードを無効化します。" -ForegroundColor Yellow
+        $PlanModel = "Off"
+    }
+    else {
+        $customMmproj = $env:LLAMADOCK_PLAN_MMPROJ
+        if ($customMmproj -and -not (Test-Path -LiteralPath $customMmproj)) { $customMmproj = $null }
+        $customGpu = ($env:LLAMADOCK_PLAN_GPU -eq "1")
+        $planModels["Custom"] = @{
+            Label = "自動検出モデル ($([System.IO.Path]::GetFileName($customPath)))"
+            Path = $customPath
+            Mmproj = $customMmproj
+            Gpu = $customGpu
+        }
+    }
+}
+
+# GPU planner（27B / Custom GPU）は 8191、CPU planner は 8190。
+if ($PlanModel -eq "Qwen3.8-27B-GPU" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
+    $planPort = 8191
+}
+$url = "http://127.0.0.1:$port"
+$planUrl = "http://127.0.0.1:$planPort"
 
 $planServer = "C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe"
 if (-not (Test-Path -LiteralPath $planServer)) {
@@ -76,7 +105,9 @@ try {
 # Double-launch guard: chat UI (and, for the resident CPU planner, the
 # planning LLM) already running means there is nothing left to do here.
 # The GPU planner is started on demand by h3-chat.py, so it is not checked.
-if ($already -and $PlanModel -eq "Qwen3.5") {
+$planIsGpuModel = ($PlanModel -eq "Qwen3.8-27B-GPU") -or
+                  ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)
+if ($already -and -not $planIsGpuModel -and $PlanModel -ne "Off") {
     try {
         $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
         if ($r.StatusCode -eq 200) {
@@ -86,7 +117,7 @@ if ($already -and $PlanModel -eq "Qwen3.5") {
         }
     } catch { }
 }
-elseif ($already -and $PlanModel -eq "Qwen3.8-27B-GPU") {
+elseif ($already -and $planIsGpuModel) {
     Write-Host "h3-chat is already running; nothing to start." -ForegroundColor Green
     if (-not $NoBrowser) { Start-Process $url }
     exit 0
@@ -98,7 +129,7 @@ $planArgs = @()
 $skipPlanStart = $false
 # The GPU planner is launched on demand by h3-chat.py (LLAMADOCK_PLAN_GPU=1):
 # it must not hold VRAM while ComfyUI may still be generating.
-$planGpu = $PlanModel -eq "Qwen3.8-27B-GPU"
+$planGpu = $planIsGpuModel
 $planDisabled = $false
 if ($planGpu) {
     $model = $planModels[$PlanModel]

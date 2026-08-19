@@ -1,4 +1,4 @@
-# select-model.ps1 - LlamaDock local GGUF workspace launcher
+﻿# select-model.ps1 - LlamaDock local GGUF workspace launcher
 
 param(
     [switch]$DryRun,
@@ -1565,23 +1565,88 @@ function Select-ComfyUITuning {
     } while (-not $tuningValid)
 }
 
+function Get-PlanModelCandidates {
+    # .lmstudio\models を再帰スキャンして、企画 LLM として使えそうな GGUF を
+    # 自動検出する。固定の2モデル（Qwen3.5-4B / Qwen3.8-27B）はメニューに常時
+    # 表示されるため除外。mmproj（視覚プロジェクタ）と分割ファイル（-of-）は
+    # 本体モデルではないので除外。ファイル名のパラメータ数（13B 以上）または
+    # サイズ（6GB 超）で GPU 候補と判定し、同ディレクトリの mmproj を自動ペアリング。
+    $scanRoot = "C:\Users\dai86\.lmstudio\models"
+    if (-not (Test-Path -LiteralPath $scanRoot)) { return @() }
+    $pinned = @(
+        "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
+        "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+    )
+    $files = Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -notmatch "(?i)mmproj" -and
+            $_.Name -notmatch "-of-" -and
+            $pinned -notcontains $_.FullName
+        }
+    $list = @()
+    foreach ($f in $files) {
+        $gpu = $false
+        if ($f.Name -match "(?i)(\d+)\s*B" -and [int]$Matches[1] -ge 13) { $gpu = $true }
+        elseif ($f.Length -gt 6GB) { $gpu = $true }
+        # 同ディレクトリの mmproj を視覚用として自動ペアリング
+        $mmproj = Get-ChildItem -LiteralPath $f.DirectoryName -Filter "mmproj*.gguf" -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        # ラベル: LM Studio の models\<org>\<model-name>\ 構成からモデル名を拾う
+        $label = $f.Directory.Name
+        if ($label -match "^[A-Za-z0-9._-]+$" -and $f.Directory.Parent -and $f.Directory.Parent.Name -ne "models") {
+            $label = "$($f.Directory.Parent.Name)/$label"
+        }
+        if ($label.Length -gt 44) { $label = $label.Substring(0, 44) + "…" }
+        $list += [PSCustomObject]@{
+            Path   = $f.FullName
+            Mmproj = if ($mmproj) { $mmproj.FullName } else { $null }
+            Gpu    = $gpu
+            SizeGB = [math]::Round($f.Length / 1GB, 1)
+            Label  = $label
+        }
+    }
+    # CPU 候補（小さい順）→ GPU 候補（小さい順）、メニューが見やすいよう最大8件
+    return @($list | Sort-Object { $_.Gpu }, { $_.SizeGB } | Select-Object -First 8)
+}
+
 function Select-PlanModel {
     # Pick the planning LLM for plan mode. Qwen3.5-4B runs on CPU and stays
     # resident (VRAM stays free, has vision). Qwen3.8-27B runs on the GPU
     # during the planning phase only (higher quality, ~13.5 t/s) and is killed
     # before every generation so the video model gets the VRAM back.
+    # [3..] は .lmstudio\models から自動検出したモデル（Get-PlanModelCandidates）。
     Write-Host ""
     Write-Host "Planning LLM:" -ForegroundColor Green
     Write-Host " [1] Qwen3.5-4B  - CPU, resident, vision-capable (default)"
     Write-Host " [2] Qwen3.8-27B - GPU, planning phase only, higher quality (no vision)"
+    $candidates = Get-PlanModelCandidates
+    $idx = 3
+    foreach ($c in $candidates) {
+        $tag = if ($c.Gpu) { "GPU" } else { "CPU" }
+        $vis = if ($c.Mmproj) { "視覚あり" } else { "視覚なし" }
+        Write-Host (" [{0}] {1} ({2}・{3}・{4}GB)" -f $idx, $c.Label, $tag, $vis, $c.SizeGB)
+        $idx++
+    }
     Write-Host ""
+    $max = 2 + $candidates.Count
     do {
-        $planInput = Read-Host "Select planning LLM (1-2), or press Enter for Qwen3.5-4B"
+        $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for Qwen3.5-4B"
         if ([string]::IsNullOrWhiteSpace($planInput) -or $planInput -eq "1") {
             return "Qwen3.5"
         }
         if ($planInput -eq "2") {
             return "Qwen3.8-27B-GPU"
+        }
+        $n = 0
+        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 3 -and $n -le $max) {
+            $chosen = $candidates[$n - 3]
+            $script:PlanModelCustom = @{
+                Path   = $chosen.Path
+                Mmproj = $chosen.Mmproj
+                Gpu    = $chosen.Gpu
+                Label  = $chosen.Label
+            }
+            return "Custom"
         }
     } while ($true)
 }
@@ -1611,7 +1676,8 @@ function Start-H3Chat {
                 if ($h.StatusCode -eq 200) { $chatUpNow = $true }
             }
             catch { }
-            if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU") {
+            if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or
+                ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) {
                 $planUpNow = $true
             }
             else {
@@ -1623,6 +1689,14 @@ function Start-H3Chat {
             }
             if (-not ($chatUpNow -and $planUpNow)) {
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1)..." -ForegroundColor Cyan
+                # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
+                # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
+                if ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom) {
+                    $env:LLAMADOCK_PLAN_MODEL = $script:PlanModelCustom.Path
+                    $env:LLAMADOCK_PLAN_MMPROJ = if ($script:PlanModelCustom.Mmproj) { $script:PlanModelCustom.Mmproj } else { "" }
+                    if ($script:PlanModelCustom.Gpu) { $env:LLAMADOCK_PLAN_GPU = "1" } else { $env:LLAMADOCK_PLAN_GPU = "" }
+                    Write-Host ("  custom planner: {0} ({1})" -f $script:PlanModelCustom.Label, $(if ($script:PlanModelCustom.Gpu) { "GPU" } else { "CPU" })) -ForegroundColor Cyan
+                }
                 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $h3chatPs1 -PlanModel $script:PlanModelChoice -NoBrowser" -WindowStyle Hidden
             }
             else {
