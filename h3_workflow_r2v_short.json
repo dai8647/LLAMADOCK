@@ -111,7 +111,7 @@
       "class_type": "KSampler",
       "inputs": {
         "model": [
-          "4",
+          "17",
           0
         ],
         "positive": [
@@ -184,6 +184,19 @@
         "filename_prefix": "h3_r2v_short",
         "format": "mp4",
         "codec": "h264"
+      }
+    },
+    "17": {
+      "class_type": "EasyCache",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "reuse_threshold": 0.1,
+        "start_percent": 0.15,
+        "end_percent": 0.9,
+        "verbose": false
       }
     }
   }

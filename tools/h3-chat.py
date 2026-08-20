@@ -165,6 +165,11 @@ PLAN_SERVER_BIN = os.environ.get(
     if PLAN_GPU else
     r"C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe",
 )
+# 企画 LLM のエンジン名（コーダー側のエンジン表記と揃えた表示用ラベル）。
+PLAN_ENGINE = "AtomicBot (ROCm 7.1 HIP)" if PLAN_GPU else (
+    "openPangu (native CPU)" if "llama.cpp-openPangu" in PLAN_SERVER_BIN else
+    "AtomicBot (ROCm 7.1 HIP)" if "build-rocm71" in PLAN_SERVER_BIN else "Unknown"
+)
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
@@ -325,6 +330,7 @@ def ensure_plan_llm(wait_seconds=120):
     with PLAN_START_LOCK:
         dead = PLAN_PROC is None or PLAN_PROC.poll() is not None
         if dead and time.time() - PLAN_LAST_TRY > 30:
+            print(f"h3-chat: auto-starting planning LLM (port {PLAN_PORT}, engine: {PLAN_ENGINE})")
             PLAN_PROC = _spawn_plan_llm()
             PLAN_LAST_TRY = time.time()
             if PLAN_PROC is None:
@@ -898,11 +904,11 @@ HTML = """<!doctype html>
       </div>
       <div class="advgroup" id="planparams">
         <span class="hint">企画 LLM パラメータ:</span>
-        <label>KV Key:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
-        <label>KV Value:<select id="p-ctv" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
-        <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> Flash Attention</label>
-        <label>Reasoning:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
-        <label>Budget:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
+        <label>KV キー:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label>KV 値:<select id="p-ctv" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
+        <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> フラッシュアテンション</label>
+        <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
+        <label>予算:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
       </div>
     </details>
     </div>
@@ -2392,7 +2398,7 @@ def main():
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
     print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['fast']} など（キー画像→参照 LoRA）")
-    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')}")
+    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')} (engine: {PLAN_ENGINE})")
     # Bring up the planning LLM in the background so the first plan-mode
     # message does not have to wait for the model load (~10-60s on CPU).
     # gpu27b mode starts on demand instead: preloading it would hold 14GB of

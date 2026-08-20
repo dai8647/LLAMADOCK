@@ -19,8 +19,13 @@
         mem-eff H3 patch requires the latest SageAttention 2.x, which cannot run
         on this ROCm stack.
       - Sol-Attn (kijai/ComfyUI-SolAttn_triton) targets NVIDIA SM89+ kernels.
-      - EasyCache (ComfyUI-MiniMaxH3-Cache) is generic PyTorch but is
-        mutually exclusive with Spectrum and is reported to degrade quality.
+      - The built-in EasyCache node (advanced/debug/model) is generic PyTorch
+        and IS used: it is inserted into the non-Spectrum workflows
+        (h3_workflow_*.json, reuse 0.10 / start 0.15 / end 0.90 per pepikir's
+        research). It is mutually exclusive with Spectrum, and end_percent
+        must stay at 0.90 to avoid skipping the final steps.
+      - The patch-based ComfyUI-MiniMaxH3-Cache (lihaoyun6) is NOT used:
+        it patches ComfyUI core files and reports quality degradation.
       - comfy-kitchen INT8 Triton kernels (--enable-triton-backend) require
         triton in the ComfyUI venv. On ROCm Windows the only option is the
         triton-windows fork, and testing on 2026-08-14 showed it crashes

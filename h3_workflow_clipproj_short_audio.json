@@ -51,7 +51,7 @@
       "class_type": "KSampler",
       "inputs": {
         "model": [
-          "4",
+          "16",
           0
         ],
         "positive": [
@@ -151,6 +151,19 @@
         ],
         "shift_video": 12,
         "shift_audio": 6
+      }
+    },
+    "16": {
+      "class_type": "EasyCache",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "reuse_threshold": 0.1,
+        "start_percent": 0.15,
+        "end_percent": 0.9,
+        "verbose": false
       }
     }
   }

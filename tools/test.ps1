@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipDryRun,
     [switch]$RunUtf8Smoke
 )
@@ -257,14 +257,14 @@ foreach ($gone in @("-Harness", "harnessPath", "llamadock-opencode-harness.ps1",
 }
 Write-Host "Client shell harness references removed OK"
 $launcherSource = Get-Content -LiteralPath $launcher -Raw -Encoding UTF8
-foreach ($check in @("LlamaDock session", "Change workspace, keep this model loaded", "Change model - stop this server and return to selector", "Leave server running and exit", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
+foreach ($check in @("LlamaDock session", "モデルを維持したままワークスペースを変更", "モデルを変更 - サーバーを停止してセレクターへ戻る", "サーバーを起動したまま終了", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Managed session check failed: $check" -ForegroundColor Red
         exit 1
     }
 }
 Write-Host "Managed session checks OK"
-foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline defaults", "OpenCodeCoding", "Code - OpenCode", "OpenClaudeCoding", "Code - OpenClaude", "Select preset (1-7)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
+foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline 向けの安定設定", "OpenCodeCoding", "Code - OpenCode 向けの安定設定", "OpenClaudeCoding", "Code - OpenClaude 向けの安定設定", "Select preset (1-7)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Launcher check failed: $check" -ForegroundColor Red
         exit 1

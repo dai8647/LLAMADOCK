@@ -83,7 +83,7 @@
       "class_type": "KSampler",
       "inputs": {
         "model": [
-          "4",
+          "14",
           0
         ],
         "positive": [
@@ -139,6 +139,19 @@
         "filename_prefix": "h3_super",
         "format": "mp4",
         "codec": "h264"
+      }
+    },
+    "14": {
+      "class_type": "EasyCache",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "reuse_threshold": 0.1,
+        "start_percent": 0.15,
+        "end_percent": 0.9,
+        "verbose": false
       }
     }
   }
