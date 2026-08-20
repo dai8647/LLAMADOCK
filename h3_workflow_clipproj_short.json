@@ -72,7 +72,7 @@
       "class_type": "KSampler",
       "inputs": {
         "model": [
-          "4",
+          "12",
           0
         ],
         "positive": [
@@ -128,6 +128,19 @@
         "filename_prefix": "h3_clipproj_short",
         "format": "mp4",
         "codec": "h264"
+      }
+    },
+    "12": {
+      "class_type": "EasyCache",
+      "inputs": {
+        "model": [
+          "4",
+          0
+        ],
+        "reuse_threshold": 0.1,
+        "start_percent": 0.15,
+        "end_percent": 0.9,
+        "verbose": false
       }
     }
   }

@@ -84,6 +84,21 @@ if (-not (Test-Path -LiteralPath $planServer)) {
     $planServer = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
 }
 
+function Get-PlanEngineName {
+    # 企画 LLM の llama-server 実体からエンジン名を判定（コーダー側のエンジン表記と揃える）。
+    param([string]$ServerPath)
+    if ($ServerPath -like "C:\llama-tq3\build-rocm71*") { return "AtomicBot (ROCm 7.1 HIP)" }
+    if ($ServerPath -like "*llama.cpp-openPangu*") { return "openPangu (native CPU)" }
+    if ($ServerPath -like "*turbo-tan*") { return "TurboTan (HIP)" }
+    if ($ServerPath -like "*llama.cpp-vulkan*") { return "Official Vulkan" }
+    if ($ServerPath -like "*llama.cpp-hip*") { return "Official HIP" }
+    if ($ServerPath -like "*llama.cpp-cpu*") { return "Official CPU" }
+    return "Unknown"
+}
+$planEngine = Get-PlanEngineName $planServer
+# GPU 企画 LLM は h3-chat.py が起動する（PLAN_SERVER_BIN = AtomicBot rocm71）。
+$planGpuEngine = "AtomicBot (ROCm 7.1 HIP)"
+
 if (-not (Test-Path -LiteralPath $chatPy)) {
     Write-Host "ERROR: $chatPy not found" -ForegroundColor Red
     exit 1
@@ -147,7 +162,7 @@ if ($planGpu) {
         $planDisabled = $true
     }
     else {
-        Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort)." -ForegroundColor Cyan
+        Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort, engine: $planGpuEngine)." -ForegroundColor Cyan
         $env:LLAMADOCK_PLAN_GPU = "1"
         # Pass the chosen model + mmproj to h3-chat.py so it launches THIS
         # model (its hardcoded default is the finex666 27B, no vision).
@@ -185,7 +200,7 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
         # directly (this build maps --reasoning off to enable_thinking=false;
         # the older --chat-template-kwargs form is deprecated).
         if (-not $skipPlanStart) {
-        Write-Host "Starting planning LLM ($($model.Label)) on $planUrl ..." -ForegroundColor Cyan
+        Write-Host "Starting planning LLM ($($model.Label)) on $planUrl (engine: $planEngine, $planServer) ..." -ForegroundColor Cyan
         $serverArgs = @(
             "-m", $model.Path,
             "--port", "$planPort",

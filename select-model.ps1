@@ -1433,11 +1433,12 @@ function Select-ComfyUITuning {
         return
     }
     Write-Host ""
-    Write-Host "ComfyUI tuning (MiniMax H3), recommended first:" -ForegroundColor Green
-    Write-Host " [1] plan    - recommended: ck + planning mode (h3-chat with a local planning LLM) - the video-creation flow"
-    Write-Host " [2] ck      - --use-ck-attention only (measured 17m19s vs default 19m26s; needs ComfyUI >= 0.33)"
-    Write-Host " [3] default - --reserve-vram 1.0 (safe baseline 19m26s; 1GB stays free for the desktop)"
-    Write-Host " [4] custom  - type raw ComfyUI flags"
+    Write-Host "ComfyUI tuning (MiniMax H3): フローはどれも同じ。変わるのは「生成速度」と「企画LLM」" -ForegroundColor Green
+    Write-Host " [1] plan    - 高速化 + 企画LLMを自分で選ぶ【推奨】(Enter)"
+    Write-Host " [2] ck      - 高速化 + 企画LLMは自動（CPU 4B・Qwen3.5）"
+    Write-Host " [3] default - 高速化なし（互換・19分26秒）+ 企画LLMは自動（CPU 4B）"
+    Write-Host " [4] custom  - 生のComfyUIフラグ + 企画LLMは自動（CPU 4B）"
+    Write-Host " ※高速化(ck)=comfy-kitchen attention。画質そのまま生成が約11%速い（ComfyUI 0.33+）" -ForegroundColor DarkGray
     Write-Host ""
     do {
         $tuningInput = Read-Host "Select ComfyUI tuning (1-4), or press Enter for plan"
@@ -1521,9 +1522,9 @@ function Select-PlanModel {
     # [3..] は .lmstudio\models から自動検出したモデル（Get-PlanModelCandidates）。
     Write-Host ""
     Write-Host "Planning LLM:" -ForegroundColor Green
-    Write-Host " [1] Qwen3.5-4B  - CPU, resident, vision-capable (default)"
-    Write-Host " [2] Qwen3.8-27B - GPU, planning phase only, higher quality (no vision)"
-    Write-Host " [3] Qwen3.8-27B Vision - GPU, planning phase only, vision + KV q8/q4 (lemonyins)"
+    Write-Host " [1] Qwen3.5-4B  - CPU・常駐・視覚対応（既定）"
+    Write-Host " [2] Qwen3.8-27B - GPU・企画フェーズのみ・高品質（視覚なし）"
+    Write-Host " [3] Qwen3.8-27B Vision - GPU・企画フェーズのみ・視覚 + KV q8/q4（lemonyins）"
     $candidates = Get-PlanModelCandidates
     $idx = 4
     foreach ($c in $candidates) {
@@ -1597,7 +1598,10 @@ function Start-H3Chat {
                 catch { }
             }
             if (-not ($chatUpNow -and $planUpNow)) {
-                Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1)..." -ForegroundColor Cyan
+                # 企画 LLM のエンジン: GPU プランナーは AtomicBot（h3-chat.py が PLAN_SERVER_BIN で起動）、
+                # CPU プランナーは openPangu ネイティブ CPU ビルド（h3-chat.ps1 が選択）。
+                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
+                Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
                 if ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom) {
@@ -1751,7 +1755,7 @@ function Open-DeepSeekHarnessClient {
         # Run update check in background (non-blocking)
         Start-Job -ScriptBlock { param($p) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p } -ArgumentList $dshCheck | Out-Null
     }
-    Write-Host "Opening DeepSeek Harness..." -ForegroundColor Cyan
+    Write-Host "DeepSeek Harness を起動しています..." -ForegroundColor Cyan
 
     # Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
     # over npx. npx re-downloads the full ~450-package tree into a fresh _npx
@@ -1824,11 +1828,11 @@ function Stop-H3Stack {
 function Select-WorkspaceForSession {
     Write-Host ""
     Write-Host "LlamaDock session" -ForegroundColor Cyan
-    Write-Host " [1] Relaunch same workspace"
-    Write-Host " [2] Change workspace, keep this model loaded"
-    Write-Host " [3] Change model - stop this server and return to selector"
-    Write-Host " [4] Stop server and exit"
-    Write-Host " [5] Leave server running and exit"
+    Write-Host " [1] 同じワークスペースを再起動"
+    Write-Host " [2] モデルを維持したままワークスペースを変更"
+    Write-Host " [3] モデルを変更 - サーバーを停止してセレクターへ戻る"
+    Write-Host " [4] サーバーを停止して終了"
+    Write-Host " [5] サーバーを起動したまま終了"
     do {
         $choice = Read-Host "Select session action (1-5)"
         if ($choice -notin @("1", "2", "3", "4", "5")) {
@@ -1876,8 +1880,8 @@ $runtimeCandidates = @(
 $comfyOnly = $ClientMode -eq "ComfyUI"
 if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
     Write-Host "Launch target:" -ForegroundColor Green
-    Write-Host " [1] LLM workspace - select a model and client"
-    Write-Host " [2] ComfyUI - video/audio workspace (no GGUF selection)"
+    Write-Host " [1] LLM ワークスペース - モデルとクライアントを選択"
+    Write-Host " [2] ComfyUI - 動画/音声ワークスペース（GGUF 選択なし）"
     Write-Host ""
     do {
         $targetInput = Read-Host "Select launch target (1-2), or press Enter for LLM"
@@ -2017,13 +2021,13 @@ if ($PresetMode -eq "Prompt") {
     Write-Host "Runtime path  : $ServerPath" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Workflow preset:" -ForegroundColor Green
-    Write-Host " [1] Manual - choose every setting"
-    Write-Host " [2] Code - Cline defaults"
-    Write-Host " [3] Code - OpenCode"
-    Write-Host " [4] Code - OpenClaude"
-    Write-Host " [5] Agent Research - llama-agent with iterative web evidence"
-    Write-Host " [6] Chat - Open WebUI with web search and compaction"
-    Write-Host " [7] DeepSeek Harness - agent harness framework (standalone, no model needed)"
+    Write-Host " [1] Manual - 全設定を手動選択"
+    Write-Host " [2] Code - Cline 向けの安定設定"
+    Write-Host " [3] Code - OpenCode 向けの安定設定"
+    Write-Host " [4] Code - OpenClaude 向けの安定設定"
+    Write-Host " [5] Agent Research - llama-agent と反復Web証拠収集"
+    Write-Host " [6] Chat - Open WebUI（Web検索・会話圧縮）"
+    Write-Host " [7] DeepSeek Harness - エージェントハーネス（単体起動・モデル不要）"
     Write-Host ""
 
     do {
@@ -2047,13 +2051,13 @@ if ($PresetMode -eq "Prompt") {
 if ($PresetMode -eq "DeepSeekHarness") {
     if ($DryRun) {
         Write-Host ""
-        Write-Host "DRY RUN: DeepSeek Harness would launch standalone (npx @deepseek-ai/dsh@latest web, port 5173). No llama-server needed." -ForegroundColor Yellow
+        Write-Host "DRY RUN: DeepSeek Harness would launch standalone (npx @deepseek-ai/dsh@latest web, port 5173). llama-server は不要。" -ForegroundColor Yellow
         exit 0
     }
     Write-Host ""
-    Write-Host "Launching DeepSeek Harness (standalone, no model required)..." -ForegroundColor Cyan
+    Write-Host "DeepSeek Harness を起動しています（単体・モデル不要）..." -ForegroundColor Cyan
     Open-DeepSeekHarnessClient | Out-Null
-    Write-Host "DeepSeek Harness started on http://127.0.0.1:5173" -ForegroundColor Green
+    Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
     exit 0
 }
 
@@ -2397,13 +2401,13 @@ else {
 
 if ($ClientMode -eq "Prompt") {
     Write-Host "Workspace:" -ForegroundColor Green
-    Write-Host " [1] Cline - coding agent"
-    Write-Host " [2] OpenCode - terminal coding agent"
-    Write-Host " [3] OpenClaude - terminal coding agent"
-    Write-Host " [4] Computer - chat, web search, and compaction"
-    Write-Host " [5] Llama Agent - terminal agent with deep web evidence"
-    Write-Host " [6] ComfyUI - MiniMax H3 video and audio generation"
-    Write-Host " [7] DeepSeek Harness - agent harness framework (auto-update)"
+    Write-Host " [1] Cline - コーディングエージェント"
+    Write-Host " [2] OpenCode - ターミナルコーディングエージェント"
+    Write-Host " [3] OpenClaude - ターミナルコーディングエージェント"
+    Write-Host " [4] Computer - チャット・Web検索・会話圧縮"
+    Write-Host " [5] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
+    Write-Host " [6] ComfyUI - MiniMax H3 動画・音声生成"
+    Write-Host " [7] DeepSeek Harness - エージェントハーネス（自動アップデート）"
     Write-Host ""
 
     do {
@@ -2727,8 +2731,8 @@ if (-not $isQuickLaunch) {
 
 if ($FlashAttentionMode -eq "Prompt") {
     Write-Host "Flash Attention:" -ForegroundColor Green
-    Write-Host " [1] On - fastest when supported"
-    Write-Host " [2] Off - compatibility fallback for models with unsupported head sizes"
+    Write-Host " [1] On - 対応時は最速"
+    Write-Host " [2] Off - ヘッドサイズ非対応モデル向けの互換フォールバック"
     Write-Host ""
 
     do {
@@ -2777,9 +2781,9 @@ if ($requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $eff
 
 if ($SpecMode -eq "Prompt") {
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
-    Write-Host " [1] Off - normal decoding"
-    Write-Host " [2] MTP/NextN - for combined *_MTP.gguf models"
-    Write-Host " [3] DSpark - DeepSeek V4 Flash fast draft"
+    Write-Host " [1] Off - 通常デコード"
+    Write-Host " [2] MTP/NextN - 結合済み *_MTP.gguf モデル向け"
+    Write-Host " [3] DSpark - DeepSeek V4 Flash 高速ドラフト"
     Write-Host ""
 
     do {
@@ -3009,9 +3013,9 @@ if (-not $DryRun) {
 
         if ($ExistingServerMode -eq "Prompt") {
             Write-Host "Server action:" -ForegroundColor Green
-            Write-Host " [1] Switch to selected model - stop existing server first"
-            Write-Host " [2] Use existing server"
-            Write-Host " [3] Quit"
+            Write-Host " [1] 選択したモデルに切り替え - 既存サーバーを先に停止"
+            Write-Host " [2] 既存サーバーを使用"
+            Write-Host " [3] 終了"
             Write-Host ""
 
             do {
@@ -3074,8 +3078,8 @@ if (-not $DryRun) {
 
         if ($ExistingServerMode -eq "Prompt") {
             Write-Host "Server action:" -ForegroundColor Green
-            Write-Host " [1] Quit - recommended"
-            Write-Host " [2] Start selected model anyway"
+            Write-Host " [1] 終了 - 推奨"
+            Write-Host " [2] 選択したモデルを強制起動"
             Write-Host ""
 
             do {
