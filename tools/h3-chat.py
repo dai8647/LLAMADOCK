@@ -166,10 +166,12 @@ PLAN_SERVER_BIN = os.environ.get(
     r"C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe",
 )
 # 企画 LLM のエンジン名（コーダー側のエンジン表記と揃えた表示用ラベル）。
+# DSpark を有効にすると TurboTan ビルドに切り替わるので、その場合のラベルも用意。
 PLAN_ENGINE = "AtomicBot (ROCm 7.1 HIP)" if PLAN_GPU else (
     "openPangu (native CPU)" if "llama.cpp-openPangu" in PLAN_SERVER_BIN else
     "AtomicBot (ROCm 7.1 HIP)" if "build-rocm71" in PLAN_SERVER_BIN else "Unknown"
 )
+PLAN_ENGINE_DSPARK = "TurboTan (draft-dspark)"
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
@@ -184,7 +186,12 @@ PLAN_SETTINGS = {
     "fa": True,           # Flash Attention
     "reasoning_effort": "medium",  # off, low, medium, xhigh
     "reasoning_budget": 1536,       # max thinking tokens
+    "dspark": False,      # DSpark speculative decoding (experimental)
 }
+# DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
+DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
+# DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
+TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
 
@@ -210,8 +217,15 @@ def _spawn_plan_llm():
     """
     if not os.path.isfile(PLAN_SERVER_BIN) or not os.path.isfile(PLAN_MODEL_PATH):
         return None
+    # DSpark needs the TurboTan build (draft-dspark); AtomicBot rejects it.
+    if PLAN_GPU and PLAN_SETTINGS["dspark"]:
+        if not os.path.isfile(TURBOTAN_SERVER_BIN):
+            return None
+        server_bin = TURBOTAN_SERVER_BIN
+    else:
+        server_bin = PLAN_SERVER_BIN
     args = [
-        PLAN_SERVER_BIN, "-m", PLAN_MODEL_PATH,
+        server_bin, "-m", PLAN_MODEL_PATH,
         "--port", str(PLAN_PORT),
         "-c", "8192", "--no-webui",
         "-np", "1",
@@ -241,6 +255,16 @@ def _spawn_plan_llm():
             # Vision-capable 27B (lemonyins ULTIMATE-UNCENSORED ships its own
             # mmproj). Attach it so the planner can see the confirmed key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
+        # DSpark speculative decoding: separate 1B dflash draft model predicts
+        # up to 7 tokens ahead; main model verifies. Experimental — requires
+        # llama.cpp PR #25173+ (spec-type draft-dspark).
+        if PLAN_SETTINGS["dspark"] and os.path.isfile(DSPARK_GGUF):
+            args += [
+                "--spec-type", "draft-dspark",
+                "--spec-draft-model", DSPARK_GGUF,
+                "--spec-draft-n-max", "7",
+                "-ngld", "99",
+            ]
     else:
         args += [
             "-ngl", "0", "--mlock",
@@ -330,7 +354,8 @@ def ensure_plan_llm(wait_seconds=120):
     with PLAN_START_LOCK:
         dead = PLAN_PROC is None or PLAN_PROC.poll() is not None
         if dead and time.time() - PLAN_LAST_TRY > 30:
-            print(f"h3-chat: auto-starting planning LLM (port {PLAN_PORT}, engine: {PLAN_ENGINE})")
+            engine_label = PLAN_ENGINE_DSPARK if PLAN_GPU and PLAN_SETTINGS["dspark"] else PLAN_ENGINE
+            print(f"h3-chat: auto-starting planning LLM (port {PLAN_PORT}, engine: {engine_label})")
             PLAN_PROC = _spawn_plan_llm()
             PLAN_LAST_TRY = time.time()
             if PLAN_PROC is None:
@@ -909,6 +934,7 @@ HTML = """<!doctype html>
         <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> フラッシュアテンション</label>
         <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
         <label>予算:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
+        <label><input type="checkbox" id="p-dspark" onchange="sendPlanSettings()"> DSpark（実験・投機的デコード）</label>
       </div>
     </details>
     </div>
@@ -1022,6 +1048,7 @@ function sendPlanSettings() {
   const fa = $("#p-fa");
   const re = $("#p-reasoning");
   const rb = $("#p-budget");
+  const dspark = $("#p-dspark");
   if (!ctk) return;
   fetch("/api/plan-settings", {
     method: "POST",
@@ -1029,7 +1056,8 @@ function sendPlanSettings() {
     body: JSON.stringify({
       ctk: ctk.value, ctv: ctv.value,
       fa: fa.checked, reasoning_effort: re.value,
-      reasoning_budget: parseInt(rb.value, 10) || 1536
+      reasoning_budget: parseInt(rb.value, 10) || 1536,
+      dspark: dspark.checked
     })
   }).catch(() => {});
 }
@@ -1669,6 +1697,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 PLAN_SETTINGS["reasoning_budget"] = max(0, min(32768, int(req["reasoning_budget"])))
             except (ValueError, TypeError):
                 pass
+        if "dspark" in req:
+            PLAN_SETTINGS["dspark"] = bool(req["dspark"])
         self._json(200, PLAN_SETTINGS)
 
     def _generate(self, parsed):

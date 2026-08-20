@@ -18,7 +18,7 @@
 # で渡される（select-model.ps1 の Start-H3Chat が設定）。
 
 param(
-    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Custom", "Off")]
+    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Qwen3.8-27B-Heretic-Vision", "Custom", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -49,6 +49,12 @@ $planModels = @{
         Mmproj = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\mmproj-BF16.gguf"
         Gpu = $true
     }
+    "Qwen3.8-27B-Heretic-Vision" = @{
+        Label = "Qwen3.8-27B heretic-ara (GPU・企画フェーズのみ・視覚あり・i1-Q4_K_S)"
+        Path = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\mmproj-Q8_0.gguf"
+        Gpu = $true
+    }
 }
 
 # Custom: select-model.ps1 が自動検出したモデル。パス等は環境変数で届く。
@@ -73,7 +79,7 @@ if ($PlanModel -eq "Custom") {
 }
 
 # GPU planner（27B / Custom GPU）は 8191、CPU planner は 8190。
-if ($PlanModel -eq "Qwen3.8-27B-GPU" -or $PlanModel -eq "Qwen3.8-27B-GPU-Vision" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
+if ($PlanModel -eq "Qwen3.8-27B-GPU" -or $PlanModel -eq "Qwen3.8-27B-GPU-Vision" -or $PlanModel -eq "Qwen3.8-27B-Heretic-Vision" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
     $planPort = 8191
 }
 $url = "http://127.0.0.1:$port"

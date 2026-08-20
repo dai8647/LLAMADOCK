@@ -1480,12 +1480,14 @@ function Get-PlanModelCandidates {
     $pinned = @(
         "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
         "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf",
-        "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
+        "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf",
+        "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
     )
     $files = Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Name -notmatch "(?i)mmproj" -and
             $_.Name -notmatch "-of-" -and
+            $_.Name -notmatch "(?i)DSpark" -and
             $pinned -notcontains $_.FullName
         }
     $list = @()
@@ -1525,8 +1527,9 @@ function Select-PlanModel {
     Write-Host " [1] Qwen3.5-4B  - CPU・常駐・視覚対応（既定）"
     Write-Host " [2] Qwen3.8-27B - GPU・企画フェーズのみ・高品質（視覚なし）"
     Write-Host " [3] Qwen3.8-27B Vision - GPU・企画フェーズのみ・視覚 + KV q8/q4（lemonyins）"
+    Write-Host " [4] Qwen3.8-27B heretic-ara - GPU・企画フェーズのみ・視覚あり（mradermacher i1-Q4_K_S）"
     $candidates = Get-PlanModelCandidates
-    $idx = 4
+    $idx = 5
     foreach ($c in $candidates) {
         $tag = if ($c.Gpu) { "GPU" } else { "CPU" }
         $vis = if ($c.Mmproj) { "視覚あり" } else { "視覚なし" }
@@ -1534,7 +1537,7 @@ function Select-PlanModel {
         $idx++
     }
     Write-Host ""
-    $max = 3 + $candidates.Count
+    $max = 4 + $candidates.Count
     do {
         $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for Qwen3.5-4B"
         if ([string]::IsNullOrWhiteSpace($planInput) -or $planInput -eq "1") {
@@ -1546,9 +1549,12 @@ function Select-PlanModel {
         if ($planInput -eq "3") {
             return "Qwen3.8-27B-GPU-Vision"
         }
+        if ($planInput -eq "4") {
+            return "Qwen3.8-27B-Heretic-Vision"
+        }
         $n = 0
-        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 4 -and $n -le $max) {
-            $chosen = $candidates[$n - 4]
+        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 5 -and $n -le $max) {
+            $chosen = $candidates[$n - 5]
             $script:PlanModelCustom = @{
                 Path   = $chosen.Path
                 Mmproj = $chosen.Mmproj
@@ -1587,6 +1593,7 @@ function Start-H3Chat {
             catch { }
             if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or
                 $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or
+                $script:PlanModelChoice -eq "Qwen3.8-27B-Heretic-Vision" -or
                 ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) {
                 $planUpNow = $true
             }
@@ -1600,7 +1607,7 @@ function Start-H3Chat {
             if (-not ($chatUpNow -and $planUpNow)) {
                 # 企画 LLM のエンジン: GPU プランナーは AtomicBot（h3-chat.py が PLAN_SERVER_BIN で起動）、
                 # CPU プランナーは openPangu ネイティブ CPU ビルド（h3-chat.ps1 が選択）。
-                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
+                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or $script:PlanModelChoice -eq "Qwen3.8-27B-Heretic-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
@@ -1920,7 +1927,7 @@ if ($comfyOnly) {
 # Find all supported GGUF files. Retired Hy3/hy_v3 files stay on disk for
 # optional manual cleanup, but must not be offered to a different runtime.
 $allFiles = Get-ChildItem -Path $ModelsBase -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notmatch "mmproj" -and $_.Name -notmatch "(?i)(^|[\\/_. -])Hy3([\\/_. -]|$)|Hy[-_ ]?V3" }
+    Where-Object { $_.Name -notmatch "mmproj" -and $_.Name -notmatch "(?i)(^|[\\/_. -])Hy3([\\/_. -]|$)|Hy[-_ ]?V3" -and $_.Name -notmatch "(?i)DSpark" }
 
 # Build model list (all models except mmproj)
 $models = @()
@@ -2779,16 +2786,44 @@ if ($requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $eff
     exit 1
 }
 
+# External draft model used by DSpark speculative decoding. Defined before the
+# SpecMode prompt so the prompt can suggest DSpark only when the draft exists.
+$dsparkDraftModel = if ($env:LLAMADOCK_DSPARK_DRAFT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DSPARK_DRAFT)
+}
+else {
+    Join-Path $ModelsBase "erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
+}
+
 if ($SpecMode -eq "Prompt") {
+    # Default suggestion: MTP models -> MtpNextN, Qwen3.8-27B with an
+    # installed DSpark draft -> DSpark, everything else -> Off.
+    $modelIsMtp = $selected.Name -match "(?i)MTP"
+    $modelIsQwen27B = $selected.Name -match "(?i)Qwen3\.8-27B"
+    $draftExists = Test-Path -LiteralPath $dsparkDraftModel
+
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
-    Write-Host " [1] Off - 通常デコード"
-    Write-Host " [2] MTP/NextN - 結合済み *_MTP.gguf モデル向け"
-    Write-Host " [3] DSpark - DeepSeek V4 Flash 高速ドラフト"
+    Write-Host " [1] Off - normal decoding"
+    if ($modelIsMtp) {
+        Write-Host " [2] MTP/NextN - combined *_MTP.gguf self-draft (recommended for this model)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host " [2] MTP/NextN - combined *_MTP.gguf self-draft"
+    }
+    if ($draftExists -and $modelIsQwen27B) {
+        Write-Host " [3] DSpark - external draft GGUF (requires TurboTan engine; recommended for this model)" -ForegroundColor Cyan
+    }
+    elseif ($draftExists) {
+        Write-Host " [3] DSpark - external draft GGUF (requires TurboTan engine)"
+    }
+    else {
+        Write-Host " [3] DSpark - external draft GGUF (draft model not found; requires TurboTan engine)"
+    }
     Write-Host ""
 
     do {
-        $defaultSpecChoice = if ($isDeepSeek) { 3 } else { 1 }
-        $defaultSpecLabel = if ($isDeepSeek) { "DSpark" } else { "Off" }
+        $defaultSpecChoice = if ($modelIsMtp) { 2 } elseif ($draftExists -and $modelIsQwen27B) { 3 } else { 1 }
+        $defaultSpecLabel = if ($modelIsMtp) { "MTP/NextN" } elseif ($draftExists -and $modelIsQwen27B) { "DSpark" } else { "Off" }
         $specInput = Read-Host "Select speculative mode (1-3), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
             $specSelection = $defaultSpecChoice
@@ -2820,6 +2855,30 @@ if ($SpecMode -eq "MtpNextN" -and $requiredEngine -eq "TurboTan") {
     Write-Host "ERROR: TurboTan TQ3_4S engine mode is not used for MTP/NextN in this launcher." -ForegroundColor Red
     Write-Host "Use a non-TurboTan engine with a combined *_MTP.gguf model." -ForegroundColor Red
     exit 1
+}
+
+if ($SpecMode -eq "DSpark") {
+    if (-not (Test-Path -LiteralPath $dsparkDraftModel)) {
+        Write-Host "ERROR: DSpark draft model not found: $dsparkDraftModel" -ForegroundColor Red
+        Write-Host "Set LLAMADOCK_DSPARK_DRAFT to a DSpark draft GGUF, or install the erlidev Qwen3.8-27B-DSpark draft." -ForegroundColor Red
+        exit 1
+    }
+    # The bundled erlidev draft is Qwen3.8-27B-architecture; warn when the
+    # selected main model is something else (arch mismatch will not work).
+    if ($selected.Name -notmatch "(?i)Qwen3\.8-27B") {
+        Write-Host "WARNING: $dsparkDraftModel is a Qwen3.8-27B draft; main model arch must match." -ForegroundColor Yellow
+    }
+    # draft-dspark exists only in the TurboTan build; AtomicBot rejects it.
+    if ($requiredEngine -ne "TurboTan") {
+        Write-Host "DSpark mode requires the TurboTan engine (draft-dspark). Switching engine..." -ForegroundColor Yellow
+        $requiredEngine = "TurboTan"
+        $ServerPath = $TurboTanServerPath
+    }
+    if (-not (Test-Path -LiteralPath $ServerPath)) {
+        Write-Host "ERROR: TurboTan engine not found at $ServerPath" -ForegroundColor Red
+        Write-Host "Install the TurboTan build to use DSpark speculative decoding." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Prompt MCP helper selection
@@ -2878,12 +2937,6 @@ $modelShort = $selected.Name -replace "\.gguf$", "" -replace "-", "_"
 $startFilePath = $ServerPath
 $args = @()
 $disableTurboAutoAsymmetric = $false
-$dsparkDraftModel = if ($env:LLAMADOCK_DSPARK_DRAFT) {
-    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DSPARK_DRAFT)
-}
-else {
-    Join-Path $ModelsBase "ggml-org\DeepSeek-V4-Flash-0731-GGUF\dspark-DeepSeek-V4-Flash-0731-MXFP4.gguf"
-}
 
 $args = @(
     "-m", $selected.FullName,
@@ -2942,7 +2995,7 @@ if ($SpecMode -eq "DSpark") {
     $args += @(
         "--spec-type", "draft-dspark",
         "--spec-draft-model", "$dsparkDraftModel",
-        "--spec-draft-n-max", "5",
+        "--spec-draft-n-max", "7",
         "-ngld", "99"
     )
 }
