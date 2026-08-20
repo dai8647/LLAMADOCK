@@ -124,12 +124,19 @@ node tools/mcp-smoke.mjs
 
 ## 6. 既知の制約・注意
 
+- **コミットポリシー（2026-08-21 変更）**: 変更した作業は**必ず `git commit` + `git push` する**（旧方針の「自動 commit 禁止・ユーザー指示待ち」は廃止）。**git reset は禁止**。代わりに、このリポジトリに着手する AI は最初に直近コミットの内容をレビューしてから作業を引き継ぐこと（手順は `C:\Users\dai86\Downloads\llama-tq3-handoff-2026-08-20.md` §7）
 - **ハードコードされた絶対パス**が多い（`C:\Users\dai86\...`）。GitHub クラウド（Codespaces 等）で動かす場合はパス抽象化が必要
 - ComfyUI は **0.33 以上必須**（`--use-ck-attention` / comfy-kitchen attention）
 - `--enable-triton-backend` は H3 int8 でクラッシュするため **off がデフォルト**（`LLAMADOCK_COMFY_TRITON=1` で強制、super は ck にフォールバック）
 - `--fast fp16_accumulation --force-non-blocking`（fast プロファイル）は **未ベンチ**（画質リスク要検証）
 - エンコーダが理解できても DiT 自体が描けない内容は出ない（32B でも同様）
 - select-model.ps1 は BOM なし UTF-8 なので、**日本語を追加すると PowerShell 5.1 が Shift-JIS 誤読して構文破壊**する → メニュー文言は英語のまま保つ
+- **投機的デコード（SpecMode）**: モデル選択後に `[1] Off / [2] MTP/NextN / [3] DSpark` を選択可（Manual モード）。
+  - MTP/NextN = 結合済み `*_MTP.gguf` 自己ドラフト（`-md 自己 --spec-type draft-mtp`）。**AtomicBot で実機検証済み**（finex666 / lemonyins）
+  - DSpark = 外部ドラフト（erlidev `Qwen3.8-27B-DSpark-Q8_0.gguf`、`--spec-type draft-dspark`）。**AtomicBot は非対応**（unknown spec type で起動失敗）→ **TurboTan ビルド限定**。select-model.ps1 は DSpark 選択時に TurboTan へ自動切替。ドラフトパスは env `LLAMADOCK_DSPARK_DRAFT` で上書き可
+  - DSpark ドラフトは主モデル一覧・planner 候補から除外済み（draft 専用のため主モデルとして起動しない）
+  - h3-chat.py の planner 詳細設定に DSpark チェックボックスあり（GPU planner のみ。有効時は TurboTan ビルドに切替）
+  - DFlash2（llama.cpp PR #27342）は未マージ・手持ちビルド未実装 → 使用不可
 
 ---
 
