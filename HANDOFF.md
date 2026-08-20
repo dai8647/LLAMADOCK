@@ -23,7 +23,6 @@
 |---|---|---|---|
 | ComfyUI | 8188 | `select-model.ps1`（ck プロファイル） | 動画・画像生成本体 |
 | **DeepSeek Harness** | 5173 | `npx @deepseek-ai/dsh@latest web` | エージェントハーネス（npx 自動インストール＋自動アップデート） |
-| **ZCode** | — | `ZCode.exe`（デスクトップ） | Z.ai コーディングエージェント（OpenAI 互換 API 対応） |
 | h3-chat（Web UI） | 8189 | `tools/h3-chat.ps1` | 企画チャット + 生成ボタン UI |
 | 企画 LLM（llama-server） | 8190 | `tools/h3-chat.ps1` | Qwen3.5 企画（CPU・mmproj 視覚付き） |
 
@@ -90,9 +89,17 @@ cd C:\Users\dai86\Documents\ComfyUI
 - **`h3_workflow_r2v_fast*.json`**（新規）: 参照モード + spectrum + 20step（ターボなし）。キャラ一貫性と最高画質を両立
 - 動画は `ComfyUI\output\` に `h3_turbo_audio_*.mp4` として出力、キー画像は `zimg_*.png`
 
+### 2026-08-20 レビュー修正（全ワークフロー検証済み）
+- **`SpectrumApplyMiniMaxH3` カスタムノードを導入**（`xmarre/ComfyUI-Spectrum-MiniMax-H3` を ComfyUI `custom_nodes\` に clone）。fast / r2v_fast 系ワークフローはこのノードが無いと起動できない（依存パッケージなし・venv import 確認済み）。更新時は `git pull --ff-only`
+- **r2v 系 5 ファイル**: node 6 `ref_images` が `null` のままだった不具合を修正 → `{"ref_image_0": ["16", 0]}` に接続（以前は参照画像が無視され ImageToVideo 相当になっていた）。LoadImage のプレースホルダ `h3_ref_reference.png` を ComfyUI `input\` に配置済み（実行時は h3-chat が実ファイル名に差し替え）
+- **出力プレフィックスを一意化**: `clipproj_short`→`h3_clipproj_short` / `r2v_short`→`h3_r2v_short` / `r2v_short_4b`→`h3_r2v_short_4b` / `turbo_short`→`h3_turbo_short` / `turbo_short_audio`→`h3_turbo_short_audio` / `super_short_audio`→`h3_super_short_audio` / `bench`→`h3_bench` / `bench_short_audio`→`h3_bench_short_audio`。h3-chat は出力ファイルを /history API で取得するため互換性影響なし
+- **`shift_audio` を全ワークフローで 6 に統一**（fast / clipproj / bench 系が 3 のままだった。ノードデフォルトは 3、turbo / super / r2v 系の調整値 6 に揃えた。`src.json` も 6.0 に更新）
+- **super_audio / super_short_audio**: 未使用の二重 CLIPLoader（node 2）を削除（super / super_short は元々 node 2 なし）
+
 ### カスタムノード（ComfyUI `custom_nodes\`）
 - `ComfyUI-GGUF`（UnetLoaderGGUF 用）
 - `ComfyUI-ClipProj`
+- `ComfyUI-Spectrum-MiniMax-H3`（fast / r2v_fast 系の SpectrumApplyMiniMaxH3。2026-08-20 導入）
 - `websocket_image_save.py`
 
 ---
@@ -111,7 +118,7 @@ node tools/mcp-smoke.mjs
 ```
 - `test-plan-vision.py`: ①合成画像を直接見せて記述照合 ②テキスト手がかりゼロで確定パスに通し、最終動画プロンプトが画像内容（色・被写体）と一致するか照合
 - `tools/mcp-smoke.mjs`: MCP サーバーを実起動して `search_web` / `search_and_fetch` / `fetch_url` / `deep_research` を叩き、全項目 PASS を確認
-- 最終コミット: `1d886e0`（ZCode auto-configure）
+- 最終コミット: `1d886e0`（ZCode auto-configure。その後 ZCode / Odysseus / OpenCode+Harness は削除済み）
 
 ---
 
@@ -142,7 +149,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 | `arg-builder.js` | スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング） |
 | `results-store.js` | 実測 tok/s・VRAM を `config/run-results.json`（gitignore）に蓄積、成功 3 回以上で「推奨（実測）」認定 |
-| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/DeepResearch/LlamaAgent/ComfyUI/DeepSeekHarness/ZCode の起動契約（ComfyUI は standalone） |
+| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/LlamaAgent/ComfyUI/DeepSeekHarness の起動契約（ComfyUI は standalone） |
 | `mock-llama-server.mjs` | 非 Windows 用シミュレーション llama-server（計測ループ検証用） |
 | `app.js` / `index.html` / `style.css` | 3カラム・ダークテーマ UI |
 
@@ -173,15 +180,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 - **URL**: https://deepseek.com/harness/en/
 - **起動**: `npx @deepseek-ai/dsh@latest web`（初回は自動インストール、以降は自動アップデート）
 - **ポート**: 5173（既定）
-- **ワークスペース**: `select-model.ps1` メニュー [8] または web-ui 右カラムから起動可能
-
-### ZCode（Z.ai コーディングエージェント）
-
-- **種別**: デスクトップアプリ（ZCode.exe）
-- **公式**: https://zcode.z.ai
-- **接続**: OpenAI 互換プロバイダ → Base URL: `http://127.0.0.1:8090/v1`
-- **ワークスペース**: `select-model.ps1` メニュー [9] または web-ui 右カラムから起動可能
-- **初回設定**: ZCode 起動後、Settings → Model Settings → Add Provider → OpenAI Compatible → Base URL を入力（手動）
+- **ワークスペース**: ワークフロープリセット [7]（standalone 直接起動）またはワークスペースメニュー [7] から起動可能
 - **更新**: `tools/dsh-update.ps1` が起動時にバックグラウンドでバージョンチェック＋更新を実行
 
 ## 8. 次にやること（優先度順）

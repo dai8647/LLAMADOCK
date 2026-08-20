@@ -660,7 +660,6 @@
         body: JSON.stringify({
           client,
           model: state.selectedModel,
-          harness: false,
           prompt: "",
         }),
       });

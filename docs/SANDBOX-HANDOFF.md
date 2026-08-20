@@ -49,7 +49,7 @@ GitHub ルートの `HANDOFF.md` を参照**してください。ここでは **
 | `arg-builder.js` | スキーマ駆動の llama-server 引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready 待ち・health ポーリング・ログリング） |
 | `results-store.js` | 計測結果を `config/run-results.json` にモデル別・設定指紋別で蓄積、実測成功 minRuns（既定 3）以上で「推奨（実測）」認定 |
-| `client-manager.js` | クライアント起動（Cline/OpenCode/OpenClaude/WebUI/DeepResearch/LlamaAgent/ComfyUI）。ComfyUI は standalone（llama-server 不要） |
+| `client-manager.js` | クライアント起動（Cline/OpenCode/OpenClaude/WebUI/LlamaAgent/ComfyUI）。ComfyUI は standalone（llama-server 不要） |
 | `mock-llama-server.mjs` | 非 Windows 用のシミュレーション llama-server（起動→計測→停止ループの検証用） |
 | `app.js` / `index.html` / `style.css` | フロントエンド（3 カラム・ダークテーマ・プリセット適用・計測ボタン・クライアント稼働ドット） |
 
@@ -60,7 +60,7 @@ GitHub ルートの `HANDOFF.md` を参照**してください。ここでは **
 - `POST /api/launch` / `stop` / `benchmark` — 起動 / 停止 / 計測実行
 - `GET /api/results` — 計測結果（`config/run-results.json`）
 - `POST /api/connect` — クライアント起動（Windows 以外では `simulated: true` で契約を返す）
-- `GET /api/clients/health` — WebUI :8000 / DeepResearch :7000 / ComfyUI :8188 をプローブ
+- `GET /api/clients/health` — WebUI :8000 / ComfyUI :8188 をプローブ
 
 ### サンドボックスで実測済み（検証済み事項）
 - MCP スモーク: 起動 → initialize → 4 ツール（`search_web` / `search_and_fetch` / `fetch_url` / `deep_research`）→ **実検索成功**

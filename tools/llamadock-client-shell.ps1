@@ -7,12 +7,7 @@ param(
     [string]$BaseUrl = "http://127.0.0.1:8090/v1",
     [string]$ConfigPath = "",
     [string]$DataDir = "",
-    [string]$Workspace = "",
-    [string]$Prompt = "",
-    [int]$MaxMinutes = 90,
-    [int]$MaxResumes = 3,
-    [int]$StallSeconds = 300,
-    [switch]$Harness
+    [string]$Workspace = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,27 +37,7 @@ switch ($Client) {
         }
         $env:OPENCODE_CONFIG = $ConfigPath
         $env:OPENAI_API_KEY = "not-needed"
-        if ($Harness) {
-            # Route to the harness runner
-            $harnessPath = Join-Path $PSScriptRoot "llamadock-opencode-harness.ps1"
-            $harnessArgs = @{
-                Workspace = if (-not [string]::IsNullOrWhiteSpace($Workspace)) { $Workspace } else { (Get-Location).Path }
-                ModelName = $ModelName
-                Prompt = if ([string]::IsNullOrWhiteSpace($Prompt)) {
-                    $entered = Read-Host "Enter the coding task for harness mode"
-                    if ([string]::IsNullOrWhiteSpace($entered)) { throw "Prompt is required for harness mode. Provide via -Prompt parameter or enter a task when prompted." }
-                    $entered
-                } else { $Prompt }
-                MaxMinutes = $MaxMinutes
-                MaxResumes = $MaxResumes
-                StallSeconds = $StallSeconds
-                Root = Split-Path -Parent $PSScriptRoot
-            }
-            & $harnessPath @harnessArgs
-        }
-        else {
-            & opencode -m "llamadock/$ModelName" (Get-Location).Path
-        }
+        & opencode -m "llamadock/$ModelName" (Get-Location).Path
     }
     "OpenClaude" {
         $env:CLAUDE_CODE_USE_OPENAI = "1"

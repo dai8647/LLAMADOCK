@@ -4,7 +4,6 @@
 // mirroring select-model.ps1's Open-*Client functions:
 //   - Cline / OpenCode / OpenClaude -> tools/llamadock-client-shell.ps1
 //   - WebUI                          -> tools/computer-start.ps1 (Computer 0.9.9)
-//   - DeepResearch                   -> tools/deep-research-harness.mjs <query>
 //   - LlamaAgent                     -> llama-agent.exe (MCP web-search auto-start)
 //   - ComfyUI                        -> ComfyUI .venv python main.py (port 8188)
 //
@@ -30,17 +29,14 @@ export const CLIENT_BASE_URL =
 // probe target is env-overridable (LLAMADOCK_<ID>_PORT) so a ComfyUI on a
 // non-default port — or a sandbox test server — is monitored correctly.
 //   WebUI        -> Open WebUI / Computer UI on :8000
-//   DeepResearch -> Odysseus web app on :7000
 //   ComfyUI      -> /system_stats on :8188 (its own server, standalone)
 export const CLIENTS = [
   { id: "Cline", label: "Cline", desc: "コーディング", kind: "cli" },
   { id: "OpenCode", label: "OpenCode", desc: "ターミナルコーディング", kind: "cli" },
   { id: "OpenClaude", label: "OpenClaude", desc: "Claude Code 系", kind: "cli" },
   { id: "WebUI", label: "Open WebUI / Computer", desc: "チャット・検索", kind: "web", port: 8000, health: { path: "/" } },
-  { id: "DeepResearch", label: "Deep Research", desc: "Odysseus", kind: "web", port: 7000, health: { path: "/" } },
   { id: "LlamaAgent", label: "Llama Agent", desc: "反復調査", kind: "cli" },
   { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 5173, standalone: true, health: { path: "/" } },
-  { id: "ZCode", label: "ZCode", desc: "Z.ai コーディング (デスクトップ)", kind: "desktop" },
   // standalone: the client runs its own server and does not need a running
   // llama-server — mirrors select-model.ps1's Open-ComfyUIClient comment
   // ("ComfyUI runs its own server on :8188 and does not depend on the
@@ -73,7 +69,7 @@ function q(value) {
 
 // Windows spawn plan for a client — argv array (no shell quoting issues for
 // the real spawn) plus a human-readable command line for the simulation path.
-function windowsPlan(spec, { model, workspace, harness, prompt }) {
+function windowsPlan(spec, { model, workspace, prompt }) {
   const root = PROJECT_ROOT;
   const baseUrl = CLIENT_BASE_URL;
   const ws = workspace && workspace.trim() ? workspace : root;
@@ -97,7 +93,6 @@ function windowsPlan(spec, { model, workspace, harness, prompt }) {
         "-Client", "OpenCode", "-ModelName", String(model || ""),
         "-ConfigPath", configPath, "-BaseUrl", baseUrl, "-Workspace", ws,
       ];
-      if (harness) args.push("-Harness");
       return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
     }
     case "OpenClaude": {
@@ -111,11 +106,6 @@ function windowsPlan(spec, { model, workspace, harness, prompt }) {
     case "WebUI": {
       const args = [...shellArgs, "-File", join(root, "tools", "computer-start.ps1")];
       return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
-    }
-    case "DeepResearch": {
-      const query = prompt && prompt.trim() ? prompt : String(model || "research query");
-      const args = [join(root, "tools", "deep-research-harness.mjs"), query];
-      return { exe: "node.exe", args, cwd: root, display: `node.exe ${args.map(q).join(" ")}` };
     }
     case "LlamaAgent": {
       // Phase 1 core will carry over select-model.ps1's full embedded script
@@ -147,25 +137,6 @@ function windowsPlan(spec, { model, workspace, harness, prompt }) {
       const args = ["--yes", "@deepseek-ai/dsh@latest", "web"];
       return { exe: npx, args, cwd: root, display: `${npx} ${args.join(" ")}` };
     }
-    case "ZCode": {
-      // ZCode is a desktop exe — search common Windows install paths.
-      const localAppData = process.env.LOCALAPPDATA || "";
-      const programFiles = process.env.PROGRAMFILES || "";
-      const programFilesX86 = process.env["PROGRAMFILES(X86)"] || "";
-      const appData = process.env.APPDATA || "";
-      const searchPaths = [
-        path.join(localAppData, "Programs", "ZCode", "ZCode.exe"),
-        path.join(localAppData, "ZCode", "ZCode.exe"),
-        path.join(programFiles, "ZCode", "ZCode.exe"),
-        path.join(programFilesX86, "ZCode", "ZCode.exe"),
-        path.join(appData, "ZCode", "ZCode.exe"),
-      ];
-      const found = searchPaths.find((p) => p && existsSync(p));
-      if (!found) {
-        return null; // will be handled as not_found in caller
-      }
-      return { exe: found, args: [], cwd: root, display: `${q(found)}` };
-    }
     default:
       return null;
   }
@@ -179,7 +150,7 @@ export function createClientManager({ upstream = () => null } = {}) {
     clients.set(id, { state: "idle", at: new Date().toISOString(), message: null, pid: null, ...(clients.get(id) || {}), ...patch });
   }
 
-  async function connect({ client = "", model = null, workspace = null, harness = false, prompt = "" } = {}) {
+  async function connect({ client = "", model = null, workspace = null, prompt = "" } = {}) {
     const spec = clientById(String(client || "").trim());
     if (!spec) {
       return {
@@ -204,7 +175,7 @@ export function createClientManager({ upstream = () => null } = {}) {
       };
     }
 
-    const plan = windowsPlan(spec, { model: model || runtime.model, workspace, harness, prompt });
+    const plan = windowsPlan(spec, { model: model || runtime.model, workspace, prompt });
     if (!plan) {
       return { ok: false, error: "no_launcher", message: `「${spec.label}」の起動方法が未定義です。`, client: spec.id };
     }

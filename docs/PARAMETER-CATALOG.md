@@ -95,7 +95,7 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
 - モデル発見 / `Get-HardwareEstimate` / エンジン解決（`Resolve-Engine`）
 - **引数生成**: パラメータセット → llama-server 引数配列（`params-schema.json` の `flags` を参照）
 - サーバー起動・ready待ち（`Wait-ServerReady`）・停止
-- クライアント起動（`Open-WorkspaceClient`: Cline/OpenCode/OpenClaude/WebUI/ComfyUI/DeepResearch/LlamaAgent）
+- クライアント起動（`Open-WorkspaceClient`: Cline/OpenCode/OpenClaude/WebUI/ComfyUI/LlamaAgent）
 - `tools/test.ps1`（構文・dry run・秘密スキャン・全プリセット）を常に通すこと。
 
 ### Phase 2 — Web API層
@@ -148,7 +148,7 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
     計測実行ボタンを配線。3秒間隔の状態ポーリングで信号灯・メトリクス・ログを更新。
 - **`POST /api/connect`（クライアント起動）を実装**: `web-ui/client-manager.js`。
   `select-model.ps1` の `Open-*Client` と同じ起動経路をクライアントID（Cline / OpenCode / OpenClaude /
-  WebUI / DeepResearch / LlamaAgent / ComfyUI）ごとに定義。Windows では detached spawn、それ以外では
+  WebUI / LlamaAgent / ComfyUI）ごとに定義。Windows では detached spawn、それ以外では
   リクエストを検証した上で Windows が実行する正確なコマンドを `simulated: true` で返す（契約を全プラットフォームで検証可能）。
   未起動時は `server_not_running` で拒否。接続状態は `/api/status` の `clients` と UI のチップで確認できる。
 - **ComfyUI を standalone 扱いに修正**: llama-server 未起動でも接続可能（`select-model.ps1` の
@@ -159,7 +159,7 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
   エンコーダ GGUF + VAE 必須、K 量子化不可）。UI のエンジン推定は `ComfyUI (DiT)` と表示し、
   llama.cpp エンジンへの誤推定を防止。
 - **クライアント稼働モニタ（`GET /api/clients/health`）を実装**: 独自 HTTP サーバーを持つクライアント
-  （Open WebUI :8000 / DeepResearch :7000 / ComfyUI :8188）をプローブし、UI に稼働ドット（緑/赤）と
+  （Open WebUI :8000 / ComfyUI :8188）をプローブし、UI に稼働ドット（緑/赤）と
   「開く ↗」を表示。ポートは `LLAMADOCK_<ID>_PORT` で上書き可能で、ComfyUI の起動 `--port` と監視が
   同じ値を使う。CLI クライアントは `no_health_check`。
 - **残（Windows 機で実施・検証が必要）**: Phase 1 の `select-model.ps1` モジュール抽出と

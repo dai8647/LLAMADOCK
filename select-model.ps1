@@ -8,7 +8,7 @@ param(
     [int]$KCacheIndex = 0,
     [int]$VCacheIndex = 0,
     [int]$CacheRamMiB = -1,
-    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "OpenCodeHarness", "OpenClaudeCoding", "LlamaAgentResearch", "DeepResearchLight", "DeepResearchStandard", "DeepResearchHeavy", "WebUIChat")]
+    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "OpenClaudeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")]
     [string]$PresetMode = "Prompt",
     [ValidateSet("Auto", "Light", "Standard", "Heavy")]
     [string]$ResearchMode = "Auto",
@@ -29,7 +29,7 @@ param(
     [string]$CpuMoeMode = "",
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
-    [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI")]
+    [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
     [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat")]
     [string]$EngineMode = "Auto",
@@ -154,15 +154,6 @@ $OpenWebUIPort = 3000
 $OpenWebUIUrl = "http://127.0.0.1:$OpenWebUIPort"
 $ComputerPort = 8000
 $ComputerUrl = "http://127.0.0.1:$ComputerPort"
-$OdysseusRoot = if ($env:LLAMADOCK_ODYSSEUS_ROOT) {
-    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_ODYSSEUS_ROOT)
-}
-else {
-    "C:\Users\dai86\Downloads\odysseus"
-}
-$OdysseusPort = 7000
-$OdysseusBaseUrl = "http://127.0.0.1:$OdysseusPort"
-$LegacyDeepResearchPort = 5000
 $ModelNotesPath = Join-Path $PSScriptRoot "model-notes.json"
 $RunResultsPath = Join-Path $PSScriptRoot "mcp-data\run-results.json"
 $script:ClineDataDir = if ($env:LLAMADOCK_CLINE_DATA_DIR) {
@@ -303,8 +294,9 @@ function Set-ClientBaseUrl {
         return $script:ClientBaseUrl
     }
 
-    $script:ClientBaseUrl = $ServerBaseUrl
-    return $script:ClientBaseUrl
+    # Never fall back to the raw upstream (8080): clients must go through the
+    # recovery gateway so the single llama-server slot stays protected.
+    throw "Recovery gateway $GatewayBaseUrl is not ready (upstream 8080 not healthy). Start LlamaDock first and wait for the server to become ready before opening a client."
 }
 
 function Get-SystemRamGB {
@@ -656,50 +648,11 @@ function Get-ModelNote {
     return $null
 }
 
-function Set-DeepResearchModeDefaults {
-    param([string]$Mode)
-
-    if ($Mode -eq "Auto") {
-        return
-    }
-
-    if ($Mode -eq "Light") {
-        $script:ResearchExtractionConcurrency = 1
-        $script:ResearchSearchResultCount = 3
-        $script:ResearchMaxTokens = 4096
-        $script:ResearchExtractionMaxTokens = 1024
-        $script:ResearchExtractionTimeoutSeconds = 45
-        $script:ResearchPlanningTimeoutSeconds = 45
-        $script:ResearchQueryTimeoutSeconds = 45
-        $script:ResearchRunTimeoutSeconds = 420
-    }
-    elseif ($Mode -eq "Heavy") {
-        $script:ResearchExtractionConcurrency = 1
-        $script:ResearchSearchResultCount = 6
-        $script:ResearchMaxTokens = 8192
-        $script:ResearchExtractionMaxTokens = 2048
-        $script:ResearchExtractionTimeoutSeconds = 90
-        $script:ResearchPlanningTimeoutSeconds = 90
-        $script:ResearchQueryTimeoutSeconds = 90
-        $script:ResearchRunTimeoutSeconds = 1200
-    }
-    else {
-        $script:ResearchExtractionConcurrency = 1
-        $script:ResearchSearchResultCount = 5
-        $script:ResearchMaxTokens = 6144
-        $script:ResearchExtractionMaxTokens = 1536
-        $script:ResearchExtractionTimeoutSeconds = 60
-        $script:ResearchPlanningTimeoutSeconds = 60
-        $script:ResearchQueryTimeoutSeconds = 60
-        $script:ResearchRunTimeoutSeconds = 900
-    }
-}
-
 function Test-IsLlamaDockServerProcess {
     # Only kill processes that LlamaDock actually manages. A port can be owned
     # by an unrelated app (e.g. another llama-server the user started by hand,
     # or an entirely different service); blindly Stop-Process -Force on those
-    # would be destructive. Command-line inspection mirrors Stop-OdysseusOnPort.
+    # would be destructive. Command-line inspection mirrors the old port-owner pattern.
     param([int]$ProcessId)
 
     $procInfo = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
@@ -920,22 +873,6 @@ function ConvertTo-FormBody {
     return ($parts -join "&")
 }
 
-function Invoke-OdysseusForm {
-    param(
-        [string]$Path,
-        [hashtable]$Fields
-    )
-
-    $body = ConvertTo-FormBody -Fields $Fields
-    return Invoke-RestMethod -Uri "$OdysseusBaseUrl$Path" -Method Post -ContentType "application/x-www-form-urlencoded" -Body $body -TimeoutSec 30 -ErrorAction Stop
-}
-
-function Invoke-OdysseusDelete {
-    param([string]$Path)
-
-    return Invoke-RestMethod -Uri "$OdysseusBaseUrl$Path" -Method Delete -TimeoutSec 30 -ErrorAction Stop
-}
-
 function Set-ClineLocalModel {
     param([string]$ModelName)
 
@@ -1038,11 +975,7 @@ function Open-ClineClient {
 }
 
 function New-LocalOpenCodeConfig {
-    param(
-        [string]$ModelName,
-        [ValidateSet("coding", "research-readonly")]
-        [string]$Mode = "coding"
-    )
+    param([string]$ModelName)
 
     $configDir = Join-Path $PSScriptRoot "mcp-data"
     if (-not (Test-Path $configDir)) {
@@ -1058,31 +991,16 @@ function New-LocalOpenCodeConfig {
     $config = [ordered]@{
         '$schema' = "https://opencode.ai/config.json"
         model = "llamadock/$ModelName"
-        default_agent = if ($Mode -eq "research-readonly") { "research-readonly" } else { "coding" }
+        default_agent = "coding"
         share = "disabled"
         shell = "pwsh"
-        permission = if ($Mode -eq "research-readonly") {
-            [ordered]@{ edit = "deny"; bash = "deny"; webfetch = "allow" }
-        }
-        else {
-            [ordered]@{ edit = "allow"; bash = "ask"; webfetch = "ask" }
-        }
-        tools = if ($Mode -eq "research-readonly") {
-            [ordered]@{ write = $false; edit = $false; bash = $false }
-        }
-        else {
-            [ordered]@{ write = $true; edit = $true; bash = $true }
-        }
+        permission = [ordered]@{ edit = "allow"; bash = "ask"; webfetch = "ask" }
+        tools = [ordered]@{ write = $true; edit = $true; bash = $true }
         agent = [ordered]@{
             coding = [ordered]@{
                 description = "LlamaDock coding agent with user-approved shell operations"
                 prompt = "Work on the local project. Explain changes, keep edits scoped, and ask before destructive shell commands."
                 tools = [ordered]@{ write = $true; edit = $true; bash = $true }
-            }
-            "research-readonly" = [ordered]@{
-                description = "Read-only web research agent; never edit files or run shell commands"
-                prompt = "Research using web evidence and return cited findings. Do not modify files, run shell commands, or claim unverified facts."
-                tools = [ordered]@{ write = $false; edit = $false; bash = $false; webfetch = $true }
             }
         }
         provider = [ordered]@{
@@ -1098,28 +1016,14 @@ function New-LocalOpenCodeConfig {
         }
     }
 
-    if ($Mode -eq "research-readonly") {
-        $config.mcp = [ordered]@{
-            web_search = [ordered]@{
-                type = "remote"
-                url = "http://127.0.0.1:3100/mcp"
-                enabled = $true
-            }
-        }
-    }
-
     Write-Utf8NoBom -Path $configPath -Value ($config | ConvertTo-Json -Depth 10)
     return $configPath
 }
 
 function Open-OpenCodeClient {
-    param(
-        [string]$ModelName,
-        [switch]$Harness
-    )
+    param([string]$ModelName)
 
-    $openCodeMode = if ($PresetMode -like "DeepResearch*") { "research-readonly" } else { "coding" }
-    $configPath = New-LocalOpenCodeConfig -ModelName $ModelName -Mode $openCodeMode
+    $configPath = New-LocalOpenCodeConfig -ModelName $ModelName
     $clientShell = Join-Path $PSScriptRoot "tools\llamadock-client-shell.ps1"
 
     Write-Host "Opening OpenCode in PowerShell..." -ForegroundColor Cyan
@@ -1133,7 +1037,6 @@ function Open-OpenCodeClient {
         "-BaseUrl", $ClientBaseUrl,
         "-Workspace", $PSScriptRoot
     )
-    if ($Harness) { $shellArgs += "-Harness" }
     return Start-Process -FilePath "powershell.exe" -PassThru -ArgumentList $shellArgs
 }
 
@@ -1856,67 +1759,6 @@ function Open-DeepSeekHarnessClient {
         "web"
     )
 
-function Open-ZCodeClient {
-    # ZCode — Z.ai coding agent (desktop exe).
-    # https://zcode.z.ai
-    # Supports OpenAI-compatible providers: user configures Base URL
-    # in ZCode Settings → Model Settings → Third-Party Providers.
-
-    
-    # --- Auto-configure ZCode config.json ---
-    $zcodeSetupScript = Join-Path $PSScriptRoot "tools\zcode-setup.ps1"
-    if (Test-Path -LiteralPath $zcodeSetupScript) {
-        Write-Host "Configuring ZCode provider..." -ForegroundColor DarkGray
-        try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $zcodeSetupScript -BaseUrl "$ClientBaseUrl" 2>&1 | Write-Host -ForegroundColor DarkGray
-        } catch {
-            Write-Host "  (config setup skipped)" -ForegroundColor DarkGray
-        }
-    }
-    $zcodeSearchPaths = @(
-        "$env:LOCALAPPDATA\Programs\ZCode\ZCode.exe",
-        "$env:LOCALAPPDATA\ZCode\ZCode.exe",
-        "$env:PROGRAMFILES\ZCode\ZCode.exe",
-        "$env:PROGRAMFILES(X86)\ZCode\ZCode.exe",
-        "$env:APPDATA\ZCode\ZCode.exe",
-        "$env:USERPROFILE\AppData\Local\ZCode\ZCode.exe",
-        "$env:LOCALAPPDATA\Microsoft\WinGet\Links\ZCode.exe"
-    )
-
-    $zcodePath = $null
-    foreach ($p in $zcodeSearchPaths) {
-        if ($p -and (Test-Path -LiteralPath $p)) {
-            $zcodePath = $p
-            break
-        }
-    }
-
-    if (-not $zcodePath) {
-        $found = Get-Command ZCode.exe -ErrorAction SilentlyContinue
-        if ($found) { $zcodePath = $found.Source }
-    }
-
-    if (-not $zcodePath) {
-        Write-Host "ZCode.exe was not found. Install from https://zcode.z.ai" -ForegroundColor Yellow
-        Write-Host "After installing, launch ZCode and configure:" -ForegroundColor DarkGray
-        Write-Host "  Settings → Model Settings → Add Provider → OpenAI Compatible" -ForegroundColor DarkGray
-        Write-Host "  Base URL: http://127.0.0.1:8090/v1" -ForegroundColor DarkGray
-        return $null
-    }
-
-    Write-Host "Opening ZCode..." -ForegroundColor Cyan
-    Write-Host "  ZCode: $zcodePath" -ForegroundColor DarkGray
-    Write-Host "  llama-server: $ClientBaseUrl" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "ZCode接続設定（初回のみ手動）:" -ForegroundColor Yellow
-    Write-Host "  1. ZCode内で Settings → Model Settings を開く" -ForegroundColor Yellow
-    Write-Host '  2. Add Provider → "OpenAI Compatible" を選択' -ForegroundColor Yellow
-    Write-Host "  3. Base URL: http://127.0.0.1:8090/v1" -ForegroundColor Yellow
-    Write-Host "  4. API Key: not-needed" -ForegroundColor Yellow
-    Write-Host "  5. モデル名を入力（例: $(if ($ModelName) { $ModelName } else { 'local-model' })）" -ForegroundColor Yellow
-    Write-Host ""
-    return Start-Process -FilePath $zcodePath -WorkingDirectory $PSScriptRoot -PassThru
-}
 }
 
 function Open-WorkspaceClient {
@@ -1925,15 +1767,10 @@ function Open-WorkspaceClient {
     switch ($Mode) {
         "WebUI" { return Open-OpenWebUIClient }
         "ComfyUI" { return Open-ComfyUIClient }
-        "DeepResearch" { Open-DeepResearch; return $null }
         "LlamaAgent" { return Open-LlamaAgentClient -ModelPath $ModelPath }
-        "OpenCode" {
-            $harnessFlag = ($PresetMode -eq "OpenCodeHarness")
-            return Open-OpenCodeClient -ModelName $ModelName -Harness:$harnessFlag
-        }
+        "OpenCode" { return Open-OpenCodeClient -ModelName $ModelName }
         "OpenClaude" { return Open-OpenClaudeClient -ModelName $ModelName }
         "DeepSeekHarness" { return Open-DeepSeekHarnessClient }
-        "ZCode" { return Open-ZCodeClient }
         default {
             Set-ClineLocalModel -ModelName $ModelName
             return Open-ClineClient
@@ -1943,13 +1780,15 @@ function Open-WorkspaceClient {
 
 function Stop-H3Stack {
     # Stops the video-stack sidecar processes that hold GPU/RAM after a
-    # session: ComfyUI (8188), h3-chat (8189) and the planning LLM (8190).
+    # session: ComfyUI (8188), h3-chat (8189), the CPU planning LLM (8190)
+    # and the GPU planning LLM (8191).
     # Only kills processes whose command line matches the expected LlamaDock
     # services, so unrelated apps on those ports are left alone.
     $targets = @(
         @{ Port = 8188; Match = "main.py" },
         @{ Port = 8189; Match = "h3-chat.py" },
-        @{ Port = 8190; Match = "llama-server" }
+        @{ Port = 8190; Match = "llama-server" },
+        @{ Port = 8191; Match = "llama-server" }
     )
     foreach ($t in $targets) {
         $listeners = Get-NetTCPConnection -LocalPort $t.Port -State Listen -ErrorAction SilentlyContinue
@@ -1962,7 +1801,7 @@ function Stop-H3Stack {
                 if ($cim) { $cmd = [string]$cim.CommandLine }
             }
             catch { }
-            if ($cmd -match [regex]::Escape($t.Match) -or ($t.Port -eq 8190 -and $proc.ProcessName -eq "llama-server")) {
+            if ($cmd -match [regex]::Escape($t.Match) -or ($t.Port -in @(8190, 8191) -and $proc.ProcessName -eq "llama-server")) {
                 Write-Host " Stop PID $ownerPid ($($proc.ProcessName)) [port $($t.Port)]" -ForegroundColor Yellow
                 Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
             }
@@ -1989,9 +1828,9 @@ function Select-WorkspaceForSession {
     } while ($choice -notin @("1", "2", "3", "4", "5"))
     if ($choice -eq "1") { return @("relaunch", "") }
     if ($choice -eq "2") {
-        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Deep Research  [6] Llama Agent  [7] ComfyUI  [8] DeepSeek Harness  [9] ZCode"
+        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Llama Agent  [6] ComfyUI  [7] DeepSeek Harness"
         $workspace = Read-Host "Select workspace"
-        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "DeepResearch", "LlamaAgent", "ComfyUI", "DeepSeekHarness", "ZCode")
+        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
@@ -2007,393 +1846,6 @@ function Select-WorkspaceForSession {
         return @("stop", "")
     }
     return @("leave", "")
-}
-
-function Test-OdysseusReady {
-    try {
-        $r = Invoke-WebRequest -Uri $OdysseusBaseUrl -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        return ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500)
-    }
-    catch {
-        return $false
-    }
-}
-
-function Stop-LegacyLocalDeepResearch {
-    $connections = Get-NetTCPConnection -LocalPort $LegacyDeepResearchPort -State Listen -ErrorAction SilentlyContinue
-    $processIds = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })
-
-    foreach ($ldrPid in $processIds) {
-        $procInfo = Get-Process -Id $ldrPid -ErrorAction SilentlyContinue
-        if (-not $procInfo) { continue }
-
-        $commandLine = ""
-        try {
-            $cimProc = Get-CimInstance Win32_Process -Filter "ProcessId=$ldrPid" -ErrorAction SilentlyContinue
-            if ($cimProc) { $commandLine = [string]$cimProc.CommandLine }
-        }
-        catch {}
-
-        $looksLikeLdr = ($procInfo.ProcessName -match "^(ldr-web|python|pythonw)$" -and $commandLine -match "local_deep_research|ldr-web")
-        if ($looksLikeLdr) {
-            Write-Host "Stopping legacy Local Deep Research on port $LegacyDeepResearchPort..." -ForegroundColor Yellow
-            Stop-Process -Id $ldrPid -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-function Stop-OdysseusOnPort {
-    $connections = Get-NetTCPConnection -LocalPort $OdysseusPort -State Listen -ErrorAction SilentlyContinue
-    $processIds = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })
-
-    foreach ($odyPid in $processIds) {
-        $procInfo = Get-Process -Id $odyPid -ErrorAction SilentlyContinue
-        if (-not $procInfo) { continue }
-
-        $commandLine = ""
-        try {
-            $cimProc = Get-CimInstance Win32_Process -Filter "ProcessId=$odyPid" -ErrorAction SilentlyContinue
-            if ($cimProc) { $commandLine = [string]$cimProc.CommandLine }
-        }
-        catch {}
-
-        $looksLikeOdysseus = ($procInfo.ProcessName -match "^(python|pythonw|powershell|pwsh)$" -and $commandLine -match "odysseus|uvicorn app:app")
-        if ($looksLikeOdysseus) {
-            Write-Host "Restarting Odysseus to refresh local settings..." -ForegroundColor Yellow
-            Stop-Process -Id $odyPid -Force -ErrorAction SilentlyContinue
-        }
-        else {
-            Write-Host "Port $OdysseusPort is already used by PID $odyPid ($($procInfo.ProcessName)); not stopping it." -ForegroundColor Yellow
-            return $false
-        }
-    }
-
-    for ($i = 0; $i -lt 20; $i++) {
-        Start-Sleep -Milliseconds 500
-        if (-not (Get-NetTCPConnection -LocalPort $OdysseusPort -State Listen -ErrorAction SilentlyContinue)) {
-            return $true
-        }
-    }
-
-    Write-Host "ERROR: Port $OdysseusPort is still in use. Odysseus was not restarted." -ForegroundColor Red
-    return $false
-}
-
-function Ensure-OdysseusInstalled {
-    if (Test-Path (Join-Path $OdysseusRoot "app.py")) {
-        return $true
-    }
-
-    Write-Host "Odysseus was not found. Cloning native Windows install..." -ForegroundColor Cyan
-    $parent = Split-Path $OdysseusRoot -Parent
-    if (-not (Test-Path $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-
-    git clone --branch main --depth 1 https://github.com/pewdiepie-archdaemon/odysseus $OdysseusRoot
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $OdysseusRoot "app.py"))) {
-        Write-Host "ERROR: Could not clone Odysseus." -ForegroundColor Red
-        return $false
-    }
-
-    return $true
-}
-
-function Set-OdysseusLocalDefaults {
-    $dataDir = Join-Path $OdysseusRoot "data"
-    if (-not (Test-Path $dataDir)) {
-        New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
-    }
-
-    $settingsPath = Join-Path $dataDir "settings.json"
-    $settings = [ordered]@{}
-    if (Test-Path $settingsPath) {
-        try {
-            $loaded = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($prop in $loaded.PSObject.Properties) {
-                $settings[$prop.Name] = $prop.Value
-            }
-        }
-        catch {
-            Write-Host "WARNING: Could not parse Odysseus settings.json; rewriting local-safe defaults." -ForegroundColor Yellow
-        }
-    }
-
-    $settings["search_provider"] = "duckduckgo"
-    $settings["search_fallback_chain"] = @("duckduckgo")
-    $settings["search_url"] = ""
-    $settings["search_result_count"] = $script:ResearchSearchResultCount
-    $settings["research_search_provider"] = "duckduckgo"
-    $settings["default_model"] = $modelShort
-    $settings["research_model"] = $modelShort
-    $settings["research_max_tokens"] = $script:ResearchMaxTokens
-    $settings["research_extraction_max_tokens"] = $script:ResearchExtractionMaxTokens
-    $settings["research_extraction_timeout_seconds"] = $script:ResearchExtractionTimeoutSeconds
-    $settings["research_planning_timeout_seconds"] = $script:ResearchPlanningTimeoutSeconds
-    $settings["research_query_timeout_seconds"] = $script:ResearchQueryTimeoutSeconds
-    $settings["research_extraction_concurrency"] = $script:ResearchExtractionConcurrency
-    $settings["research_run_timeout_seconds"] = $script:ResearchRunTimeoutSeconds
-
-    Write-Utf8NoBom -Path $settingsPath -Value ($settings | ConvertTo-Json -Depth 8)
-
-    $featuresPath = Join-Path $dataDir "features.json"
-    $features = [ordered]@{}
-    if (Test-Path $featuresPath) {
-        try {
-            $loadedFeatures = Get-Content -LiteralPath $featuresPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($prop in $loadedFeatures.PSObject.Properties) {
-                $features[$prop.Name] = $prop.Value
-            }
-        }
-        catch {}
-    }
-    $features["web_search"] = $true
-    $features["web_fetch"] = $true
-    $features["deep_research"] = $true
-    $features["rag"] = $false
-    Write-Utf8NoBom -Path $featuresPath -Value ($features | ConvertTo-Json -Depth 8)
-}
-
-function Set-OdysseusSelectedModelDefaults {
-    param(
-        [string]$EndpointId,
-        [string]$ModelName
-    )
-
-    $dataDir = Join-Path $OdysseusRoot "data"
-    $settingsPath = Join-Path $dataDir "settings.json"
-    $settings = [ordered]@{}
-    if (Test-Path $settingsPath) {
-        try {
-            $loaded = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            foreach ($prop in $loaded.PSObject.Properties) {
-                $settings[$prop.Name] = $prop.Value
-            }
-        }
-        catch {}
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($EndpointId)) {
-        $settings["default_endpoint_id"] = $EndpointId
-        $settings["research_endpoint_id"] = $EndpointId
-    }
-    $settings["default_model"] = $ModelName
-    $settings["research_model"] = $ModelName
-    $settings["search_provider"] = "duckduckgo"
-    $settings["search_fallback_chain"] = @("duckduckgo")
-    $settings["search_url"] = ""
-    $settings["search_result_count"] = $script:ResearchSearchResultCount
-    $settings["research_search_provider"] = "duckduckgo"
-    $settings["research_max_tokens"] = $script:ResearchMaxTokens
-    $settings["research_extraction_max_tokens"] = $script:ResearchExtractionMaxTokens
-    $settings["research_extraction_timeout_seconds"] = $script:ResearchExtractionTimeoutSeconds
-    $settings["research_planning_timeout_seconds"] = $script:ResearchPlanningTimeoutSeconds
-    $settings["research_query_timeout_seconds"] = $script:ResearchQueryTimeoutSeconds
-    $settings["research_extraction_concurrency"] = $script:ResearchExtractionConcurrency
-    $settings["research_run_timeout_seconds"] = $script:ResearchRunTimeoutSeconds
-
-    Write-Utf8NoBom -Path $settingsPath -Value ($settings | ConvertTo-Json -Depth 8)
-}
-
-function Clear-OdysseusLlamaEndpoint {
-    try {
-        $endpoints = @(Invoke-RestMethod -Uri "$OdysseusBaseUrl/api/model-endpoints" -TimeoutSec 10 -ErrorAction Stop)
-    }
-    catch {
-        return
-    }
-
-    foreach ($ep in $endpoints) {
-        $base = [string]$ep.base_url
-        $name = [string]$ep.name
-        if (($base.TrimEnd("/") -in @("$ServerBaseUrl/v1", "$GatewayBaseUrl/v1")) -or ($name -eq "llama.cpp 8080")) {
-            try {
-                Write-Host "Refreshing Odysseus llama.cpp endpoint ($($ep.id))..." -ForegroundColor Yellow
-                [void](Invoke-OdysseusDelete -Path "/api/model-endpoints/$($ep.id)")
-            }
-            catch {
-                Write-Host "WARNING: Could not delete old Odysseus endpoint $($ep.id): $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-        }
-    }
-}
-
-function Ensure-OdysseusChatSession {
-    $odyModelName = ""
-    for ($i = 0; $i -lt 10; $i++) {
-        $odyModelName = Get-ExistingServerModel
-        if (-not [string]::IsNullOrWhiteSpace($odyModelName)) {
-            break
-        }
-        Start-Sleep -Seconds 1
-    }
-    if ([string]::IsNullOrWhiteSpace($odyModelName)) {
-        $odyModelName = $modelShort
-    }
-
-    $endpointId = ""
-    try {
-        Clear-OdysseusLlamaEndpoint
-        $endpoint = Invoke-OdysseusForm -Path "/api/model-endpoints" -Fields @{
-            name = "llama.cpp 8080"
-            base_url = "$ClientBaseUrl/v1"
-            api_key = ""
-            skip_probe = "false"
-            require_models = "false"
-            model_type = "llm"
-            endpoint_kind = "openai"
-            supports_tools = "false"
-            pinned_models = $odyModelName
-            shared = "true"
-        }
-        if ($endpoint.id) {
-            $endpointId = [string]$endpoint.id
-        }
-        Set-OdysseusSelectedModelDefaults -EndpointId $endpointId -ModelName $odyModelName
-    }
-    catch {
-        Write-Host "WARNING: Could not register Odysseus model endpoint: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    try {
-        $sessionFields = @{
-            name = "llama.cpp $odyModelName"
-            endpoint_url = "$ClientBaseUrl/v1/chat/completions"
-            model = $odyModelName
-            rag = "false"
-            skip_validation = "true"
-            api_key = ""
-        }
-        if (-not [string]::IsNullOrWhiteSpace($endpointId)) {
-            $sessionFields["endpoint_id"] = $endpointId
-        }
-
-        $session = Invoke-OdysseusForm -Path "/api/session" -Fields $sessionFields
-        if ($session.id) {
-            Write-Host "Odysseus chat session: $($session.id)" -ForegroundColor Green
-            return "$OdysseusBaseUrl/#$($session.id)"
-        }
-    }
-    catch {
-        Write-Host "WARNING: Could not create Odysseus chat session: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    return $OdysseusBaseUrl
-}
-
-function Open-DeepResearch {
-    Stop-LegacyLocalDeepResearch
-
-    if (-not (Ensure-OdysseusInstalled)) {
-        return
-    }
-
-    Set-OdysseusLocalDefaults
-
-    if (Get-NetTCPConnection -LocalPort $OdysseusPort -State Listen -ErrorAction SilentlyContinue) {
-        if (Test-OdysseusReady) {
-            Write-Host "Odysseus is already running at $OdysseusBaseUrl" -ForegroundColor Green
-        }
-        elseif (-not (Stop-OdysseusOnPort)) {
-            return
-        }
-    }
-
-    if (-not (Test-OdysseusReady)) {
-        Write-Host "Starting Odysseus native UI..." -ForegroundColor Cyan
-        $odysseusCommand = @"
-Set-Location -LiteralPath '$OdysseusRoot'
-`$env:AUTH_ENABLED='false'
-`$env:LOCALHOST_BYPASS='true'
-`$env:OPENAI_API_KEY=''
-`$env:ODYSSEUS_DISABLE_MCP='true'
-`$env:ODYSSEUS_DISABLE_VECTOR_FEATURES='1'
-`$env:ODYSSEUS_LOCAL_MODEL_DISCOVERY_ONLY='1'
-`$env:ODYSSEUS_DISABLE_MODEL_KEEPALIVE='1'
-`$env:ODYSSEUS_SKIP_ADMIN_PROMPT='1'
-`$env:ODYSSEUS_INPROCESS_POLLERS='0'
-`$env:LLM_HOST='127.0.0.1'
-`$env:LLM_HOSTS='127.0.0.1,localhost'
-`$env:RESEARCH_LLM_ENDPOINT='$ClientBaseUrl/v1/chat/completions'
-`$env:SEARXNG_INSTANCE='http://127.0.0.1:8888'
-`$venvPy = Join-Path (Get-Location) 'venv\Scripts\python.exe'
-if (-not (Test-Path `$venvPy)) {
-    py -3.11 -m venv venv
-    if (`$LASTEXITCODE -ne 0) { py -3.12 -m venv venv }
-}
-& `$venvPy -m pip install --upgrade pip --quiet
-& `$venvPy -m pip install -r requirements.txt
-& `$venvPy setup.py
-`$dataDir = Join-Path (Get-Location) 'data'
-if (-not (Test-Path `$dataDir)) { New-Item -ItemType Directory -Path `$dataDir -Force | Out-Null }
-`$settingsPath = Join-Path `$dataDir 'settings.json'
-`$settings = [ordered]@{}
-if (Test-Path `$settingsPath) {
-    try {
-        `$loaded = Get-Content -LiteralPath `$settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach (`$prop in `$loaded.PSObject.Properties) { `$settings[`$prop.Name] = `$prop.Value }
-    }
-    catch {}
-}
-`$settings['search_provider'] = 'duckduckgo'
-`$settings['search_fallback_chain'] = @('duckduckgo')
-`$settings['search_url'] = ''
-`$settings['search_result_count'] = $($script:ResearchSearchResultCount)
-`$settings['research_search_provider'] = 'duckduckgo'
-`$settings['default_model'] = '$modelShort'
-`$settings['research_model'] = '$modelShort'
-`$settings['research_max_tokens'] = $($script:ResearchMaxTokens)
-`$settings['research_extraction_max_tokens'] = $($script:ResearchExtractionMaxTokens)
-`$settings['research_extraction_timeout_seconds'] = $($script:ResearchExtractionTimeoutSeconds)
-`$settings['research_planning_timeout_seconds'] = $($script:ResearchPlanningTimeoutSeconds)
-`$settings['research_query_timeout_seconds'] = $($script:ResearchQueryTimeoutSeconds)
-`$settings['research_extraction_concurrency'] = $($script:ResearchExtractionConcurrency)
-`$settings['research_run_timeout_seconds'] = $($script:ResearchRunTimeoutSeconds)
-`$utf8NoBom = New-Object System.Text.UTF8Encoding(`$false)
-[System.IO.File]::WriteAllText(`$settingsPath, (`$settings | ConvertTo-Json -Depth 8), `$utf8NoBom)
-`$featuresPath = Join-Path `$dataDir 'features.json'
-`$features = [ordered]@{}
-if (Test-Path `$featuresPath) {
-    try {
-        `$loadedFeatures = Get-Content -LiteralPath `$featuresPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach (`$prop in `$loadedFeatures.PSObject.Properties) { `$features[`$prop.Name] = `$prop.Value }
-    }
-    catch {}
-}
-`$features['web_search'] = `$true
-`$features['web_fetch'] = `$true
-`$features['deep_research'] = `$true
-`$features['rag'] = `$false
-[System.IO.File]::WriteAllText(`$featuresPath, (`$features | ConvertTo-Json -Depth 8), `$utf8NoBom)
-& `$venvPy -m uvicorn app:app --host 127.0.0.1 --port $OdysseusPort
-"@
-        Start-Process -FilePath "powershell.exe" -ArgumentList @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-Command", $odysseusCommand
-        ) -WindowStyle Normal
-
-        Write-Host "Waiting for Odysseus..." -NoNewline -ForegroundColor Yellow
-        for ($i = 0; $i -lt 150; $i++) {
-            Start-Sleep -Seconds 2
-            if (Test-OdysseusReady) {
-                Write-Host " Done!" -ForegroundColor Green
-                break
-            }
-            if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
-        }
-        Write-Host ""
-    }
-
-    $openUrl = Ensure-OdysseusChatSession
-
-    if ($SkipOpenBrowser) {
-        Write-Host "SKIP: Browser would open $openUrl" -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "Opening Odysseus..." -ForegroundColor Cyan
-        Start-Process $openUrl
-    }
 }
 
 Show-LlamaDockBanner
@@ -2559,17 +2011,14 @@ if ($PresetMode -eq "Prompt") {
     Write-Host " [1] Manual - choose every setting"
     Write-Host " [2] Code - Cline defaults"
     Write-Host " [3] Code - OpenCode"
-    Write-Host " [4] Code - OpenCode + Harness"
-    Write-Host " [5] Code - OpenClaude"
-    Write-Host " [6] Agent Research - llama-agent with iterative web evidence"
-    Write-Host " [7] Deep Research Light - Odysseus low load"
-    Write-Host " [8] Deep Research Standard - Odysseus balanced"
-    Write-Host " [9] Deep Research Heavy - Odysseus broader search"
-    Write-Host " [10] Chat - Open WebUI with web search and compaction"
+    Write-Host " [4] Code - OpenClaude"
+    Write-Host " [5] Agent Research - llama-agent with iterative web evidence"
+    Write-Host " [6] Chat - Open WebUI with web search and compaction"
+    Write-Host " [7] DeepSeek Harness - agent harness framework (standalone, no model needed)"
     Write-Host ""
 
     do {
-        $presetInput = Read-Host "Select preset (1-10), or press Enter for Manual"
+        $presetInput = Read-Host "Select preset (1-7), or press Enter for Manual"
         if ([string]::IsNullOrWhiteSpace($presetInput)) {
             $presetSelection = 1
             $presetValid = $true
@@ -2578,13 +2027,28 @@ if ($PresetMode -eq "Prompt") {
             $presetSelection = 0
             $presetValid = [int]::TryParse($presetInput, [ref]$presetSelection)
         }
-    } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 10)
+    } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 7)
 
-    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "OpenCodeHarness", "OpenClaudeCoding", "LlamaAgentResearch", "DeepResearchLight", "DeepResearchStandard", "DeepResearchHeavy", "WebUIChat")
+    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "OpenClaudeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")
     $PresetMode = $presetValues[$presetSelection - 1]
 }
 
-$isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding", "OpenCodeHarness", "DeepResearchStandard")
+# DeepSeek Harness is standalone (npx, port 5173) and does not need a running
+# llama-server. Launch it directly and exit, skipping all model/context prompts.
+if ($PresetMode -eq "DeepSeekHarness") {
+    if ($DryRun) {
+        Write-Host ""
+        Write-Host "DRY RUN: DeepSeek Harness would launch standalone (npx @deepseek-ai/dsh@latest web, port 5173). No llama-server needed." -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Host ""
+    Write-Host "Launching DeepSeek Harness (standalone, no model required)..." -ForegroundColor Cyan
+    Open-DeepSeekHarnessClient | Out-Null
+    Write-Host "DeepSeek Harness started on http://127.0.0.1:5173" -ForegroundColor Green
+    exit 0
+}
+
+$isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding")
 if ($isQuickLaunch) {
     if ($KCacheIndex -eq 0) { $KCacheIndex = 1 }
     if ($VCacheIndex -eq 0) {
@@ -2612,15 +2076,6 @@ elseif ($PresetMode -eq "OpenCodeCoding") {
     if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
 }
-elseif ($PresetMode -eq "OpenCodeHarness") {
-    if ($ClientMode -eq "Prompt") { $ClientMode = "OpenCode" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
-    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
-    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
-    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
-    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
-    if ($McpMode -eq "Prompt") { $McpMode = "None" }
-}
 elseif ($PresetMode -eq "OpenClaudeCoding") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "OpenClaude" }
     if ($ContextIndex -eq 0) { $ContextIndex = 3 }
@@ -2629,26 +2084,6 @@ elseif ($PresetMode -eq "OpenClaudeCoding") {
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
     if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
-}
-elseif ($PresetMode -like "DeepResearch*") {
-    if ($ClientMode -eq "Prompt") { $ClientMode = "DeepResearch" }
-    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
-    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
-    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
-    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
-    if ($McpMode -eq "Prompt") { $McpMode = "None" }
-    if ($PresetMode -eq "DeepResearchLight") {
-        if ($ContextIndex -eq 0) { $ContextIndex = 2 }
-        if ($ResearchMode -eq "Auto") { $ResearchMode = "Light" }
-    }
-    elseif ($PresetMode -eq "DeepResearchHeavy") {
-        if ($ContextIndex -eq 0) { $ContextIndex = 4 }
-        if ($ResearchMode -eq "Auto") { $ResearchMode = "Heavy" }
-    }
-    else {
-        if ($ContextIndex -eq 0) { $ContextIndex = 3 }
-        if ($ResearchMode -eq "Auto") { $ResearchMode = "Standard" }
-    }
 }
 elseif ($PresetMode -eq "LlamaAgentResearch") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "LlamaAgent" }
@@ -2668,7 +2103,6 @@ elseif ($PresetMode -eq "WebUIChat") {
     if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
 }
-Set-DeepResearchModeDefaults -Mode $ResearchMode
 
 if (-not $isQuickLaunch) {
     Write-Host ""
@@ -2697,15 +2131,12 @@ if (-not $isQuickLaunch) {
 
 Write-Host ""
 if ($isQuickLaunch) {
-    $launchLabel = if ($PresetMode -eq "WebUIChat") { "Chat + Web -> Computer" } elseif ($PresetMode -eq "OpenCodeCoding") { "Coding -> OpenCode" } elseif ($PresetMode -eq "OpenCodeHarness") { "Coding -> OpenCode + Harness" } else { "Deep Research -> Odysseus" }
+    $launchLabel = if ($PresetMode -eq "WebUIChat") { "Chat + Web -> Computer" } elseif ($PresetMode -eq "OpenCodeCoding") { "Coding -> OpenCode" } else { "Manual" }
 }
 else {
     Write-Host "Selected: $($selected.Name)" -ForegroundColor Green
     Write-Host "Engine: $requiredEngine" -ForegroundColor Green
     Write-Host "Preset: $PresetMode" -ForegroundColor Green
-}
-if (($ClientMode -eq "DeepResearch" -or $PresetMode -like "DeepResearch*") -and -not $isQuickLaunch) {
-    Write-Host "Deep Research mode: $ResearchMode (results=$($script:ResearchSearchResultCount), extraction concurrency=$($script:ResearchExtractionConcurrency))" -ForegroundColor Green
 }
 Write-Host ""
 
@@ -2961,15 +2392,13 @@ if ($ClientMode -eq "Prompt") {
     Write-Host " [2] OpenCode - terminal coding agent"
     Write-Host " [3] OpenClaude - terminal coding agent"
     Write-Host " [4] Computer - chat, web search, and compaction"
-    Write-Host " [5] Deep Research - Odysseus research UI"
-    Write-Host " [6] Llama Agent - terminal agent with deep web evidence"
-    Write-Host " [7] ComfyUI - MiniMax H3 video and audio generation"
-    Write-Host " [8] DeepSeek Harness - agent harness framework (auto-update)"
-    Write-Host " [9] ZCode - Z.ai coding agent (desktop)"
+    Write-Host " [5] Llama Agent - terminal agent with deep web evidence"
+    Write-Host " [6] ComfyUI - MiniMax H3 video and audio generation"
+    Write-Host " [7] DeepSeek Harness - agent harness framework (auto-update)"
     Write-Host ""
 
     do {
-        $clientInput = Read-Host "Select workspace (1-9), or press Enter for Cline"
+        $clientInput = Read-Host "Select workspace (1-7), or press Enter for Cline"
         if ([string]::IsNullOrWhiteSpace($clientInput)) {
             $clientSelection = 1
             $clientValid = $true
@@ -2978,48 +2407,19 @@ if ($ClientMode -eq "Prompt") {
             $clientSelection = 0
             $clientValid = [int]::TryParse($clientInput, [ref]$clientSelection)
         }
-    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 9)
+    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 7)
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
     elseif ($clientSelection -eq 3) { $ClientMode = "OpenClaude" }
     elseif ($clientSelection -eq 4) { $ClientMode = "WebUI" }
-    elseif ($clientSelection -eq 5) { $ClientMode = "DeepResearch" }
-    elseif ($clientSelection -eq 6) { $ClientMode = "LlamaAgent" }
-    elseif ($clientSelection -eq 7) { $ClientMode = "ComfyUI" }
-    elseif ($clientSelection -eq 9) { $ClientMode = "ZCode" }
+    elseif ($clientSelection -eq 5) { $ClientMode = "LlamaAgent" }
+    elseif ($clientSelection -eq 6) { $ClientMode = "ComfyUI" }
     else { $ClientMode = "DeepSeekHarness" }
 }
 
 if (-not $isQuickLaunch) {
     Write-Host "Workspace: $ClientMode" -ForegroundColor Green
-    Write-Host ""
-}
-
-if ($ClientMode -eq "DeepResearch" -and $ResearchMode -eq "Auto") {
-    Write-Host "Deep Research mode:" -ForegroundColor Green
-    Write-Host " [1] Light - lower local LLM load"
-    Write-Host " [2] Standard - balanced"
-    Write-Host " [3] Heavy - more results and extraction concurrency"
-    Write-Host ""
-
-    do {
-        $researchInput = Read-Host "Select Deep Research mode (1-3), or press Enter for Standard"
-        if ([string]::IsNullOrWhiteSpace($researchInput)) {
-            $researchSelection = 2
-            $researchValid = $true
-        }
-        else {
-            $researchSelection = 0
-            $researchValid = [int]::TryParse($researchInput, [ref]$researchSelection)
-        }
-    } while (-not $researchValid -or $researchSelection -lt 1 -or $researchSelection -gt 3)
-
-    if ($researchSelection -eq 1) { $ResearchMode = "Light" }
-    elseif ($researchSelection -eq 3) { $ResearchMode = "Heavy" }
-    else { $ResearchMode = "Standard" }
-    Set-DeepResearchModeDefaults -Mode $ResearchMode
-    Write-Host "Deep Research mode: $ResearchMode (results=$($script:ResearchSearchResultCount), extraction concurrency=$($script:ResearchExtractionConcurrency))" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -3259,7 +2659,7 @@ if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -no
 }
 
 $effectiveChatTemplateKwargs = $ChatTemplateKwargs
-if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and ($requiredEngine -eq "TurboTan" -or $ClientMode -eq "DeepResearch" -or $ClientMode -eq "LlamaAgent")) {
+if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and ($requiredEngine -eq "TurboTan" -or $ClientMode -eq "LlamaAgent")) {
     $effectiveChatTemplateKwargs = '{"enable_thinking":false}'
 }
 
@@ -3561,21 +2961,12 @@ if ($DryRun) {
     elseif ($ClientMode -eq "OpenCode") {
         Write-Host "DRY RUN: OpenCode would use model:" -ForegroundColor Yellow
         Write-Host "llamadock/$modelShort"
-        if ($PresetMode -eq "OpenCodeHarness") {
-            Write-Host "DRY RUN: OpenCode Harness mode - will prompt for coding task and run external harness" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "DRY RUN: OpenCode would open" -ForegroundColor Yellow
-        }
+        Write-Host "DRY RUN: OpenCode would open" -ForegroundColor Yellow
     }
     elseif ($ClientMode -eq "OpenClaude") {
         Write-Host "DRY RUN: OpenClaude would use model:" -ForegroundColor Yellow
         Write-Host $modelShort
         Write-Host "DRY RUN: OpenClaude would open with OPENAI_BASE_URL=$ClientBaseUrl/v1" -ForegroundColor Yellow
-    }
-    elseif ($ClientMode -eq "DeepResearch") {
-        Write-Host "DRY RUN: Odysseus would open:" -ForegroundColor Yellow
-        Write-Host $OdysseusBaseUrl
     }
     elseif ($ClientMode -eq "LlamaAgent") {
         Write-Host "DRY RUN: llama-agent Deep Research would open with pre-collected web evidence:" -ForegroundColor Yellow
@@ -3638,16 +3029,12 @@ if (-not $DryRun) {
                 Write-Host ""
             }
             elseif ($ClientMode -eq "OpenCode") {
-                $harnessFlag = ($PresetMode -eq "OpenCodeHarness")
-                Open-OpenCodeClient -ModelName $existingModel -Harness:$harnessFlag
+                Open-OpenCodeClient -ModelName $existingModel
                 Write-Host ""
             }
             elseif ($ClientMode -eq "OpenClaude") {
                 Open-OpenClaudeClient -ModelName $existingModel
                 Write-Host ""
-            }
-            elseif ($ClientMode -eq "DeepResearch") {
-                Open-DeepResearch
             }
             elseif ($ClientMode -eq "LlamaAgent") {
                 Open-LlamaAgentClient -ModelPath $selected.FullName

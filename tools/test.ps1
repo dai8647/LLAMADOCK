@@ -20,7 +20,6 @@ $clientShell = Join-Path $root "tools\llamadock-client-shell.ps1"
 $gateway = Join-Path $root "tools\llamadock-proxy.mjs"
 $supervisor = Join-Path $root "tools\llamadock-server-supervisor.ps1"
 $profiles = Join-Path $root "config\profiles.json"
-$harness = Join-Path $root "tools\llamadock-opencode-harness.ps1"
 
 & (Join-Path $PSScriptRoot "check-style.ps1") -Path $launcher
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -36,13 +35,10 @@ $validPresets = @(
     "Manual",
     "ClineCoding",
     "OpenCodeCoding",
-    "OpenCodeHarness",
     "OpenClaudeCoding",
     "LlamaAgentResearch",
-    "DeepResearchLight",
-    "DeepResearchStandard",
-    "DeepResearchHeavy",
-    "WebUIChat"
+    "WebUIChat",
+    "DeepSeekHarness"
 )
 foreach ($note in $modelNotes) {
     if ($note.recommended_preset -and $note.recommended_preset -notin $validPresets) {
@@ -123,7 +119,7 @@ if ($secretHits.Count -gt 0) {
 }
 Write-Host "Secret scan OK"
 
-foreach ($path in @($openWebUIBootstrap, $openWebUIStart, $computerStart, $computerConfigure, $computerConfigurePy, $runtimeInventory, $benchScript, $utf8Helper, $utf8Smoke, $utf8PowerShellSmoke, $clientShell, $gateway, $supervisor, $profiles, $harness)) {
+foreach ($path in @($openWebUIBootstrap, $openWebUIStart, $computerStart, $computerConfigure, $computerConfigurePy, $runtimeInventory, $benchScript, $utf8Helper, $utf8Smoke, $utf8PowerShellSmoke, $clientShell, $gateway, $supervisor, $profiles)) {
     if (-not (Test-Path -LiteralPath $path)) {
         Write-Host "Open WebUI launcher file missing: $path" -ForegroundColor Red
         exit 1
@@ -221,29 +217,6 @@ foreach ($check in @("WindowStyle Normal", "control surface", "finally", "AutoRe
 }
 Write-Host "LlamaDock visible-console checks OK"
 
-# --- Agent harness checks ---
-$harnessSource = Get-Content -LiteralPath $harness -Raw -Encoding UTF8
-try {
-    [scriptblock]::Create($harnessSource) | Out-Null
-}
-catch {
-    Write-Host "Agent harness syntax check failed: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Agent harness syntax OK"
-foreach ($check in @("SelfTest", "DryRun", "MaxMinutes", "MaxResumes", "StallSeconds", "Compute-Fingerprint", "Test-GatewayReady", "Save-State", "Record-Event", "loop", "fingerprint", "mcp-data\agent-harness", "--dir", "Parse-OpenCodeEvent", "continuation", "PSCommandPath", "System.Diagnostics.Process", "BeginOutputReadLine", "OutputDataReceived", "ErrorDataReceived", "ConcurrentQueue", "Unregister-Event", "TryDequeue", "sess-realtime-001")) {
-    if ($harnessSource -notmatch [regex]::Escape($check)) {
-        Write-Host "Agent harness check failed: $check" -ForegroundColor Red
-        exit 1
-    }
-}
-# Verify Root default does NOT use PSScriptRoot in param block
-if ($harnessSource -match '\$Root\s*=\s*\(Split-Path\s+-Parent\s+\$PSScriptRoot\)') {
-    Write-Host "Agent harness check failed: Root default must not use PSScriptRoot" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Agent harness design checks OK"
-
 # --- Gateway status endpoint checks ---
 foreach ($check in @("/llamadock/status", "GATEWAY_STARTED_AT", "activeRequestCount", "computeFingerprint", "trackFingerprint", "possibleRetryLoops", "recordResult", "checkUpstreamHealth", "FINGERPRINT_MAX_ENTRIES", "upstreamOk", "possible_retry_loop")) {
     if ($gatewaySource -notmatch [regex]::Escape($check)) {
@@ -275,28 +248,14 @@ if ($supervisorSource -match '\$script:server\b' -or $supervisorSource -match '\
 }
 Write-Host "Supervisor circuit breaker checks OK"
 
-# --- Client shell harness switch check ---
-foreach ($check in @("-Harness", "harnessPath", "llamadock-opencode-harness.ps1", "-Prompt", "harnessArgs", "Root = Split-Path")) {
-    if ($clientShellSource -notmatch [regex]::Escape($check)) {
-        Write-Host "Client shell harness switch check failed: $check" -ForegroundColor Red
+# --- Client shell harness removal check ---
+foreach ($gone in @("-Harness", "harnessPath", "llamadock-opencode-harness.ps1", "harnessArgs")) {
+    if ($clientShellSource -match [regex]::Escape($gone)) {
+        Write-Host "Client shell still references the removed OpenCode harness: $gone" -ForegroundColor Red
         exit 1
     }
 }
-# Verify Root is NOT set to PSScriptRoot directly (must use Split-Path -Parent)
-if ($clientShellSource -match 'Root\s*=\s*\$PSScriptRoot\b') {
-    Write-Host "Client shell harness switch check failed: Root must use Split-Path -Parent, not bare PSScriptRoot" -ForegroundColor Red
-    exit 1
-}
-# Verify client-shell Harness mode uses Read-Host when Prompt is blank
-if ($clientShellSource -notmatch 'Read-Host') {
-    Write-Host "Client shell harness switch check failed: missing Read-Host fallback for blank prompt" -ForegroundColor Red
-    exit 1
-}
-if ($clientShellSource -notmatch 'throw.*Prompt is required for harness mode') {
-    Write-Host "Client shell harness switch check failed: missing throw when Read-Host returns blank" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Client shell harness switch checks OK"
+Write-Host "Client shell harness references removed OK"
 $launcherSource = Get-Content -LiteralPath $launcher -Raw -Encoding UTF8
 foreach ($check in @("LlamaDock session", "Change workspace, keep this model loaded", "Change model - stop this server and return to selector", "Leave server running and exit", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
@@ -305,7 +264,7 @@ foreach ($check in @("LlamaDock session", "Change workspace, keep this model loa
     }
 }
 Write-Host "Managed session checks OK"
-foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline defaults", "OpenCodeHarness", "Code - OpenCode + Harness", "OpenClaudeCoding", "Code - OpenClaude", "Select preset (1-10)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
+foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline defaults", "OpenCodeCoding", "Code - OpenCode", "OpenClaudeCoding", "Code - OpenClaude", "Select preset (1-7)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Launcher check failed: $check" -ForegroundColor Red
         exit 1
@@ -373,12 +332,19 @@ if (-not $SkipDryRun) {
     $presets = $validPresets
 
     foreach ($preset in $presets) {
+        if ($preset -eq "DeepSeekHarness") {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher -DryRun -PresetMode $preset -ModelIndex 1 -ExistingServerMode Quit 2>&1
+            if ($LASTEXITCODE -ne 0 -or ($out -join "`n") -notmatch "DeepSeek Harness would launch standalone") {
+                Write-Host "Dry run failed: $preset" -ForegroundColor Red
+                $out | Select-Object -Last 40
+                exit 1
+            }
+            Write-Host "Dry run OK: $preset"
+            continue
+        }
         $modelIndex = Get-SweepModelIndex
         $kIndex = 1
         $vIndex = 6
-        if ($preset -eq "DeepResearchHeavy") {
-            $vIndex = 9
-        }
 
         $extra = @()
         if ($preset -eq "Manual") {
@@ -409,11 +375,11 @@ if (-not $SkipDryRun) {
             Write-Host "Advanced dry run did not show hardware/runtime diagnostics: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -in @("WebUIChat", "OpenCodeCoding", "OpenCodeHarness", "DeepResearchStandard") -and $joined -notmatch "READY TO LAUNCH") {
+        if ($preset -in @("WebUIChat", "OpenCodeCoding") -and $joined -notmatch "READY TO LAUNCH") {
             Write-Host "Quick launch did not show the compact launch card: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -notin @("WebUIChat", "OpenCodeCoding", "OpenCodeHarness", "DeepResearchStandard") -and $joined -notmatch "GPU offload estimate:") {
+        if ($preset -notin @("WebUIChat", "OpenCodeCoding") -and $joined -notmatch "GPU offload estimate:") {
             Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
             exit 1
         }
@@ -441,11 +407,11 @@ if (-not $SkipDryRun) {
             Write-Host "WebUI preset did not identify native Computer: $preset" -ForegroundColor Red
             exit 1
         }
-        if (($preset -like "DeepResearch*" -or $preset -eq "LlamaAgentResearch") -and $joined -notmatch 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS=\{"enable_thinking":false\}') {
-            Write-Host "Deep Research preset did not disable thinking: $preset" -ForegroundColor Red
+        if ($preset -eq "LlamaAgentResearch" -and $joined -notmatch 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS=\{"enable_thinking":false\}') {
+            Write-Host "LlamaAgent preset did not disable thinking: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -in @("OpenCodeCoding", "OpenCodeHarness") -and $joined -notmatch "llamadock/") {
+        if ($preset -eq "OpenCodeCoding" -and $joined -notmatch "llamadock/") {
             Write-Host "OpenCode preset did not pass the selected model." -ForegroundColor Red
             exit 1
         }
@@ -490,26 +456,5 @@ if ($RunUtf8Smoke) {
         exit 1
     }
 }
-
-# --- Agent harness SelfTest ---
-Write-Host "Running agent harness self-test (no model)..." -ForegroundColor Cyan
-$harnessSelfTest = & powershell -NoProfile -ExecutionPolicy Bypass -File $harness -Workspace $root -ModelName "test-model" -Root $root -SelfTest 2>&1
-$harnessSelfTest
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Agent harness self-test failed." -ForegroundColor Red
-    exit 1
-}
-Write-Host "Agent harness self-test OK"
-
-# Verify Root default resolves from PSCommandPath (no -Root passed)
-Write-Host "Running agent harness self-test without -Root (PSCommandPath fallback)..." -ForegroundColor Cyan
-$harnessSelfTestNoRoot = & powershell -NoProfile -ExecutionPolicy Bypass -File $harness -Workspace $root -ModelName "test-model" -SelfTest 2>&1
-$harnessSelfTestNoRoot
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Agent harness self-test (no -Root) failed." -ForegroundColor Red
-    exit 1
-}
-Write-Host "Agent harness self-test (no -Root) OK"
-Write-Host "Agent harness self-test OK"
 
 Write-Host "All launcher tests OK"
