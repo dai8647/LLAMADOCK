@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
@@ -132,7 +133,12 @@ function windowsPlan(spec, { model, workspace, prompt }) {
       return { exe: python, args, cwd: comfyRoot, display: `${q(python)} ${args.join(" ")}  (cwd: ${q(comfyRoot)})` };
     }
     case "DeepSeekHarness": {
-      // npx @deepseek-ai/dsh@latest auto-installs if missing, auto-updates
+      // Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
+      // over npx; npx re-downloads the full ~450-package tree on every launch.
+      const dshCmd = join(process.env.APPDATA || "", "npm", "dsh.cmd");
+      if (existsSync(dshCmd)) {
+        return { exe: dshCmd, args: ["web"], cwd: root, display: `${q(dshCmd)} web` };
+      }
       const npx = process.platform === "win32" ? "npx.cmd" : "npx";
       const args = ["--yes", "@deepseek-ai/dsh@latest", "web"];
       return { exe: npx, args, cwd: root, display: `${npx} ${args.join(" ")}` };
