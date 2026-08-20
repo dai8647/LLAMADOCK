@@ -64,7 +64,13 @@
         "width": 512,
         "height": 320,
         "length": 16,
-        "ref_image_size": "match"
+        "ref_image_size": "match",
+        "ref_images": {
+          "ref_image_0": [
+            "16",
+            0
+          ]
+        }
       }
     },
     "7": {

@@ -39,3 +39,9 @@ tools/plan-quality-results.json
 # --- Local generated artifacts (Web GUI) ---
 config/models-config.json
 config/run-results.json
+
+# --- Scratch / residue files ---
+tools/tmp-*
+tools/*-results.json
+tools/explicit-e2e-*.json
+tools/comfyui-restart.log.err

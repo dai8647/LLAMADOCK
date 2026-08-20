@@ -255,6 +255,20 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
           });
         }
       });
+      // spawn can fail asynchronously (ENOENT, EACCES). Without this handler
+      // the error is unhandled and crashes the whole Node process.
+      child.on("error", (error) => {
+        log(`process error: ${error.message}`);
+        clearInterval(healthTimer);
+        stopping = false;
+        setState({
+          status: STATES.ERROR,
+          error: `プロセスの起動に失敗しました: ${error.message}`,
+          pid: null,
+          health: null,
+          metrics: { toks: null, vramGb: null, ramGb: null },
+        });
+      });
 
       const health = await waitForHealth(port, { shouldAbort: () => stopping });
       if (!health) {

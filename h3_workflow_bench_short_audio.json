@@ -127,7 +127,7 @@
           "9",
           0
         ],
-        "filename_prefix": "h3_bench_audio",
+        "filename_prefix": "h3_bench_short_audio",
         "format": "mp4",
         "codec": "h264"
       }
@@ -140,7 +140,7 @@
           0
         ],
         "shift_video": 12,
-        "shift_audio": 3
+        "shift_audio": 6
       }
     }
   }

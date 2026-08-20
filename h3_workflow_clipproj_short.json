@@ -38,7 +38,7 @@
           0
         ],
         "shift_video": 12,
-        "shift_audio": 3
+        "shift_audio": 6
       }
     },
     "5": {
@@ -125,7 +125,7 @@
           "9",
           0
         ],
-        "filename_prefix": "h3_clipproj",
+        "filename_prefix": "h3_clipproj_short",
         "format": "mp4",
         "codec": "h264"
       }

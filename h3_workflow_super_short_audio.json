@@ -7,13 +7,6 @@
         "weight_dtype": "default"
       }
     },
-    "2": {
-      "class_type": "CLIPLoader",
-      "inputs": {
-        "clip_name": "qwen3vl_4b_heretic_fp8.safetensors",
-        "type": "krea2"
-      }
-    },
     "3": {
       "class_type": "VAELoader",
       "inputs": {
@@ -127,7 +120,7 @@
           "9",
           0
         ],
-        "filename_prefix": "h3_super_audio",
+        "filename_prefix": "h3_super_short_audio",
         "format": "mp4",
         "codec": "h264"
       }

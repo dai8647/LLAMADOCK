@@ -238,7 +238,7 @@ def _spawn_plan_llm():
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     else:
         args += [
-            "-ngl", "0", "--mlock", "-ctk", "q8_0",
+            "-ngl", "0", "--mlock",
             # This 4B model is not a reasoning model: when the Qwen3.5 chat
             # template injects a think-block opener it "thinks" by re-reading
             # its own system prompt, burns the whole token budget, then
@@ -246,10 +246,19 @@ def _spawn_plan_llm():
             # clean output). --reasoning off makes the template emit an empty
             # think block so the model answers directly (this build maps
             # --reasoning off to enable_thinking=false; the older
-            # --chat-template-kwargs form is deprecated).
+            # --chat-template-kwargs form is deprecated). Kept fixed on CPU:
+            # the UI reasoning controls only apply to the GPU planner.
             "--reasoning", "off",
             "--repeat-penalty", "1.05",
         ]
+        # KV cache compression + Flash Attention from the UI (same contract as
+        # the GPU branch). V quantization requires Flash Attention.
+        if PLAN_SETTINGS["fa"]:
+            args += ["-fa", "on"]
+        if PLAN_SETTINGS["ctk"] and PLAN_SETTINGS["ctk"] != "none":
+            args += ["-ctk", PLAN_SETTINGS["ctk"]]
+        if PLAN_SETTINGS["ctv"] and PLAN_SETTINGS["ctv"] != "none":
+            args += ["-ctv", PLAN_SETTINGS["ctv"]]
         if os.path.isfile(PLAN_MMPROJ_PATH):
             # Qwen-VL needs >=1024 image tokens to resolve detail (server warns
             # about this at startup); without it the model under-sees the key image.
@@ -915,27 +924,6 @@ HTML = """<!doctype html>
     </div>
     <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
     <button id="btn-manual" class="small" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font-size:12px" onclick="showManualPrompt()">✍ 手動プロンプト</button>
-    <details id="advset">
-      <summary>⚙ 詳細設定（動画モデル・キー画像エンジン）</summary>
-      <div class="advgroup">
-        <span class="hint">動画モデル:</span>
-        <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
-        <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
-      </div>
-      <div class="advgroup">
-        <span class="hint">キー画像:</span>
-        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
-        <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
-      </div>
-      <div class="advgroup" id="planparams">
-        <span class="hint">企画 LLM パラメータ:</span>
-        <label>KV Key:<select id="p-ctk2" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
-        <label>KV Value:<select id="p-ctv2" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
-        <label><input type="checkbox" id="p-fa2" checked onchange="sendPlanSettings()"> Flash Attention</label>
-        <label>Reasoning:<select id="p-reasoning2" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
-        <label>Budget:<input type="number" id="p-budget2" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
-      </div>
-    </details>
     <details id="audioset">
       <summary>🎙 音声・セリフ設定（任意）</summary>
       <input type="text" id="au-voice" placeholder="声: 例：低めの落ち着いた声・息を含むささやき">
@@ -945,7 +933,6 @@ HTML = """<!doctype html>
       <button type="button" id="btn-au-auto" onclick="autoAudio()">🎙 自動で考える（LLM）</button>
       <span id="au-status" class="hint"></span>
     </details>
-  </div>
   <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
   <button id="send" onclick="send()">生成 ▶</button>
   <button id="cancel" class="warn" style="display:none;background:var(--err)" onclick="cancelCurrent()">✕ キャンセル</button>
@@ -1023,16 +1010,12 @@ function lenValue() {
 }
 
 // Send planner KV/FA/reasoning settings to the backend.
-// Uses p-ctk/p-ctv (plan mode) or p-ctk2/p-ctv2 (chat mode) depending
-// on which panel is visible.
 function sendPlanSettings() {
-  const isPlan = $("#planmode").checked;
-  const suffix = isPlan ? "" : "2";
-  const ctk = $("#p-ctk" + suffix);
-  const ctv = $("#p-ctv" + suffix);
-  const fa = $("#p-fa" + suffix);
-  const re = $("#p-reasoning" + suffix);
-  const rb = $("#p-budget" + suffix);
+  const ctk = $("#p-ctk");
+  const ctv = $("#p-ctv");
+  const fa = $("#p-fa");
+  const re = $("#p-reasoning");
+  const rb = $("#p-budget");
   if (!ctk) return;
   fetch("/api/plan-settings", {
     method: "POST",

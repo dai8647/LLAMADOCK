@@ -19,12 +19,12 @@
 //                                    into config/run-results.json (Phase 4)
 //     GET  /api/results          -> qualification summary of run-results.json
 //     POST /api/connect          -> launch a workspace client (Cline / OpenCode /
-//                                    OpenClaude / WebUI / DeepResearch /
+//                                    OpenClaude / WebUI /
 //                                    LlamaAgent / ComfyUI). Windows: detached spawn
 //                                    of the real launcher; elsewhere: simulated
 //                                    with the exact Windows command.
 //     GET  /api/status           -> server + platform + runtime + clients state
-//     GET  /api/clients/health   -> live probe of WebUI / DeepResearch /
+//     GET  /api/clients/health   -> live probe of WebUI /
 //                                    ComfyUI (own-server clients, env-port aware)
 //
 // The real machine binds to 127.0.0.1 per the design doc; the sandbox preview
@@ -304,7 +304,7 @@ export function createAppServer() {
 
     if (pathname === "/api/connect") {
       // Phase 2 contract: launch a workspace client against the running server.
-      //   body: { client, model?, workspace?, harness?, prompt? }
+      //   body: { client, model?, workspace?, prompt? }
       // Windows spawns the real launcher (detached); other platforms validate
       // the full request and return the exact command Windows would run.
       if (req.method === "POST") {
@@ -314,7 +314,6 @@ export function createAppServer() {
             client: String(body.client || ""),
             model: body.model ? String(body.model) : null,
             workspace: body.workspace ? String(body.workspace) : null,
-            harness: body.harness === true,
             prompt: body.prompt ? String(body.prompt) : "",
           });
           const status = result.ok ? 200 : result.error === "unknown_client" ? 400 : 409;
@@ -330,7 +329,7 @@ export function createAppServer() {
 
     if (pathname === "/api/clients/health") {
       // Live probe of every client that runs its own HTTP server
-      // (WebUI :8000 / DeepResearch :7000 / ComfyUI :8188 + LLAMADOCK_<ID>_PORT
+      // (WebUI :8000 / ComfyUI :8188 + LLAMADOCK_<ID>_PORT
       // overrides). Separate from /api/status so the GUI can poll it less
       // often without adding latency to the 3s runtime status poll.
       if (req.method === "GET") {
