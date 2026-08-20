@@ -1752,6 +1752,15 @@ function Open-DeepSeekHarnessClient {
         Start-Job -ScriptBlock { param($p) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p } -ArgumentList $dshCheck | Out-Null
     }
     Write-Host "Opening DeepSeek Harness..." -ForegroundColor Cyan
+
+    # Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
+    # over npx. npx re-downloads the full ~450-package tree into a fresh _npx
+    # cache on every launch, which can hang for minutes on first boot.
+    $dshCmd = Join-Path $env:APPDATA "npm\dsh.cmd"
+    if (Test-Path -LiteralPath $dshCmd) {
+        return Start-Process -FilePath $dshCmd -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @("web")
+    }
+
     $npx = if ($IsWindows -or $env:OS -eq "Windows_NT") { "npx.cmd" } else { "npx" }
     return Start-Process -FilePath $npx -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @(
         "--yes",
