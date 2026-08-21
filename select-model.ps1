@@ -58,14 +58,14 @@ else {
 $TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
     $env:LLAMA_TQ3_TURBOTAN_SERVER
 }
-elseif (Test-Path "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe") {
-    "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"
+elseif (Test-Path "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe") {
+    "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
 }
 elseif (Test-Path "C:\llama-tq3-turbotan\build\bin\llama-server.exe") {
     "C:\llama-tq3-turbotan\build\bin\llama-server.exe"
 }
 else {
-    "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm\bin\llama-server.exe"
+    "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
 }
 $ServerPath = $AtomicBotServerPath
 $OfficialVulkanServerPath = if ($env:LLAMADOCK_OFFICIAL_VULKAN_SERVER) {
@@ -2069,7 +2069,7 @@ $isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding")
 if ($isQuickLaunch) {
     if ($KCacheIndex -eq 0) { $KCacheIndex = 1 }
     if ($VCacheIndex -eq 0) {
-        if ($requiredEngine -eq "TurboTan") { $VCacheIndex = 9 }
+        if ($requiredEngine -eq "TurboTan") { $VCacheIndex = 4 }
         elseif ($selectedModelSizeGB -ge 20) { $VCacheIndex = 4 }
         else { $VCacheIndex = 1 }
     }

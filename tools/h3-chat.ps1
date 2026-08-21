@@ -85,7 +85,7 @@ if ($PlanModel -eq "Qwen3.8-27B-GPU" -or $PlanModel -eq "Qwen3.8-27B-GPU-Vision"
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
-$planServer = "C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe"
+$planServer = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
 if (-not (Test-Path -LiteralPath $planServer)) {
     $planServer = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
 }

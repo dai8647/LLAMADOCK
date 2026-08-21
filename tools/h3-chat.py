@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """h3-chat.py - MiniMax H3 text-to-video chat UI.
 
 Runs a tiny local HTTP server (127.0.0.1:8189) that serves a chat-style page.
@@ -163,7 +163,7 @@ PLAN_SERVER_BIN = os.environ.get(
     "LLAMADOCK_PLAN_BIN",
     r"C:\llama-tq3\build-rocm71\bin\llama-server.exe"
     if PLAN_GPU else
-    r"C:\Users\dai86\Downloads\llama.cpp-openPangu-2.0-Flash\build-win-native\bin\llama-server.exe",
+    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
 )
 # 企画 LLM のエンジン名（コーダー側のエンジン表記と揃えた表示用ラベル）。
 # DSpark を有効にすると TurboTan ビルドに切り替わるので、その場合のラベルも用意。
@@ -191,7 +191,7 @@ PLAN_SETTINGS = {
 # DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
 DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
 # DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
-TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"
+TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
 
