@@ -1906,9 +1906,10 @@ if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
     Write-Host "Launch target:" -ForegroundColor Green
     Write-Host " [1] LLM ワークスペース - モデルとクライアントを選択"
     Write-Host " [2] ComfyUI - 動画/音声ワークスペース（GGUF 選択なし）"
+    Write-Host " [3] Web GUI - ブラウザで起動/停止/計測"
     Write-Host ""
     do {
-        $targetInput = Read-Host "Select launch target (1-2), or press Enter for LLM"
+        $targetInput = Read-Host "Select launch target (1-3), or press Enter for LLM"
         if ([string]::IsNullOrWhiteSpace($targetInput)) {
             $targetSelection = 1
             $targetValid = $true
@@ -1917,7 +1918,14 @@ if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
             $targetSelection = 0
             $targetValid = [int]::TryParse($targetInput, [ref]$targetSelection)
         }
-    } while (-not $targetValid -or $targetSelection -lt 1 -or $targetSelection -gt 2)
+    } while (-not $targetValid -or $targetSelection -lt 1 -or $targetSelection -gt 3)
+
+    if ($targetSelection -eq 3) {
+        # Same early-exit pattern as ComfyUI: the Web GUI is model-independent,
+        # so it opens in its own console and this selector leaves the stage.
+        Start-Process -FilePath (Join-Path $PSScriptRoot "webgui.bat") -WorkingDirectory $PSScriptRoot
+        exit 0
+    }
 
     if ($targetSelection -eq 2) {
         $ClientMode = "ComfyUI"
