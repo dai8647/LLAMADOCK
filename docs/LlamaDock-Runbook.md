@@ -6,7 +6,7 @@
 
 すべて localhost バインドで、Docker/WSLは既定経路に使わない。ComputerのデータはOneDrive外の `C:\Users\dai86\AppData\Local\LlamaDock\Computer\data` に置く。
 
-LlamaDockから起動した場合、通常のクライアント接続先は `http://127.0.0.1:8090/v1`（回復ゲートウェイ）で、実サーバーは8090から8080へ転送される。クライアント切断時に8080の単一スロットが解放されない場合だけ、監督プロセスがllama-serverを再起動する。8080は診断用とし、通常のCline/OpenCode/OpenClaude/Computerは8090を使う。
+LlamaDockから起動した場合、通常のクライアント接続先は `http://127.0.0.1:8090/v1`（回復ゲートウェイ）で、実サーバーは8090から8080へ転送される。クライアント切断時に8080の単一スロットが解放されない場合だけ、監督プロセスがllama-serverを再起動する。8080は診断用とし、通常のCline/OpenCode/Computerは8090を使う。
 
 ## 推奨プロファイル
 
@@ -31,7 +31,7 @@ Prompt cacheのRAM上限はランタイムの起動引数に明示する。既�
 
 短い日本語回答が空になる主因は、Qwen/TQ3系でthinkingが有効なままになり、短い`max_tokens`を思考出力だけで使い切ることだった。TurboTanは既定で`chat_template_kwargs={"enable_thinking":false}`と`--reasoning off`を両方渡す。Computerのグローバルチャット設定もtemperature 0、max_tokens 512、seed 42、thinking無効にそろえる。GGUFのEOS/chat-template警告は無視せず、短文・停止文字列・SSE終了の実測を合格条件にする。
 
-PowerShell 5.1のJSON POSTは文字列Bodyを使わず、`tools\llamadock-utf8.ps1`でUTF-8バイト列と`application/json; charset=utf-8`を明示する。Cline/OpenCode/OpenClaudeは`tools\llamadock-client-shell.ps1`を共通の起動境界にし、コンソール、Python、Clineのデータディレクトリ、MCP設定パスをそろえる。起動中のモデルを検査するときは次を実行する。
+PowerShell 5.1のJSON POSTは文字列Bodyを使わず、`tools\llamadock-utf8.ps1`でUTF-8バイト列と`application/json; charset=utf-8`を明示する。Cline/OpenCodeは`tools\llamadock-client-shell.ps1`を共通の起動境界にし、コンソール、Python、Clineのデータディレクトリ、MCP設定パスをそろえる。起動中のモデルを検査するときは次を実行する。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -RunUtf8Smoke

@@ -95,7 +95,7 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
 - モデル発見 / `Get-HardwareEstimate` / エンジン解決（`Resolve-Engine`）
 - **引数生成**: パラメータセット → llama-server 引数配列（`params-schema.json` の `flags` を参照）
 - サーバー起動・ready待ち（`Wait-ServerReady`）・停止
-- クライアント起動（`Open-WorkspaceClient`: Cline/OpenCode/OpenClaude/WebUI/ComfyUI/LlamaAgent）
+- クライアント起動（`Open-WorkspaceClient`: Cline/OpenCode/WebUI/ComfyUI/LlamaAgent）
 - `tools/test.ps1`（構文・dry run・秘密スキャン・全プリセット）を常に通すこと。
 
 ### Phase 2 — Web API層
@@ -147,7 +147,7 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
   - `POST /api/launch` / `stop` / `benchmark` / `GET /api/results` を実装し、UI の起動/停止ボタンと
     計測実行ボタンを配線。3秒間隔の状態ポーリングで信号灯・メトリクス・ログを更新。
 - **`POST /api/connect`（クライアント起動）を実装**: `web-ui/client-manager.js`。
-  `select-model.ps1` の `Open-*Client` と同じ起動経路をクライアントID（Cline / OpenCode / OpenClaude /
+  `select-model.ps1` の `Open-*Client` と同じ起動経路をクライアントID（Cline / OpenCode /
   WebUI / LlamaAgent / ComfyUI）ごとに定義。Windows では detached spawn、それ以外では
   リクエストを検証した上で Windows が実行する正確なコマンドを `simulated: true` で返す（契約を全プラットフォームで検証可能）。
   未起動時は `server_not_running` で拒否。接続状態は `/api/status` の `clients` と UI のチップで確認できる。

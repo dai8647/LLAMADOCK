@@ -19,7 +19,7 @@
 //                                    into config/run-results.json (Phase 4)
 //     GET  /api/results          -> qualification summary of run-results.json
 //     POST /api/connect          -> launch a workspace client (Cline / OpenCode /
-//                                    OpenClaude / WebUI /
+//                                    WebUI /
 //                                    LlamaAgent / ComfyUI). Windows: detached spawn
 //                                    of the real launcher; elsewhere: simulated
 //                                    with the exact Windows command.

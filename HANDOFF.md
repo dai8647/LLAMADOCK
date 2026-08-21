@@ -156,7 +156,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 | `arg-builder.js` | スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング） |
 | `results-store.js` | 実測 tok/s・VRAM を `config/run-results.json`（gitignore）に蓄積、成功 3 回以上で「推奨（実測）」認定 |
-| `client-manager.js` | Cline/OpenCode/OpenClaude/WebUI/LlamaAgent/ComfyUI/DeepSeekHarness の起動契約（ComfyUI は standalone） |
+| `client-manager.js` | Cline/OpenCode/WebUI/LlamaAgent/ComfyUI/DeepSeekHarness の起動契約（ComfyUI は standalone） |
 | `mock-llama-server.mjs` | 非 Windows 用シミュレーション llama-server（計測ループ検証用） |
 | `app.js` / `index.html` / `style.css` | 3カラム・ダークテーマ UI |
 

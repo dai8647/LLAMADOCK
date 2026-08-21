@@ -35,7 +35,6 @@ $validPresets = @(
     "Manual",
     "ClineCoding",
     "OpenCodeCoding",
-    "OpenClaudeCoding",
     "LlamaAgentResearch",
     "WebUIChat",
     "DeepSeekHarness"
@@ -264,7 +263,7 @@ foreach ($check in @("LlamaDock session", "モデルを維持したままワー�
     }
 }
 Write-Host "Managed session checks OK"
-foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline 向けの安定設定", "OpenCodeCoding", "Code - OpenCode 向けの安定設定", "OpenClaudeCoding", "Code - OpenClaude 向けの安定設定", "Select preset (1-7)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
+foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline 向けの安定設定", "OpenCodeCoding", "Code - OpenCode 向けの安定設定", "Select preset (1-6)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Launcher check failed: $check" -ForegroundColor Red
         exit 1
@@ -403,10 +402,6 @@ if (-not $SkipDryRun) {
         }
         if ($preset -eq "OpenCodeCoding" -and $joined -notmatch "llamadock/") {
             Write-Host "OpenCode preset did not pass the selected model." -ForegroundColor Red
-            exit 1
-        }
-        if ($preset -eq "OpenClaudeCoding" -and $joined -notmatch "OPENAI_BASE_URL=http://127.0.0.1:8090/v1") {
-            Write-Host "OpenClaude preset did not pass the local endpoint." -ForegroundColor Red
             exit 1
         }
         if ($preset -eq "DeepSeekHarness" -and $joined -notmatch "DEEPSEEK_BASE_URL=http://127.0.0.1:8090/v1") {
