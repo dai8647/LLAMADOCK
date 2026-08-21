@@ -38,9 +38,9 @@ $planModels = @{
         Mmproj = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf"
     }
     "Qwen3.8-27B-GPU" = @{
-        Label = "Qwen3.8-27B Abliterated (GPU・企画フェーズのみ・視覚なし)"
-        Path = "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
-        Mmproj = $null
+        Label = "Qwen3.8-27B Abliterated 12GB-MTP (GPU・企画フェーズのみ・視覚あり・mmproj同梱)"
+        Path = "C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\mmproj-Q8_0.gguf"
         Gpu = $true
     }
     "Qwen3.8-27B-GPU-Vision" = @{
@@ -119,7 +119,38 @@ try {
 
 if (-not $comfyUp) {
     Write-Host "WARNING: ComfyUI (127.0.0.1:8188) is not running." -ForegroundColor Yellow
-    Write-Host "         Start it first (comfyui.bat -> [1] super), then re-run this script." -ForegroundColor Yellow
+    $startComfy = Read-Host "Start ComfyUI now? (Y/n)"
+    if ($startComfy -notmatch "^(n|no)$") {
+        $repoRoot = Split-Path -Parent $here
+        $comfyBat = Join-Path $repoRoot "comfyui.bat"
+        if (Test-Path -LiteralPath $comfyBat) {
+            # comfyui.bat opens its own console (tuning menu -> server). The
+            # menu is answered there; this script only waits for :8188.
+            Write-Host "Launching comfyui.bat (tuning menu opens in a new window) ..." -ForegroundColor Cyan
+            Start-Process -FilePath $comfyBat -WorkingDirectory $repoRoot
+        }
+        else {
+            Write-Host "comfyui.bat not found; please start ComfyUI manually." -ForegroundColor Yellow
+        }
+        Write-Host "Waiting for ComfyUI on 127.0.0.1:8188 (up to 150s) ..." -ForegroundColor Cyan
+        for ($i = 0; $i -lt 50; $i++) {
+            Start-Sleep -Seconds 3
+            try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                if ($r.StatusCode -eq 200) { $comfyUp = $true; break }
+            }
+            catch { }
+        }
+        if ($comfyUp) {
+            Write-Host "ComfyUI is up." -ForegroundColor Green
+        }
+        else {
+            Write-Host "ComfyUI is still not ready; continuing anyway (generation will fail until it starts)." -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "Continuing without ComfyUI: chat works, but generation returns 503 until you start it (comfyui.bat)." -ForegroundColor Yellow
+    }
 }
 
 # Already running?
@@ -171,7 +202,7 @@ if ($planGpu) {
         Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort, engine: $planGpuEngine)." -ForegroundColor Cyan
         $env:LLAMADOCK_PLAN_GPU = "1"
         # Pass the chosen model + mmproj to h3-chat.py so it launches THIS
-        # model (its hardcoded default is the finex666 27B, no vision).
+        # model (its hardcoded default is the soyaakinohara 12GB-MTP 27B).
         $env:LLAMADOCK_PLAN_MODEL = $model.Path
         if ($model.Mmproj) { $env:LLAMADOCK_PLAN_MMPROJ = $model.Mmproj } else { $env:LLAMADOCK_PLAN_MMPROJ = "" }
         $skipPlanStart = $true

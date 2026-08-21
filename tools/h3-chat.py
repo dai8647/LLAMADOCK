@@ -138,9 +138,9 @@ R2V_TAG_NOTE = (
 #                     image.
 #   gpu27b (LLAMADOCK_PLAN_GPU=1): Qwen3.8-27B-Abliterated on GPU (-ngl all),
 #                     port 8191. Started on demand for the planning phase only
-#                     and killed before every ComfyUI generation, so the 14GB
-#                     planner and the video model never fight over VRAM. No
-#                     mmproj -> the key image is handed off as its text prompt.
+#                     and killed before every ComfyUI generation, so the 12GB
+#                     planner and the video model never fight over VRAM. Ships
+#                     its own mmproj, so it can see the confirmed key image.
 PLAN_GPU = os.environ.get("LLAMADOCK_PLAN_GPU", "") == "1"
 PLAN_PORT = 8191 if PLAN_GPU else 8190
 PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
@@ -149,14 +149,15 @@ PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
 # Mirrors the llama-server launch in tools\h3-chat.ps1 so plan mode works
 # even when h3-chat.py is started directly (without h3-chat.ps1 / llamadock).
 _DEFAULT_PLAN_MODEL = (
-    r"C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+    r"C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf"
     if PLAN_GPU
     else r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
 )
 PLAN_MODEL_PATH = os.environ.get("LLAMADOCK_PLAN_MODEL", _DEFAULT_PLAN_MODEL)
 PLAN_MMPROJ_PATH = os.environ.get(
     "LLAMADOCK_PLAN_MMPROJ",
-    "" if PLAN_GPU else
+    r"C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\mmproj-Q8_0.gguf"
+    if PLAN_GPU else
     r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf",
 )
 PLAN_SERVER_BIN = os.environ.get(
@@ -223,8 +224,14 @@ def _spawn_plan_llm():
     """
     if not os.path.isfile(PLAN_SERVER_BIN) or not os.path.isfile(PLAN_MODEL_PATH):
         return None
-    # DSpark needs the TurboTan build (draft-dspark); AtomicBot rejects it.
-    if PLAN_GPU and PLAN_SETTINGS["dspark"]:
+    # Speculative decoding requires fork-specific builds: draft-dspark exists
+    # only in TurboTan and draft-dflash only in the DFlash2 build; AtomicBot
+    # rejects unknown --spec-type values at startup.
+    if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
+        if not os.path.isfile(DFLASH2_SERVER_BIN):
+            return None
+        server_bin = DFLASH2_SERVER_BIN
+    elif PLAN_GPU and PLAN_SETTINGS["dspark"]:
         if not os.path.isfile(TURBOTAN_SERVER_BIN):
             return None
         server_bin = TURBOTAN_SERVER_BIN
@@ -272,13 +279,15 @@ def _spawn_plan_llm():
                 "-ngld", "99",
             ]
         # DFlash2 speculative decoding: grouped dynamic depthwise convolution
-        # draft model predicts up to 8 tokens ahead; main model verifies.
+        # draft model predicts up to 7 tokens ahead; main model verifies.
         # Requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch).
+        # n_max stays within the checkpoint's trained block size (8) to avoid
+        # the "clamping to 7" warning at load time.
         if PLAN_SETTINGS.get("dflash2") and os.path.isfile(DFLASH2_GGUF):
             args += [
                 "--spec-type", "draft-dflash",
                 "--spec-draft-model", DFLASH2_GGUF,
-                "--spec-draft-n-max", "8",
+                "--spec-draft-n-max", "7",
                 "-ngld", "99",
             ]
     else:
@@ -370,7 +379,12 @@ def ensure_plan_llm(wait_seconds=120):
     with PLAN_START_LOCK:
         dead = PLAN_PROC is None or PLAN_PROC.poll() is not None
         if dead and time.time() - PLAN_LAST_TRY > 30:
-            engine_label = PLAN_ENGINE_DSPARK if PLAN_GPU and PLAN_SETTINGS["dspark"] else PLAN_ENGINE
+            if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
+                engine_label = PLAN_ENGINE_DFLASH2
+            elif PLAN_GPU and PLAN_SETTINGS["dspark"]:
+                engine_label = PLAN_ENGINE_DSPARK
+            else:
+                engine_label = PLAN_ENGINE
             print(f"h3-chat: auto-starting planning LLM (port {PLAN_PORT}, engine: {engine_label})")
             PLAN_PROC = _spawn_plan_llm()
             PLAN_LAST_TRY = time.time()
@@ -1026,7 +1040,8 @@ HTML = """<!doctype html>
         <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> フラッシュアテンション</label>
         <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
         <label>予算:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
-        <label><input type="checkbox" id="p-dspark" onchange="sendPlanSettings()"> DSpark（実験・投機的デコード）</label>
+        <label><input type="checkbox" id="p-dspark" onchange="if(this.checked){const d=document.getElementById('p-dflash2');if(d)d.checked=false;}sendPlanSettings()"> DSpark（実験・投機的デコード）</label>
+        <label><input type="checkbox" id="p-dflash2" onchange="if(this.checked){const d=document.getElementById('p-dspark');if(d)d.checked=false;}sendPlanSettings()"> DFlash2（実験・投機的デコード）</label>
       </div>
     </details>
     <details id="audioset">
@@ -1127,6 +1142,7 @@ function sendPlanSettings() {
   const re = $("#p-reasoning");
   const rb = $("#p-budget");
   const dspark = $("#p-dspark");
+  const dflash2 = $("#p-dflash2");
   if (!ctk) return;
   fetch("/api/plan-settings", {
     method: "POST",
@@ -1135,7 +1151,8 @@ function sendPlanSettings() {
       ctk: ctk.value, ctv: ctv.value,
       fa: fa.checked, reasoning_effort: re.value,
       reasoning_budget: parseInt(rb.value, 10) || 1536,
-      dspark: dspark.checked
+      dspark: dspark ? dspark.checked : false,
+      dflash2: dflash2 ? dflash2.checked : false
     })
   }).catch(() => {});
 }
@@ -1777,6 +1794,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                 pass
         if "dspark" in req:
             PLAN_SETTINGS["dspark"] = bool(req["dspark"])
+            # DSpark (draft-dspark, TurboTan build) and DFlash2 (draft-dflash,
+            # DFlash2 build) need different llama-server binaries — keep the
+            # two modes mutually exclusive so _spawn_plan_llm picks one bin.
+            if PLAN_SETTINGS["dspark"]:
+                PLAN_SETTINGS["dflash2"] = False
+        if "dflash2" in req:
+            PLAN_SETTINGS["dflash2"] = bool(req["dflash2"])
+            if PLAN_SETTINGS["dflash2"]:
+                PLAN_SETTINGS["dspark"] = False
         self._json(200, PLAN_SETTINGS)
 
     def _generate(self, parsed):

@@ -40,6 +40,22 @@ $settings = @{
 }
 
 $formatted = Invoke-Formatter -ScriptDefinition $source -Settings $settings
-$encoding = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($Path, $formatted, $encoding)
-Write-Host "Formatted $Path"
+# Safety guard: never write a result that no longer parses. PSScriptAnalyzer
+# has corrupted this UTF-8 (BOM-less) launcher once already; a broken
+# select-model.ps1 bricks every LlamaDock entry point.
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($formatted, [ref]$null, [ref]$parseErrors)
+if ($parseErrors -and @($parseErrors).Count -gt 0) {
+    Write-Host "Formatter output would break the script ($(@($parseErrors).Count) parse errors); aborting without writing." -ForegroundColor Red
+    exit 1
+}
+if ($formatted -ne $source) {
+    # Only rewrite when something actually changed; keeps mtimes honest and
+    # avoids any chance of an encoding round-trip touching untouched files.
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $formatted, $encoding)
+    Write-Host "Formatted $Path"
+}
+else {
+    Write-Host "Already formatted: $Path"
+}
