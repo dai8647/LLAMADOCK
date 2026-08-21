@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputPath = ""
 )
 
@@ -9,7 +9,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 $candidates = @(
     @{ name = "AtomicBot HIP/ROCm"; path = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"; backend = "HIP" },
-    @{ name = "TurboTan HIP/ROCm"; path = "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"; backend = "HIP" },
+    @{ name = "TurboTan HIP/ROCm"; path = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"; backend = "HIP" },
     @{ name = "Official HIP"; path = "C:\llama.cpp-hip\llama-server.exe"; backend = "HIP" },
     @{ name = "Official Vulkan"; path = "C:\llama.cpp-vulkan\llama-server.exe"; backend = "Vulkan" },
     @{ name = "Official CPU"; path = "C:\llama.cpp-cpu\llama-server.exe"; backend = "CPU" }

@@ -48,6 +48,13 @@ const WEB_ROOT = join(ROOT, "web-ui");
 const CONFIG_DIR = join(ROOT, "config");
 const MODELS_CONFIG_PATH = join(CONFIG_DIR, "models-config.json");
 const RESULTS_PATH = join(CONFIG_DIR, "run-results.json");
+// Supervisor control directory (tools/llamadock-server-supervisor.ps1):
+// server-arguments.json is re-read on every (re)spawn, and creating
+// restart-request.json makes the supervisor restart llama-server only.
+const SUPERVISOR_DIR = join(ROOT, "mcp-data", "server-supervisor");
+const SERVER_ARGUMENTS_PATH = join(SUPERVISOR_DIR, "server-arguments.json");
+const SUPERVISOR_STATUS_PATH = join(SUPERVISOR_DIR, "status.json");
+const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
 
 // Single runtime launcher shared by every request (state machine owns the
 // child process + health polling). Upstream port overridable for sandboxes
