@@ -1945,7 +1945,7 @@ $allFiles = Get-ChildItem -Path $ModelsBase -Filter "*.gguf" -Recurse -File -Err
 # Build model list (all models except mmproj)
 $models = @()
 foreach ($f in $allFiles) {
-    if ($f.Name -notmatch "mmproj") {
+    if ($f.Name -notmatch "mmproj" -and $f.Name -notmatch "(?i)DFlash2.*(?:Q4_K_M|Q8_0|Q4_K_S|Q5_K_M)") {
         $isTQ3 = $f.Name -match "TQ3"
         $engine = Get-RequiredEngine -Model $f
         $models += [PSCustomObject]@{
@@ -2019,6 +2019,9 @@ elseif ($requiredEngine -eq "ExpertsLaguna") {
 }
 elseif ($requiredEngine -eq "LongCat") {
     $ServerPath = $LongCatServerPath
+}
+elseif ($requiredEngine -eq "DFlash2") {
+    $ServerPath = $DFlash2ServerPath
 }
 elseif ($requiredEngine -eq "OfficialVulkan") {
     $ServerPath = $OfficialVulkanServerPath
@@ -2380,7 +2383,7 @@ else {
         }
     }
     else {
-        $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } else { "q4_0" }
+        $defaultVType = if ($requiredEngine -eq "TurboTan") { "q4_0" } else { "q4_0" }
         do {
             $defaultVLabel = $defaultVType
             $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
