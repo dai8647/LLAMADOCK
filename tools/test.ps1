@@ -297,6 +297,23 @@ if ($launcherSource -notmatch '(?s)\$ExistingServerMode\s*-eq\s*"UseExisting".{0
 }
 Write-Host "ComfyUI UseExisting branch OK"
 
+# --- Web GUI entry point checks ---
+$webguiBat = Join-Path $root "webgui.bat"
+if (-not (Test-Path -LiteralPath $webguiBat)) {
+    Write-Host "Web GUI entry point missing: webgui.bat" -ForegroundColor Red
+    exit 1
+}
+$webguiSource = Get-Content -LiteralPath $webguiBat -Raw
+if ($webguiSource -notmatch [regex]::Escape("web-ui\server.js")) {
+    Write-Host "webgui.bat does not launch web-ui\server.js" -ForegroundColor Red
+    exit 1
+}
+if ($launcherSource -notmatch [regex]::Escape("Web GUI")) {
+    Write-Host "Front-door menu is missing the Web GUI entry" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Web GUI entry checks OK"
+
 function Get-SweepModelIndex {
     # Mirrors select-model.ps1's model enumeration (non-mmproj GGUFs under
     # ModelsBase, sorted TQ3-first then by size descending) and returns the
