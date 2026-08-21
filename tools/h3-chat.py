@@ -778,108 +778,162 @@ HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax H3 チャット動画生成</title>
 <style>
-  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e8eaf0;
-          --muted:#8b93a3; --accent:#5b8cff; --ok:#3ecf8e; --err:#ff5d5d; }
+  :root { --bg:#0b0e14; --panel:#12161f; --panel2:#1a2029; --line:#242c3a;
+          --text:#e8eaf0; --muted:#8b93a3; --accent:#38bdf8; --accent2:#3b82f6;
+          --ok:#34d399; --err:#f87171; --warn:#fbbf24;
+          --grad:linear-gradient(135deg,#22d3ee,#3b82f6); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
-         font-family:"Segoe UI", "Noto Sans JP", sans-serif; height:100vh; display:flex;
-         flex-direction:column; }
+         font-family:"Segoe UI", "Noto Sans JP", sans-serif; height:100vh;
+         display:flex; flex-direction:column; }
+
+  /* ---- header ---- */
   header { padding:12px 20px; border-bottom:1px solid var(--line);
-           display:flex; align-items:center; gap:14px; }
-  header h1 { font-size:16px; margin:0; font-weight:600; }
+           display:flex; align-items:center; gap:14px;
+           background:linear-gradient(180deg,rgba(34,211,238,.05),transparent); }
+  header h1 { font-size:16px; margin:0; font-weight:700; letter-spacing:.3px; }
   header .sub { color:var(--muted); font-size:12px; }
-  #status-dot { width:9px; height:9px; border-radius:50%; background:#555; margin-left:auto; }
-  #status-dot.ok { background:var(--ok); }
-  #status-dot.down { background:var(--err); }
+  #status-dot { width:9px; height:9px; border-radius:50%; background:#555; margin-left:auto;
+                box-shadow:0 0 0 3px rgba(255,255,255,.03); }
+  #status-dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(52,211,153,.7); }
+  #status-dot.down { background:var(--err); box-shadow:0 0 8px rgba(248,113,113,.7); }
+
+  /* ---- chat area ---- */
   main { flex:1; overflow-y:auto; padding:18px 20px; }
-  .msg { max-width:80%; padding:10px 14px; border-radius:14px; margin-bottom:12px;
+  .msg { max-width:80%; padding:11px 15px; border-radius:14px; margin-bottom:12px;
          font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
-  .user { background:#243252; margin-left:auto; border-bottom-right-radius:4px; }
+  .user { background:linear-gradient(135deg,#1e3a5f,#243252); margin-left:auto;
+          border:1px solid #2c4a72; border-bottom-right-radius:4px; }
   .bot  { background:var(--panel); border:1px solid var(--line); border-bottom-left-radius:4px; }
   .bot .meta { color:var(--muted); font-size:11px; margin-bottom:6px; }
   .bot .err { color:var(--err); }
-  .bot video { width:100%; max-width:520px; border-radius:8px; background:#000; display:block; margin-top:8px; }
-  .bot img { width:100%; max-width:520px; border-radius:8px; background:#000; display:block; margin-top:8px; }
+  .bot video { width:100%; max-width:520px; border-radius:10px; background:#000; display:block; margin-top:8px; }
+  .bot img { width:100%; max-width:520px; border-radius:10px; background:#000; display:block; margin-top:8px; }
   .bot .path { color:var(--muted); font-size:11px; margin-top:6px; word-break:break-all; }
   .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
   .row button.ok { background:var(--ok); color:#0b2b1c; }
-  .row button.rev { background:#ffb020; color:#3a2400; }
+  .row button.rev { background:var(--warn); color:#3a2400; }
   .row button.small { background:transparent; color:var(--muted); border:1px solid var(--line); }
+
+  /* ---- shutdown banner ---- */
   #shutdown-box { display:none; border-top:2px solid var(--ok); background:#0e241a;
                   padding:10px 20px; font-size:13px; }
   #shutdown-box .meta { color:var(--muted); font-size:11px; margin-bottom:6px; }
   #shutdown-box button { padding:8px 14px; font-size:12px; margin-right:8px; }
   #shutdown-box button.warn { background:var(--err); }
-  footer { border-top:1px solid var(--line); padding:12px 20px; display:flex; gap:10px;
-           align-items:flex-end; }
-  #modes { display:flex; flex-direction:column; gap:4px; margin-right:8px; }
-  #modes label { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; cursor:pointer; }
-  #modes input { accent-color:var(--accent); }
-  textarea { flex:1; resize:none; height:56px; background:var(--panel); color:var(--text);
-             border:1px solid var(--line); border-radius:10px; padding:10px 12px;
-             font:inherit; font-size:14px; outline:none; }
-  textarea:focus { border-color:var(--accent); }
-  button { background:var(--accent); color:#fff; border:none; border-radius:10px;
-           padding:12px 22px; font-size:14px; font-weight:600; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
-  .plan { border-top:1px solid var(--line); padding-top:6px; }
-  .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
-  .hint { color:var(--muted); font-size:11px; }
-  details.thinkbox { margin:6px 0; border:1px solid var(--line); border-radius:8px; padding:6px 10px; background:rgba(255,255,255,0.02); }
-  details.thinkbox summary { cursor:pointer; color:var(--muted); font-size:11px; user-select:none; }
-  details.thinkbox pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); font-size:11px; margin:6px 0 0; max-height:220px; overflow:auto; }
-  # セグメントコントロール（動画モード4択を横並び pill に）
+
+  /* ---- footer: stacked rows, input always full width ---- */
+  footer { border-top:1px solid var(--line); padding:12px 16px 14px;
+           display:flex; flex-direction:column; gap:10px;
+           background:linear-gradient(180deg,transparent,rgba(34,211,238,.04)); }
+  .ft-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+
+  /* segment control (mode pills) */
   .seg { display:flex; gap:3px; background:var(--panel); border:1px solid var(--line);
-         border-radius:10px; padding:3px; }
-  .segbtn { flex:1; }
+         border-radius:12px; padding:3px; flex:1; min-width:0; }
+  .segbtn { flex:1; min-width:0; }
   .segbtn input { display:none; }
   .segbtn span { display:block; text-align:center; font-size:11px; color:var(--muted);
-                 padding:5px 6px; border-radius:8px; cursor:pointer; line-height:1.35; }
-  .segbtn span:hover { color:var(--text); }
-  .segbtn input:checked + span { background:var(--accent); color:#fff; }
-  .segbtn small { display:block; font-size:9px; opacity:.75; }
-  #advset { margin-top:6px; font-size:12px; color:var(--muted); }
-  #advset summary { cursor:pointer; font-weight:600; }
-  #advset .advgroup { margin-top:6px; }
-  #advset label { display:flex; gap:6px; align-items:center; margin-top:3px; cursor:pointer; }
-  #planparams select, #planparams input[type=number] { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:2px 4px; font-size:11px; }
-  #lenbox { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px; color:var(--muted); }
+                 padding:6px 4px; border-radius:9px; cursor:pointer; line-height:1.3;
+                 transition:background .15s, color .15s; white-space:nowrap;
+                 overflow:hidden; text-overflow:ellipsis; }
+  .segbtn span:hover { color:var(--text); background:var(--panel2); }
+  .segbtn input:checked + span { background:var(--grad); color:#fff; font-weight:600; }
+  .segbtn small { display:block; font-size:9px; opacity:.75; font-weight:400; }
+
+  /* length selector */
+  #lenbox { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+            white-space:nowrap; }
   #lenbox select { background:var(--panel); color:var(--text); border:1px solid var(--line);
-                   border-radius:8px; padding:4px 8px; font:inherit; font-size:12px; outline:none; }
-  .ditrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:6px; font-size:12px; }
-  #audioset { margin-top:6px; font-size:12px; color:var(--muted); }
-  #audioset summary { cursor:pointer; font-weight:600; }
-  #audioset input, #audioset textarea { display:block; width:100%; margin-top:5px; background:var(--panel);
-             color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 9px;
-             font:inherit; font-size:12px; outline:none; }
+                   border-radius:9px; padding:5px 8px; font:inherit; font-size:12px; outline:none; }
+
+  /* toggle / action row */
+  .ft-toggles { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .plan { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center;
+          cursor:pointer; white-space:nowrap; }
+  .plan input { accent-color:var(--accent); }
+  .ft-toggles > button, #refpick button { background:transparent; color:var(--accent);
+          border:1px solid var(--accent); border-radius:9px; padding:6px 12px;
+          font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .ft-toggles > button:hover, #refpick button:hover { background:rgba(56,189,248,.12); }
+  #btn-reset { display:none; }
+  #refpick { display:flex; align-items:center; gap:8px; }
+  #ref-sel { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; max-width:280px; }
+
+  /* expandable panels (advanced / audio) side by side */
+  .ft-panels { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:820px) { .ft-panels { grid-template-columns:1fr; } }
+  #advset, #audioset { font-size:12px; color:var(--muted); background:var(--panel);
+          border:1px solid var(--line); border-radius:12px; padding:8px 12px; }
+  #advset summary, #audioset summary { cursor:pointer; font-weight:600; color:var(--text);
+          list-style:none; display:flex; align-items:center; gap:6px; }
+  #advset summary::-webkit-details-marker, #audioset summary::-webkit-details-marker { display:none; }
+  #advset summary::before, #audioset summary::before { content:"▸"; color:var(--accent);
+          transition:transform .15s; display:inline-block; }
+  #advset[open] summary::before, #audioset[open] summary::before { transform:rotate(90deg); }
+  #advset .advgroup { margin-top:8px; }
+  #advset label { display:flex; gap:6px; align-items:center; margin-top:4px; cursor:pointer; }
+  #planparams select, #planparams input[type=number] { background:var(--panel2); color:var(--text);
+          border:1px solid var(--line); border-radius:6px; padding:3px 5px; font-size:11px; }
+  #audioset input, #audioset textarea { display:block; width:100%; margin-top:6px;
+          background:var(--panel2); color:var(--text); border:1px solid var(--line);
+          border-radius:8px; padding:7px 10px; font:inherit; font-size:12px; outline:none; }
   #audioset textarea { height:44px; resize:vertical; }
   #btn-au-auto { padding:8px 14px; font-size:12px; margin-top:8px; background:transparent;
-                 color:var(--ok); border:1px solid var(--ok); border-radius:8px; }
+          color:var(--ok); border:1px solid var(--ok); border-radius:8px; cursor:pointer; }
   #au-status { font-size:11px; color:var(--muted); margin-left:8px; }
-  #refpick { margin-top:4px; display:flex; align-items:center; gap:8px; }
-  #refpick button { padding:6px 12px; font-size:12px; font-weight:600; background:transparent;
-                    color:var(--accent); border:1px solid var(--accent); border-radius:8px; }
-  #ref-sel { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none;
-           align-items:center; justify-content:center; z-index:50; }
-  .modal-box { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+
+  /* compose row: textarea + send */
+  .ft-compose { display:flex; gap:10px; align-items:flex-end; }
+  textarea#input { flex:1; resize:none; height:58px; background:var(--panel); color:var(--text);
+          border:1px solid var(--line); border-radius:12px; padding:11px 14px;
+          font:inherit; font-size:14px; outline:none; transition:border-color .15s, box-shadow .15s; }
+  textarea#input:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(56,189,248,.15); }
+  .ft-send { display:flex; flex-direction:column; gap:6px; }
+  button { background:var(--grad); color:#fff; border:none; border-radius:12px;
+           padding:13px 24px; font-size:14px; font-weight:700; cursor:pointer;
+           transition:filter .15s, transform .05s; }
+  button:hover { filter:brightness(1.12); }
+  button:active { transform:translateY(1px); }
+  button:disabled { opacity:.45; cursor:default; filter:none; }
+  button.warn { background:var(--err); }
+  .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
+  .hint { color:var(--muted); font-size:11px; }
+
+  /* thinking trace */
+  details.thinkbox { margin:6px 0; border:1px solid var(--line); border-radius:8px;
+          padding:6px 10px; background:rgba(255,255,255,0.02); }
+  details.thinkbox summary { cursor:pointer; color:var(--muted); font-size:11px; user-select:none; }
+  details.thinkbox pre { white-space:pre-wrap; word-break:break-word; color:var(--muted);
+          font-size:11px; margin:6px 0 0; max-height:220px; overflow:auto; }
+
+  /* reference image modal */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.65); display:none;
+           align-items:center; justify-content:center; z-index:50; backdrop-filter:blur(2px); }
+  .modal-box { background:var(--panel); border:1px solid var(--line); border-radius:14px;
                padding:16px; width:min(92vw,740px); max-height:82vh; display:flex;
                flex-direction:column; }
   .modal-box .meta { margin-bottom:10px; }
   .modal-box > button { align-self:flex-end; padding:8px 18px; }
-  #refgrid { flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+  #refgrid { flex:1; overflow-y:auto; display:grid;
+             grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
              gap:10px; margin-bottom:12px; }
-  .refcard { border:1px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer;
-             background:var(--bg); }
+  .refcard { border:1px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer;
+             background:var(--bg); transition:border-color .15s; }
   .refcard:hover { border-color:var(--accent); }
   .refcard img { width:100%; height:90px; object-fit:cover; display:block; background:#000; }
   .refcard .refname { font-size:11px; padding:5px 6px 0; color:var(--text);
                       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .refcard .refdir { font-size:10px; padding:0 6px 6px; color:var(--muted); }
-  .imggrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-top:8px; }
-  .imgcard { border:2px solid var(--line); border-radius:8px; overflow:hidden; cursor:pointer; background:var(--bg); }
+
+  /* key-image candidate grid */
+  .imggrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+             gap:10px; margin-top:8px; }
+  .imgcard { border:2px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer;
+             background:var(--bg); transition:border-color .15s; }
   .imgcard:hover { border-color:var(--accent); }
-  .imgcard.sel { border-color:var(--ok); box-shadow:0 0 0 2px rgba(62,207,142,.35); }
+  .imgcard.sel { border-color:var(--ok); box-shadow:0 0 0 2px rgba(52,211,153,.35); }
   .imgcard img { width:100%; height:110px; object-fit:cover; display:block; background:#000; }
   .imgcard .imgname { font-size:10px; padding:4px 6px; color:var(--muted);
                       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -906,7 +960,7 @@ HTML = """<!doctype html>
   </div>
 </div>
 <footer>
-  <div id="modes">
+  <div class="ft-row">
     <div class="seg">
       <label class="segbtn"><input type="radio" name="mode" value="fast" checked><span>最高画質<small>spectrum・約15分</small></span></label>
       <label class="segbtn"><input type="radio" name="mode" value="high"><span>高精度<small>32B・約9分</small></span></label>
@@ -915,8 +969,30 @@ HTML = """<!doctype html>
       <label class="segbtn"><input type="radio" name="mode" value="lite"><span>軽量<small>4B・約9分</small></span></label>
       <label class="segbtn"><input type="radio" name="mode" value="quicklite"><span>最速<small>4B・短尺</small></span></label>
     </div>
+    <div id="lenbox">
+      <span>長さ:</span>
+      <select id="len-sel" onchange="onLenChange()">
+        <option value="">モードの既定</option>
+        <option value="5">約5秒</option>
+        <option value="10">約10秒</option>
+        <option value="15">約15秒</option>
+      </select>
+      <span id="len-note" class="hint"></span>
+    </div>
+  </div>
+  <div class="ft-toggles">
+    <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード</label>
+    <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（R2V）</label>
+    <div id="refpick">
+      <button type="button" onclick="pickRefImage()">🗂 参照画像を選ぶ</button>
+      <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
+    </div>
+    <button type="button" id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
+    <button type="button" id="btn-manual" onclick="showManualPrompt()">✍ 手動プロンプト</button>
+  </div>
+  <div class="ft-panels">
     <details id="advset">
-      <summary>⚙ 詳細設定（動画モデル・キー画像エンジン）</summary>
+      <summary>⚙ 詳細設定（動画モデル・キー画像エンジン・企画 LLM）</summary>
       <div class="advgroup">
         <span class="hint">動画モデル:</span>
         <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
@@ -937,25 +1013,6 @@ HTML = """<!doctype html>
         <label><input type="checkbox" id="p-dspark" onchange="sendPlanSettings()"> DSpark（実験・投機的デコード）</label>
       </div>
     </details>
-    </div>
-    <div id="lenbox">
-      <span>長さ:</span>
-      <select id="len-sel" onchange="onLenChange()">
-        <option value="">モードの既定</option>
-        <option value="5">約5秒</option>
-        <option value="10">約10秒</option>
-        <option value="15">約15秒</option>
-      </select>
-      <span id="len-note" class="hint"></span>
-    </div>
-    <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード（キー画像を作って確認してから動画）</label>
-    <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（確定キー画像を参照にして同一キャラ維持・R2V）</label>
-    <div id="refpick" class="plan">
-      <button type="button" onclick="pickRefImage()">🗂 参照画像を選ぶ</button>
-      <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
-    </div>
-    <button id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
-    <button id="btn-manual" class="small" style="background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:6px 12px;font-size:12px" onclick="showManualPrompt()">✍ 手動プロンプト</button>
     <details id="audioset">
       <summary>🎙 音声・セリフ設定（任意）</summary>
       <input type="text" id="au-voice" placeholder="声: 例：低めの落ち着いた声・息を含むささやき">
@@ -965,9 +1022,14 @@ HTML = """<!doctype html>
       <button type="button" id="btn-au-auto" onclick="autoAudio()">🎙 自動で考える（LLM）</button>
       <span id="au-status" class="hint"></span>
     </details>
-  <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
-  <button id="send" onclick="send()">生成 ▶</button>
-  <button id="cancel" class="warn" style="display:none;background:var(--err)" onclick="cancelCurrent()">✕ キャンセル</button>
+  </div>
+  <div class="ft-compose">
+    <textarea id="input" placeholder="作りたい動画を言葉で書いてください。例：夕焼けの海岸で柴犬が波打ち際を走る映像"></textarea>
+    <div class="ft-send">
+      <button id="send" onclick="send()">生成 ▶</button>
+      <button id="cancel" class="warn" style="display:none" onclick="cancelCurrent()">✕ キャンセル</button>
+    </div>
+  </div>
 </footer>
 <script>
 const $ = s => document.querySelector(s);
@@ -1548,7 +1610,7 @@ async function resetPlan() {
 }
 
 $("#planmode").addEventListener("change", e => {
-  $("#btn-reset").style.display = e.target.checked ? "" : "none";
+  $("#btn-reset").style.display = e.target.checked ? "inline-block" : "none";
 });
 
 $("#input").addEventListener("keydown", e => {
