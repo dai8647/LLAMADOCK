@@ -1490,6 +1490,7 @@ function Get-PlanModelCandidates {
             $_.Name -notmatch "(?i)mmproj" -and
             $_.Name -notmatch "-of-" -and
             $_.Name -notmatch "(?i)DSpark" -and
+            $_.Name -notmatch "(?i)DFlash2" -and
             $pinned -notcontains $_.FullName
         }
     $list = @()
@@ -1945,7 +1946,7 @@ $allFiles = Get-ChildItem -Path $ModelsBase -Filter "*.gguf" -Recurse -File -Err
 # Build model list (all models except mmproj)
 $models = @()
 foreach ($f in $allFiles) {
-    if ($f.Name -notmatch "mmproj" -and $f.Name -notmatch "(?i)DFlash2.*(?:Q4_K_M|Q8_0|Q4_K_S|Q5_K_M)") {
+    if ($f.Name -notmatch "mmproj" -and $f.Name -notmatch "(?i)DFlash2") {
         $isTQ3 = $f.Name -match "TQ3"
         $engine = Get-RequiredEngine -Model $f
         $models += [PSCustomObject]@{
@@ -2285,6 +2286,35 @@ if ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFi
 }
 if (-not $isQuickLaunch) { Write-Host "" }
 
+function Test-CacheTypeSupported {
+    # Probe whether a llama-server binary accepts a KV cache type without
+    # starting a server: "--help" exits 0 after argument parsing succeeds,
+    # while an invalid -ctk/-ctv value aborts with exit 1 before that. ROCm
+    # DLLs must be on PATH or HIP builds fail to launch at all, so prepend
+    # the newest AMD ROCm bin directory first.
+    param([string]$ServerPath, [string]$Flag, [string]$Value)
+    if (-not (Test-Path -LiteralPath $ServerPath)) { return $true }
+    $oldPath = $env:PATH
+    try {
+        $hipRoot = "C:\Program Files\AMD\ROCm"
+        if (Test-Path -LiteralPath $hipRoot) {
+            $latestHip = $null
+            foreach ($d in (Get-ChildItem -LiteralPath $hipRoot -Directory -ErrorAction SilentlyContinue)) {
+                if ($null -eq $latestHip -or $d.Name -gt $latestHip.Name) { $latestHip = $d }
+            }
+            if ($latestHip) { $env:PATH = "$(Join-Path $latestHip.FullName 'bin');$env:PATH" }
+        }
+        $null = & $ServerPath $Flag $Value --help 2>&1
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $true
+    }
+    finally {
+        $env:PATH = $oldPath
+    }
+}
+
 # Prompt KV cache quantization selection
 $kvOptions = @(
     [PSCustomObject]@{ Label = "Q8"; Type = "q8_0"; Note = "larger, stable default for K" },
@@ -2298,7 +2328,22 @@ $kvOptions = @(
 )
 
 if ($requiredEngine -eq "TurboTan") {
-    $kvOptions += [PSCustomObject]@{ Label = "tq3_0"; Type = "tq3_0"; Note = "TurboTan TQ3 cache, recommended for TQ3_4S V" }
+    # Older TurboTan builds accepted tq3_0/turbo* KV caches; the current
+    # b10536 build rejects them (instant startup crash when selected). Probe
+    # the actual binary and keep only cache types it validates for BOTH K and
+    # V, so the menu can never offer a combination that kills llama-server.
+    $probedKv = @()
+    foreach ($kv in $kvOptions) {
+        $okK = Test-CacheTypeSupported -ServerPath $ServerPath -Flag "-ctk" -Value $kv.Type
+        $okV = Test-CacheTypeSupported -ServerPath $ServerPath -Flag "-ctv" -Value $kv.Type
+        if ($okK -and $okV) { $probedKv += $kv }
+    }
+    if ($probedKv.Count -gt 0) {
+        $kvOptions = $probedKv
+        if (-not $isQuickLaunch) {
+            Write-Host "TurboTan KV probe: keeping $($kvOptions.Count) cache types accepted by this build." -ForegroundColor DarkGray
+        }
+    }
 }
 elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
     $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
@@ -2383,7 +2428,7 @@ else {
         }
     }
     else {
-        $defaultVType = if ($requiredEngine -eq "TurboTan") { "q4_0" } else { "q4_0" }
+        $defaultVType = "q4_0"
         do {
             $defaultVLabel = $defaultVType
             $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
