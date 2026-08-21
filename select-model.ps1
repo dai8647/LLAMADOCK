@@ -2688,7 +2688,7 @@ if (-not $DryRun -and -not $isQuickLaunch) {
         Write-Host " [$($i+1)] $($ro.Label) - $($ro.ChatKwargs)"
     }
     Write-Host ""
-    $defaultReasoning = if ($requiredEngine -eq "TurboTan") { "off" } else { "low" }
+    $defaultReasoning = "low"
     do {
         $reasoningInput = Read-Host "Select reasoning mode (1-4), or press Enter for $defaultReasoning"
         if ([string]::IsNullOrWhiteSpace($reasoningInput)) {
@@ -2966,15 +2966,6 @@ if ($SpecMode -eq "DFlash2") {
         Write-Host "ERROR: DFlash2 engine not found at $ServerPath" -ForegroundColor Red
         Write-Host "Build the DFlash2 fork (z-lab/llama.cpp-fork dflash2 branch) with ROCm 7.1." -ForegroundColor Red
         exit 1
-    }
-    # DFlash2 benefits from low reasoning effort to avoid excessive thinking.
-    # Override chat-template-kwargs and reasoning mode unless user explicitly set them.
-    if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs)) {
-        $effectiveChatTemplateKwargs = '{"reasoning_effort":"low"}'
-        $effectiveReasoningMode = ""
-        if (-not $isQuickLaunch) {
-            Write-Host "DFlash2: reasoning effort set to low (override with --ChatTemplateKwargs)" -ForegroundColor Yellow
-        }
     }
 }
 
