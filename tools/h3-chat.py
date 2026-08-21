@@ -172,6 +172,7 @@ PLAN_ENGINE = "AtomicBot (ROCm 7.1 HIP)" if PLAN_GPU else (
     "AtomicBot (ROCm 7.1 HIP)" if "build-rocm71" in PLAN_SERVER_BIN else "Unknown"
 )
 PLAN_ENGINE_DSPARK = "TurboTan (draft-dspark)"
+PLAN_ENGINE_DFLASH2 = "DFlash2 (ROCm 7.1 HIP, draft-dflash)"
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
@@ -187,11 +188,16 @@ PLAN_SETTINGS = {
     "reasoning_effort": "medium",  # off, low, medium, xhigh
     "reasoning_budget": 1536,       # max thinking tokens
     "dspark": False,      # DSpark speculative decoding (experimental)
+    "dflash2": False,     # DFlash2 speculative decoding (experimental)
 }
 # DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
 DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
 # DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
 TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
+# DFlash2 draft model path (Qwen3.8-27B-DFlash2, grouped dynamic convolution, Q4_K_M ~1.14GB)
+DFLASH2_GGUF = r"C:\Users\dai86\.lmstudio\models\incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
+# DFlash2 requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch, ROCm 7.1 HIP).
+DFLASH2_SERVER_BIN = r"C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
 
@@ -263,6 +269,16 @@ def _spawn_plan_llm():
                 "--spec-type", "draft-dspark",
                 "--spec-draft-model", DSPARK_GGUF,
                 "--spec-draft-n-max", "7",
+                "-ngld", "99",
+            ]
+        # DFlash2 speculative decoding: grouped dynamic depthwise convolution
+        # draft model predicts up to 8 tokens ahead; main model verifies.
+        # Requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch).
+        if PLAN_SETTINGS.get("dflash2") and os.path.isfile(DFLASH2_GGUF):
+            args += [
+                "--spec-type", "draft-dflash",
+                "--spec-draft-model", DFLASH2_GGUF,
+                "--spec-draft-n-max", "8",
                 "-ngld", "99",
             ]
     else:

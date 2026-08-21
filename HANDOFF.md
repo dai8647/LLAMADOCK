@@ -131,12 +131,15 @@ node tools/mcp-smoke.mjs
 - `--fast fp16_accumulation --force-non-blocking`（fast プロファイル）は **未ベンチ**（画質リスク要検証）
 - エンコーダが理解できても DiT 自体が描けない内容は出ない（32B でも同様）
 - select-model.ps1 は BOM なし UTF-8 なので、**日本語を追加すると PowerShell 5.1 が Shift-JIS 誤読して構文破壊**する → メニュー文言は英語のまま保つ
-- **投機的デコード（SpecMode）**: モデル選択後に `[1] Off / [2] MTP/NextN / [3] DSpark` を選択可（Manual モード）。
+- **投機的デコード（SpecMode）**: モデル選択後に `[1] Off / [2] MTP/NextN / [3] DSpark / [4] DFlash2` を選択可（Manual モード）。
   - MTP/NextN = 結合済み `*_MTP.gguf` 自己ドラフト（`-md 自己 --spec-type draft-mtp`）。**AtomicBot で実機検証済み**（finex666 / lemonyins）
   - DSpark = 外部ドラフト（erlidev `Qwen3.8-27B-DSpark-Q8_0.gguf`、`--spec-type draft-dspark`）。**AtomicBot は非対応**（unknown spec type で起動失敗）→ **TurboTan ビルド限定**。select-model.ps1 は DSpark 選択時に TurboTan へ自動切替。ドラフトパスは env `LLAMADOCK_DSPARK_DRAFT` で上書き可
   - DSpark ドラフトは主モデル一覧・planner 候補から除外済み（draft 専用のため主モデルとして起動しない）
   - h3-chat.py の planner 詳細設定に DSpark チェックボックスあり（GPU planner のみ。有効時は TurboTan ビルドに切替）
-  - DFlash2（llama.cpp PR #27342）は未マージ・手持ちビルド未実装 → 使用不可
+  - DFlash2（llama.cpp PR #27342）: upstream PR ブランチから ROCm 7.1 HIP (gfx1101) ビルド済み（`C:\Users\dai86\Downloads\llama-dflash2\build-rocm71`）。`--spec-type draft-dflash` + DFlash2 チェックポイントで使用可。ドラフト: incoai/Qwen3.8-27B-DFlash2-GGUF (Q4_K_M)。env `LLAMADOCK_DFLASH2_DRAFT` で上書き可
+    - **バグ修正済み（2件）**: (1) `ggml/src/gguf.cpp` — DFlash2 GGUF の `general.tags` が ARRAY of ARRAY（ネスト配列）なのにパーサーが1段しか対応していなかった → ネスト配列をスキップするロジックを追加 (2) `common/speculative.cpp` — ドラフトモデルロード時に `params.model.path`（メインモデル）を参照していたバグを `model_path`（ドラフトモデル）に修正
+    - 選択肢: `[4] DFlash2` (SpecMode)。DFlash2 エンジンに自動切替。Draft GGUF が見つからない場合はエラー
+    - ベースモデル `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M` での動作確認済み。heretic-ara でも動作確認済み（アーキテクチャ一致ならOK）
 
 ---
 

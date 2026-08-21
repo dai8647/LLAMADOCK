@@ -20,7 +20,7 @@ param(
     [string]$McpMode = "Prompt",
     [ValidateSet("Prompt", "On", "Off")]
     [string]$FlashAttentionMode = "Prompt",
-    [ValidateSet("Prompt", "Off", "MtpNextN", "DSpark")]
+    [ValidateSet("Prompt", "Off", "MtpNextN", "DSpark", "DFlash2")]
     [string]$SpecMode = "Prompt",
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
@@ -31,7 +31,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat", "DFlash2")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -131,6 +131,18 @@ elseif (Test-Path "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\l
 }
 else {
     "C:\Users\dai86\Downloads\longcat-llama.cpp\build\bin\llama-server.exe"
+}
+# DFlash2 llama.cpp fork (z-lab/llama.cpp-fork dflash2 branch) for
+# DFlash2 speculative decoding (grouped dynamic depthwise convolution).
+# Built with ROCm 7.1 HIP for RX 7800 XT (gfx1101).
+$DFlash2ServerPath = if ($env:LLAMA_TQ3_DFLASH2_SERVER) {
+    $env:LLAMA_TQ3_DFLASH2_SERVER
+}
+elseif (Test-Path "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe") {
+    "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
+}
+else {
+    "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
 }
 $ModelsBase = if ($env:LLAMADOCK_MODELS_BASE) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_MODELS_BASE)
@@ -617,6 +629,12 @@ function Get-RequiredEngine {
     # fork (arch longcat-flash-ngram); mainline/AtomicBot cannot load these.
     if ($modelText -match "(?i)LongCat") {
         return "LongCat"
+    }
+
+    # DFlash2 checkpoints: needs the DFlash2 fork build (z-lab/llama.cpp-fork).
+    # AtomicBot/TurboTan do not support the DFlash2 grouped-dynamic-convolution arch.
+    if ($modelText -match "(?i)DFlash2") {
+        return "DFlash2"
     }
 
     # Default non-special GGUFs use the AtomicBot TurboQuant runtime.
@@ -2764,7 +2782,7 @@ if ($requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $eff
 }
 
 # External draft model used by DSpark speculative decoding. Defined before the
-# SpecMode prompt so the prompt can suggest DSpark only when the draft exists.
+# SpecMode prompt so the prompt can suggest DSpark/DFlash2 only when the draft exists.
 $dsparkDraftModel = if ($env:LLAMADOCK_DSPARK_DRAFT) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DSPARK_DRAFT)
 }
@@ -2772,12 +2790,21 @@ else {
     Join-Path $ModelsBase "erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
 }
 
+# DFlash2 draft model: Qwen3.8-27B architecture (incoai Q8_0 or Q4_K_M).
+$dflash2DraftModel = if ($env:LLAMADOCK_DFLASH2_DRAFT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DFLASH2_DRAFT)
+}
+else {
+    Join-Path $ModelsBase "incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
+}
+
 if ($SpecMode -eq "Prompt") {
     # Default suggestion: MTP models -> MtpNextN, Qwen3.8-27B with an
-    # installed DSpark draft -> DSpark, everything else -> Off.
+    # installed DSpark draft -> DSpark, DFlash2 draft -> DFlash2, everything else -> Off.
     $modelIsMtp = $selected.Name -match "(?i)MTP"
     $modelIsQwen27B = $selected.Name -match "(?i)Qwen3\.8-27B"
     $draftExists = Test-Path -LiteralPath $dsparkDraftModel
+    $dflash2DraftExists = Test-Path -LiteralPath $dflash2DraftModel
 
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
     Write-Host " [1] Off - normal decoding"
@@ -2796,12 +2823,26 @@ if ($SpecMode -eq "Prompt") {
     else {
         Write-Host " [3] DSpark - external draft GGUF (draft model not found; requires TurboTan engine)"
     }
+    if ($dflash2DraftExists -and $modelIsQwen27B) {
+        Write-Host " [4] DFlash2 - grouped dynamic convolution (requires DFlash2 engine; recommended for this model)" -ForegroundColor Cyan
+    }
+    elseif ($dflash2DraftExists) {
+        Write-Host " [4] DFlash2 - grouped dynamic convolution (requires DFlash2 engine)"
+    }
+    else {
+        Write-Host " [4] DFlash2 - grouped dynamic convolution (draft model not found; requires DFlash2 engine)"
+    }
     Write-Host ""
 
     do {
-        $defaultSpecChoice = if ($modelIsMtp) { 2 } elseif ($draftExists -and $modelIsQwen27B) { 3 } else { 1 }
-        $defaultSpecLabel = if ($modelIsMtp) { "MTP/NextN" } elseif ($draftExists -and $modelIsQwen27B) { "DSpark" } else { "Off" }
-        $specInput = Read-Host "Select speculative mode (1-3), or press Enter for $defaultSpecLabel"
+        $defaultSpecChoice = if ($modelIsMtp) { 2 } elseif ($dflash2DraftExists -and $modelIsQwen27B) { 4 } elseif ($draftExists -and $modelIsQwen27B) { 3 } else { 1 }
+        $defaultSpecLabel = switch ($defaultSpecChoice) {
+            2 { "MTP/NextN" }
+            3 { "DSpark" }
+            4 { "DFlash2" }
+            default { "Off" }
+        }
+        $specInput = Read-Host "Select speculative mode (1-4), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
             $specSelection = $defaultSpecChoice
             $specValid = $true
@@ -2810,11 +2851,12 @@ if ($SpecMode -eq "Prompt") {
             $specSelection = 0
             $specValid = [int]::TryParse($specInput, [ref]$specSelection)
         }
-    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt 3)
+    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt 4)
 
     if ($specSelection -eq 1) { $SpecMode = "Off" }
     elseif ($specSelection -eq 2) { $SpecMode = "MtpNextN" }
-    else { $SpecMode = "DSpark" }
+    elseif ($specSelection -eq 3) { $SpecMode = "DSpark" }
+    else { $SpecMode = "DFlash2" }
 }
 
 if (-not $isQuickLaunch) {
@@ -2854,6 +2896,30 @@ if ($SpecMode -eq "DSpark") {
     if (-not (Test-Path -LiteralPath $ServerPath)) {
         Write-Host "ERROR: TurboTan engine not found at $ServerPath" -ForegroundColor Red
         Write-Host "Install the TurboTan build to use DSpark speculative decoding." -ForegroundColor Red
+        exit 1
+    }
+}
+
+if ($SpecMode -eq "DFlash2") {
+    if (-not (Test-Path -LiteralPath $dflash2DraftModel)) {
+        Write-Host "ERROR: DFlash2 draft model not found: $dflash2DraftModel" -ForegroundColor Red
+        Write-Host "Set LLAMADOCK_DFLASH2_DRAFT to a DFlash2 draft GGUF, or install incoai/Qwen3.8-27B-DFlash2-GGUF." -ForegroundColor Red
+        exit 1
+    }
+    # The DFlash2 draft is Qwen3.8-27B-architecture; warn when the
+    # selected main model is something else (arch mismatch will not work).
+    if ($selected.Name -notmatch "(?i)Qwen3\.8-27B") {
+        Write-Host "WARNING: $dflash2DraftModel is a Qwen3.8-27B DFlash2 draft; main model arch must match." -ForegroundColor Yellow
+    }
+    # DFlash2 speculative decoding requires the DFlash2 fork build.
+    if ($requiredEngine -ne "DFlash2") {
+        Write-Host "DFlash2 mode requires the DFlash2 engine (ROCm 7.1 HIP). Switching engine..." -ForegroundColor Yellow
+        $requiredEngine = "DFlash2"
+        $ServerPath = $DFlash2ServerPath
+    }
+    if (-not (Test-Path -LiteralPath $ServerPath)) {
+        Write-Host "ERROR: DFlash2 engine not found at $ServerPath" -ForegroundColor Red
+        Write-Host "Build the DFlash2 fork (z-lab/llama.cpp-fork dflash2 branch) with ROCm 7.1." -ForegroundColor Red
         exit 1
     }
 }
@@ -2973,6 +3039,15 @@ if ($SpecMode -eq "DSpark") {
         "--spec-type", "draft-dspark",
         "--spec-draft-model", "$dsparkDraftModel",
         "--spec-draft-n-max", "7",
+        "-ngld", "99"
+    )
+}
+
+if ($SpecMode -eq "DFlash2") {
+    $args += @(
+        "--spec-type", "draft-dflash",
+        "--spec-draft-model", "$dflash2DraftModel",
+        "--spec-draft-n-max", "8",
         "-ngld", "99"
     )
 }

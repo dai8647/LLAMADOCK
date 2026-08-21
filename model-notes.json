@@ -47,5 +47,11 @@
   "note": "MiniMax H3 は llama-server で動くテキスト LLM ではなく、ComfyUI で使う 33B の動画・音声生成 DiT（拡散モデル、アーキテクチャ minimax_h3）です。llama-server の起動フローは関係ありません。ComfyUI（http://127.0.0.1:8188）にモデルを置いて使います（既定の配置: ComfyUI の extra_model_paths.yaml で .lmstudio\\models\\MiniMax-H3 を参照）。fl2va = テキスト/先頭フレーム→動画+音声、ref2va = 参照条件付き生成。量子化は Q8_0 / Q5_1 / Q5_0 / Q4_0 のみ（hidden width 2688 のため K 量子化は不可）。テキストエンコーダ GGUF（Qwen3-VL-32B + mmproj）と VAE も別途必要です。**R2V（参照モード）**: ComfyUI の models\\loras\\ に `minimax_h3_ref_lora_rank_256_bf16.safetensors`（Kijai/MiniMax-H3-experimental の loras/、約 1.9GB）を置き、fl2va モデルに LoraLoaderModelOnly で重ねると ref2va モデル無しで参照条件付き生成ができます（h3_workflow_r2v*.json・h3-chat の 🔗 参照モード）。Spectrum 併用はオフ推奨・4-8step。",
   "warning": "llama-server / AtomicBot / TurboTan / PrismBonsai で起動しないでください（ComfyUI 専用モデル）。GGUF 版は ComfyUI 0.30.0+ で ComfyUI-GGUF + ComfyUI-H3-Multishot v1.5.2+（ネイティブ版は MiniMaxAI/MiniMax-H3 ノード）が必須。エンコーダが無いと生成できません。",
   "recommended_preset": "Manual"
+ },
+ {
+  "pattern": "(?i)DFlash2",
+  "note": "DFlash2: z-lab/llama.cpp-fork dflash2 ブランチから ROCm 7.1 HIP (gfx1101) ビルド。--spec-type draft-dflash。DFlash2 チェックポイント（incoai/Qwen3.8-27B-DFlash2-GGUF）が自動的に DFlash2 アーキテクチャ（grouped dynamic depthwise convolution + candidate selector）を有効化。主モデルは Qwen3.8-27B とアーキテクチャ一致が必須。",
+  "warning": "AtomicBot/TurboTan では動作不可。DFlash2 専用ビルド engine が必要。",
+  "recommended_preset": "OpenCodeCoding"
  }
 ]

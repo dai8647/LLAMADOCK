@@ -418,6 +418,15 @@ export function createAppServer() {
               setFlag(next, "--spec-type", "draft-dflash");
               setFlag(next, "--spec-draft-model", draft);
               setFlag(next, "--spec-draft-n-max", String(clampInt(body.specDraftNMax, 1, 32, 15)));
+            } else if (body.specType === "draft-dflash2") {
+              const draft = String(body.specDraftModel || "").trim();
+              if (!draft) {
+                sendJson(res, 400, { ok: false, error: "draft_model_required", message: "DFlash2 にはドラフトモデル（GGUF）のパスが必要です。" });
+                return;
+              }
+              setFlag(next, "--spec-type", "draft-dflash");
+              setFlag(next, "--spec-draft-model", draft);
+              setFlag(next, "--spec-draft-n-max", String(clampInt(body.specDraftNMax, 1, 32, 8)));
             }
             // "off": nothing to add.
           }

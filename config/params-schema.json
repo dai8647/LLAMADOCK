@@ -265,7 +265,8 @@
             { "value": "simple", "label": "Simple draft model" },
             { "value": "eagle3", "label": "Eagle3" },
             { "value": "draft-mtp", "label": "MTP (needs combined *_MTP.gguf)" },
-            { "value": "draft-dflash", "label": "DFlash (external draft GGUF; b10536/AtomicBot)" },
+            { "value": "draft-dflash", "label": "DFlash v1 (external draft GGUF)" },
+            { "value": "draft-dflash2", "label": "DFlash2 (external draft GGUF; requires DFlash2 engine)" },
             { "value": "draft-dspark", "label": "DSpark (future; DeepSeek V4 Flash/Pro DSpark checkpoints)" }
           ],
           "default": "off",

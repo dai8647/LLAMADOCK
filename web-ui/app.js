@@ -685,7 +685,7 @@
 
   function toggleEsDraftRow() {
     const row = $("#es-draft-row");
-    if (row) row.classList.toggle("hidden", $("#es-spec").value !== "draft-dflash");
+    if (row) row.classList.toggle("hidden", !["draft-dflash", "draft-dflash2"].includes($("#es-spec").value));
   }
 
   async function loadEngineSettings() {
@@ -727,10 +727,11 @@
       cacheRam: Number($("#es-cacheram").value),
       specType: $("#es-spec").value,
     };
-    if (body.specType === "draft-dflash") {
+    if (["draft-dflash", "draft-dflash2"].includes(body.specType)) {
       body.specDraftModel = $("#es-draft").value.trim();
       if (!body.specDraftModel) {
-        setEsStatus("DFlash にはドラフトモデルのパスが必要です", "err");
+        const label = body.specType === "draft-dflash2" ? "DFlash2" : "DFlash";
+        setEsStatus(`${label} にはドラフトモデルのパスが必要です`, "err");
         btn.disabled = false;
         return;
       }
