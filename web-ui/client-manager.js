@@ -126,13 +126,31 @@ function windowsPlan(spec, { model, workspace, prompt }) {
     case "DeepSeekHarness": {
       // Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
       // over npx; npx re-downloads the full ~450-package tree on every launch.
-      const dshCmd = join(process.env.APPDATA || "", "npm", "dsh.cmd");
-      if (existsSync(dshCmd)) {
-        return { exe: dshCmd, args: ["web"], cwd: root, display: `${q(dshCmd)} web` };
+      // Node >=18.20 refuses to spawn .cmd/.bat shims directly (EINVAL, CVE
+      // hardening), so route through the .ps1 shim or cmd.exe explicitly.
+      const npmDir = join(process.env.APPDATA || "", "npm");
+      const dshPs1 = join(npmDir, "dsh.ps1");
+      if (existsSync(dshPs1)) {
+        const args = [...shellArgs, "-ExecutionPolicy", "Bypass", "-File", dshPs1, "web"];
+        return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
       }
-      const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-      const args = ["--yes", "@deepseek-ai/dsh@latest", "web"];
-      return { exe: npx, args, cwd: root, display: `${npx} ${args.join(" ")}` };
+      const dshCmd = join(npmDir, "dsh.cmd");
+      if (existsSync(dshCmd)) {
+        return {
+          exe: "cmd.exe",
+          args: ["/d", "/s", "/c", `"${dshCmd}" web`],
+          cwd: root,
+          spawnOptions: { windowsVerbatimArguments: true },
+          display: `cmd.exe /c ${q(dshCmd)} web`,
+        };
+      }
+      const npxArgs = ["--yes", "@deepseek-ai/dsh@latest", "web"];
+      if (process.platform === "win32") {
+        // npx.cmd hits the same EINVAL restriction — let PowerShell resolve it.
+        const script = `npx ${npxArgs.join(" ")}`;
+        return { exe: "powershell.exe", args: [...shellArgs, "-Command", script], cwd: root, display: `powershell.exe -Command "${script}"` };
+      }
+      return { exe: "npx", args: npxArgs, cwd: root, display: `npx ${npxArgs.join(" ")}` };
     }
     default:
       return null;
@@ -183,6 +201,7 @@ export function createClientManager({ upstream = () => null } = {}) {
           cwd: plan.cwd,
           detached: true,
           stdio: "ignore",
+          ...(plan.spawnOptions || {}),
         });
         child.unref();
         mark(spec.id, { state: "connected", pid: child.pid, message: `${spec.label} を起動しました` });
@@ -217,18 +236,18 @@ export function createClientManager({ upstream = () => null } = {}) {
   // config). Returns one entry per client: up / latency / statusCode / error.
   // On Windows this tells the GUI "ComfyUI came up on :8188"; in the sandbox
   // connection-refused is reported truthfully (up: false).
+  // Probes run in parallel: three down clients at a 2.5s timeout each must not
+  // serialize into ~8s and overlap the next poll interval.
   async function checkHealth({ timeoutMs = 2500 } = {}) {
-    const out = [];
-    for (const spec of CLIENTS) {
+    const out = await Promise.all(CLIENTS.map(async (spec) => {
       const url = healthUrlFor(spec);
       if (!url) {
-        out.push({ id: spec.id, checked: false, up: null, url: null, latencyMs: null, statusCode: null, error: "no_health_check" });
-        continue;
+        return { id: spec.id, checked: false, up: null, url: null, latencyMs: null, statusCode: null, error: "no_health_check" };
       }
       const started = Date.now();
       try {
         const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "follow" });
-        out.push({
+        return {
           id: spec.id,
           checked: true,
           up: res.ok,
@@ -236,9 +255,9 @@ export function createClientManager({ upstream = () => null } = {}) {
           latencyMs: Date.now() - started,
           statusCode: res.status,
           error: res.ok ? null : `HTTP ${res.status}`,
-        });
+        };
       } catch (error) {
-        out.push({
+        return {
           id: spec.id,
           checked: true,
           up: false,
@@ -246,9 +265,9 @@ export function createClientManager({ upstream = () => null } = {}) {
           latencyMs: Date.now() - started,
           statusCode: null,
           error: errorMessage(error),
-        });
+        };
       }
-    }
+    }));
     return out;
   }
 

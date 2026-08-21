@@ -175,7 +175,7 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
     healthTimer.unref?.();
   }
 
-  async function launch({ model, engine = null, args = [], env = {}, port = upstreamPort, resolvedParams = null }) {
+  async function launch({ model, engine = null, engineBin = null, extraPath = null, args = [], env = {}, port = upstreamPort, resolvedParams = null }) {
     if (state.status === STATES.RUNNING || state.status === STATES.STARTING) {
       return {
         ok: false,
@@ -203,19 +203,25 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
     });
     log(`launch requested: model=${model} engine=${engine || "auto"} port=${port}`);
 
+    let childExited = false;
     try {
       if (process.platform === "win32") {
-        // Phase 1 core wiring: select-model.ps1's engine resolution will set
-        // LLAMADOCK_ENGINE_BIN; until then this is a clear contract error.
-        const engineBin = process.env.LLAMADOCK_ENGINE_BIN;
-        if (!engineBin) {
+        // Engine binary is resolved by server.js from the select-model.ps1
+        // candidate table; LLAMADOCK_ENGINE_BIN still wins when set.
+        const bin = process.env.LLAMADOCK_ENGINE_BIN || engineBin;
+        if (!bin) {
           throw new Error(
-            "Windows コア（select-model.ps1 の Phase 1 モジュール抽出）がまだ /api/launch に配線されていません。" +
-              "LLAMADOCK_ENGINE_BIN にエンジン実行ファイルのパスを設定するか、Phase 1 の抽出後に接続してください。",
+            "起動するエンジン実行ファイルを解決できませんでした。LLAMADOCK_ENGINE_BIN を設定するか、select-model.ps1 のランタイム候補パスに llama-server.exe を配置してください。",
           );
         }
-        log(`spawning engine: ${engineBin}`);
-        child = spawn(engineBin, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+        log(`spawning engine: ${bin}`);
+        const spawnEnv = { ...process.env, ...env };
+        if (extraPath) {
+          // HIP DLLs (amdhip64.dll etc.) live in the ROCm bin dir; the
+          // PowerShell core prepends it the same way.
+          spawnEnv.PATH = `${extraPath};${spawnEnv.PATH || ""}`;
+        }
+        child = spawn(bin, args, { env: spawnEnv, stdio: ["ignore", "pipe", "pipe"] });
       } else {
         // Simulation stand-in: real spawn + ready-wait + stop lifecycle.
         child = spawn(process.execPath, [MOCK_SERVER], {
@@ -235,6 +241,7 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
       pipe("out", child.stdout);
       pipe("err", child.stderr);
       child.on("exit", (code, signal) => {
+        childExited = true;
         log(`process exited code=${code} signal=${signal ?? ""}`);
         clearInterval(healthTimer);
         stopping = false;
@@ -270,12 +277,16 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
         });
       });
 
-      const health = await waitForHealth(port, { shouldAbort: () => stopping });
+      // Abort the ready-wait as soon as the process dies — a crashed engine
+      // must surface its error immediately, not after the full timeout.
+      const health = await waitForHealth(port, { shouldAbort: () => stopping || childExited });
       if (!health) {
         throw new Error(
           stopping
             ? "起動処理は停止されました"
-            : `起動後 ${Math.round(READY_TIMEOUT_MS / 1000)}s 以内に /health が応答しませんでした（127.0.0.1:${port}）`,
+            : childExited
+              ? `プロセスが起動直後に終了しました（127.0.0.1:${port}）。ログを確認してください。`
+              : `起動後 ${Math.round(READY_TIMEOUT_MS / 1000)}s 以内に /health が応答しませんでした（127.0.0.1:${port}）`,
         );
       }
       setState({ status: STATES.RUNNING, health, metrics: metricsFromHealth(health) });

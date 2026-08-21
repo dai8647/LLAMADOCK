@@ -19,9 +19,13 @@
     overrides: {},          // edits made in this session for the selected model
     appliedPresetId: null,
     saveTimer: null,
+    saveChain: Promise.resolve(), // serializes per-model saves (no lost updates)
     argString: "",
     health: {},             // client id -> latest /api/clients/health entry
     lastClients: [],        // last /api/status clients, for health re-render
+    runningModel: null,     // model currently reported as running by /api/status
+    pollFails: 0,           // consecutive /api/status failures -> offline banner
+    ggufIndex: new Map(),   // lowercase name -> {name,sizeGb,path} from /api/models/scan
   };
 
   const CUSTOM_MODELS_KEY = "llamadock.customModels.v1";
@@ -67,10 +71,13 @@
     // MiniMax H3 is a ComfyUI diffusion model (video/audio DiT), not a
     // llama-server text model — never guess a llama.cpp engine for it.
     if (/minimax.?h3|minimax_h3|fl2va|ref2va/.test(n)) return "ComfyUI (DiT)";
-    if (/tq3|turbo.?tan/.test(n)) return "TurboTan";
+    // Same routing order as select-model.ps1's Get-RequiredEngine:
+    // Ternary before DeepSeek so REAP/TQ3-mixed names route correctly.
     if (/ternary|bonsai/.test(n)) return "PrismBonsai";
-    if (/laguna|experts/.test(n)) return "ExpertsLaguna";
-    if (/ds4|deepseek.?4/.test(n)) return "DeepSeekDS4";
+    if (/deepseek|ds4-compact|reap[-_ ]?k128|laguna/.test(n)) return "ExpertsLaguna";
+    if (/tq3_4s|tq3/.test(n)) return "TurboTan";
+    if (/longcat/.test(n)) return "LongCat";
+    if (/dflash2/.test(n)) return "DFlash2";
     return "AtomicBot";
   }
 
@@ -133,16 +140,26 @@
 
   async function savePerModelMemory() {
     if (!state.selectedModel) return;
+    const model = state.selectedModel;
     const perModel = {};
     for (const [id, value] of Object.entries(state.overrides)) {
       const p = paramById(id);
       if (p && p.per_model) perModel[id] = value;
     }
-    const result = await api("/api/params", {
-      method: "POST",
-      body: JSON.stringify({ model: state.selectedModel, overrides: perModel }),
-    });
-    if (result.ok) state.modelsConfig = result.modelsConfig;
+    // Serialize saves: a flush on model switch and the trailing debounce timer
+    // must never run two read-modify-write cycles against models-config.json
+    // concurrently (last-writer-wins would drop one of them).
+    const task = state.saveChain.then(async () => {
+      const result = await api("/api/params", {
+        method: "POST",
+        body: JSON.stringify({ model, overrides: perModel }),
+      });
+      if (result.ok) {
+        state.modelsConfig = result.modelsConfig;
+        updateResetMemoryButton();
+      }
+    }).catch(() => { /* transient — next edit re-saves */ });
+    state.saveChain = task;
   }
 
   /* ---------- render: model list (left) ---------- */
@@ -163,6 +180,7 @@
       const notes = notesForModel(m.name);
       const engine = engineForModel(m.name);
       const selected = state.selectedModel === m.name;
+      const running = state.runningModel === m.name;
       const size = m.sizeGb ? `${m.sizeGb} GB` : "サイズ不明";
       return `
         <li>
@@ -171,6 +189,7 @@
             <div class="meta">
               <span>${esc(size)}</span>
               <span class="badge badge-engine">${engine}</span>
+              ${running ? '<span class="badge badge-running">実行中</span>' : ""}
               ${notes?.recommended_preset ? `<span class="badge badge-preset">${esc(notes.recommended_preset)}</span>` : ""}
               ${notes?.warning ? '<span class="badge badge-warn">注意</span>' : ""}
             </div>
@@ -196,6 +215,7 @@
 
   function selectModel(name) {
     if (state.selectedModel !== name) {
+      clearTimeout(state.saveTimer); // no trailing save for the *new* model
       savePerModelMemory(); // flush pending edits for the previous model
       state.selectedModel = name;
       state.overrides = {};
@@ -204,11 +224,19 @@
     const meta = $("#model-meta");
     const notes = notesForModel(name);
     meta.textContent = notes ? `${name} — ${notes.recommended_preset || "推奨なし"}` : name;
+    updateResetMemoryButton();
     renderModelList($("#model-search").value);
     renderGroups();
     renderPresetChips();
     refresh();
     toast(`モデル「${name}」を選択`);
+  }
+
+  function updateResetMemoryButton() {
+    const btn = $("#btn-reset-memory");
+    if (!btn) return;
+    const mem = state.modelsConfig?.models?.[state.selectedModel];
+    btn.classList.toggle("hidden", !mem || Object.keys(mem).length === 0);
   }
 
   /* ---------- render: parameter groups (center) ---------- */
@@ -305,11 +333,14 @@
             return `<option value="${esc(v)}" ${String(value) === String(v) ? "selected" : ""}>${esc(label)}</option>`;
           })
           .join("");
+        // Explicit escape hatch back to custom values: without it, picking an
+        // allowed value once makes custom values unreachable from the select.
+        const customOpt = param.allow_custom ? `<option value="__custom__">カスタム…</option>` : "";
         const isCustom = param.allow_custom && !(param.allowed || []).some((o) => String(typeof o === "object" ? o.value : o) === String(value));
         const custom = param.allow_custom
           ? `<input type="text" data-param="${esc(id)}" data-custom="1" value="${esc(isCustom ? value : "")}" placeholder="カスタム値" ${isCustom ? "" : "hidden"} />`
           : "";
-        return `<select data-param="${esc(id)}">${options}</select>${custom}`;
+        return `<select data-param="${esc(id)}">${options}${customOpt}</select>${custom}`;
       }
       case "int":
       case "num": {
@@ -355,9 +386,15 @@
       if (el.matches("select[data-param]")) {
         const customInput = el.parentElement.querySelector("input[data-custom]");
         if (customInput) {
-          const isCustom = el.value === "__custom__" ||
-            !(paramById(el.dataset.param)?.allowed || []).some(
-              (o) => String(typeof o === "object" ? o.value : o) === el.value);
+          // "__custom__" only reveals the text input — the effective value
+          // stays whatever it was until the user types one.
+          if (el.value === "__custom__") {
+            customInput.hidden = false;
+            setTimeout(() => customInput.focus(), 0);
+            return;
+          }
+          const isCustom = !(paramById(el.dataset.param)?.allowed || []).some(
+            (o) => String(typeof o === "object" ? o.value : o) === el.value);
           customInput.hidden = !isCustom;
           if (isCustom && !el.value.startsWith("__")) customInput.value = el.value;
         }
@@ -468,6 +505,8 @@
     const rt = status.runtime || {};
     const st = rt.status || "idle";
     const isSim = status.server && status.server.platform !== "win32";
+    state.pollFails = 0;
+    state.runningModel = st === "running" ? (rt.model || null) : null;
 
     const label = $("#runtime-signal-label");
     const dot = $("#runtime-signal").querySelector(".dot");
@@ -479,6 +518,25 @@
       label.textContent = RUNTIME_LABEL[st] || st;
     }
     dot.className = `dot ${RUNTIME_DOT[st] || "dot-amber"}`;
+
+    // Launch button mirrors the runtime state machine: no double-launch, and
+    // the starting phase shows elapsed seconds instead of a dead button.
+    const launchBtn = $("#btn-launch");
+    if (launchBtn) {
+      const starting = st === "starting";
+      launchBtn.disabled = starting || st === "running";
+      launchBtn.textContent =
+        st === "running" ? "起動済み"
+          : starting ? `起動中… ${Math.round((rt.uptimeMs || 0) / 1000)}s`
+            : "起動";
+      launchBtn.title = st === "running"
+        ? `「${rt.model || ""}」が起動中です（停止してから切り替えてください）`
+        : "選択モデルを起動（Windows ランタイム）";
+    }
+    const stopBtn = $("#btn-stop");
+    if (stopBtn) {
+      stopBtn.disabled = !(st === "running" || st === "starting" || st === "error");
+    }
 
     $("#server-state").textContent =
       st === "running"
@@ -559,10 +617,14 @@
   async function loadStatus() {
     const status = await api("/api/status");
     applyStatus(status);
+    const engines = status.engines || [];
+    const engineChips = engines.length
+      ? `<div class="status-row"><span class="label">エンジン</span><span class="engine-chips">${engines.map((e) => `<span class="badge ${e.found ? "badge-engine" : "badge-warn"}" title="${e.found ? "インストール済み" : "未検出"}">${esc(e.name)}</span>`).join("")}</span></div>`
+      : "";
     $("#platform-body").innerHTML = `
       この環境は <strong>${esc(status.server?.platform || "不明")}</strong>（Node ${esc(status.server?.node || "?")}）です。<br/>
-      llama-server の起動・停止・クライアント接続は Windows ランタイム（select-model.ps1 コア）が担います。<br/>
-      このプレビューでは <em>起動 → 計測 → run-results.json 蓄積</em> のループをシミュレーションで実行できます。
+      llama-server の起動・停止・クライアント接続は Windows ランタイム（select-model.ps1 コア）が担います。
+      ${engineChips}
     `;
     // Keep the monitor card's endpoint codes in sync with the server's
     // effective ports (LLAMADOCK_UPSTREAM_PORT / LLAMADOCK_CLIENT_BASE_URL
@@ -577,7 +639,17 @@
   async function refreshStatus() {
     try {
       applyStatus(await api("/api/status"));
-    } catch { /* transient — next poll */ }
+    } catch {
+      // Persistent poll failure means the GUI server itself is gone — say so
+      // instead of silently freezing on the last known state.
+      state.pollFails += 1;
+      if (state.pollFails >= 3) {
+        const label = $("#runtime-signal-label");
+        const dot = $("#runtime-signal").querySelector(".dot");
+        if (label) label.textContent = "GUIサーバーに接続できません";
+        if (dot) dot.className = "dot dot-red";
+      }
+    }
   }
 
   async function launch() {
@@ -608,10 +680,11 @@
   async function benchmark() {
     const btn = $("#btn-benchmark");
     if (!btn || btn.disabled) return;
+    const runs = Number($("#bench-runs")?.value) || 3;
     btn.disabled = true;
     btn.textContent = "計測中…";
     try {
-      const result = await api("/api/benchmark", { method: "POST", body: JSON.stringify({ runs: 3 }) });
+      const result = await api("/api/benchmark", { method: "POST", body: JSON.stringify({ runs }) });
       if (result.ok) {
         toast(`計測完了: ${result.recorded} 回を run-results.json に記録`, "ok");
         await loadResults();
@@ -622,9 +695,37 @@
       toast(`計測に失敗しました: ${error.message}`, "warn");
     } finally {
       btn.disabled = false;
-      btn.textContent = "計測実行（3回）";
+      btn.textContent = `計測実行（${runs}回）`;
       await refreshStatus();
     }
+  }
+
+  async function clearResults() {
+    try {
+      const result = await api("/api/results/clear", { method: "POST", body: "{}" });
+      toast(result.ok ? "実測記録をクリアしました" : (result.message || "クリアできません"), result.ok ? "ok" : "warn");
+    } catch (error) {
+      toast(`クリアに失敗しました: ${error.message}`, "warn");
+    }
+    await loadResults();
+  }
+
+  async function loadGgufList() {
+    try {
+      const payload = await api("/api/models/scan");
+      if (!payload.ok) return;
+      const dl = $("#gguf-suggestions");
+      if (dl) {
+        // Same filename can exist under multiple repos (mmproj etc.) — one
+        // suggestion per unique name is enough for the datalist.
+        const seen = new Set();
+        dl.innerHTML = payload.models
+          .filter((m) => !seen.has(m.name.toLowerCase()) && seen.add(m.name.toLowerCase()))
+          .map((m) => `<option value="${esc(m.name)}">${m.sizeGb != null ? `${m.sizeGb} GB` : ""}</option>`)
+          .join("");
+      }
+      state.ggufIndex = new Map(payload.models.map((m) => [m.name.toLowerCase(), m]));
+    } catch { /* scan is best-effort */ }
   }
 
   async function loadResults() {
@@ -817,14 +918,28 @@
       $("#add-model-dialog").showModal();
     });
     $("#btn-add-model-cancel").addEventListener("click", () => $("#add-model-dialog").close());
+    // Enter confirms the dialog (all buttons are type=button, so implicit
+    // form submission would otherwise do nothing).
+    ["add-model-name", "add-model-size"].forEach((id) => {
+      document.getElementById(id).addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          $("#btn-add-model-confirm").click();
+        }
+      });
+    });
     $("#btn-add-model-confirm").addEventListener("click", () => {
       const name = $("#add-model-name").value.trim();
       if (!name) {
         toast("モデル名を入力してください", "warn");
         return;
       }
-      const size = Number($("#add-model-size").value);
-      state.customModels.push({ name, sizeGb: Number.isFinite(size) && size > 0 ? size : null });
+      let size = Number($("#add-model-size").value);
+      if (!(Number.isFinite(size) && size > 0)) {
+        const scanned = state.ggufIndex.get(name.toLowerCase());
+        size = scanned?.sizeGb ?? null;
+      }
+      state.customModels.push({ name, sizeGb: size });
       persistCustomModels();
       $("#add-model-dialog").close();
       renderModelList();
@@ -832,9 +947,34 @@
       toast(`「${name}」を追加しました`, "ok");
     });
 
+    $("#btn-reset-memory").addEventListener("click", async () => {
+      const model = state.selectedModel;
+      if (!model) return;
+      try {
+        const result = await api("/api/params", {
+          method: "POST",
+          body: JSON.stringify({ model, reset: true }),
+        });
+        if (result.ok) {
+          state.overrides = {};
+          state.modelsConfig = result.modelsConfig;
+          updateResetMemoryButton();
+          renderGroups();
+          refresh();
+          toast(`「${model}」の記憶をリセットしました（プロファイル/既定値に戻す）`, "ok");
+        } else {
+          toast("リセットできませんでした", "warn");
+        }
+      } catch (error) {
+        toast(`リセットに失敗しました: ${error.message}`, "warn");
+      }
+    });
+
     $("#btn-launch").addEventListener("click", launch);
+    $("#btn-launch-args")?.addEventListener("click", launch);
     $("#btn-stop").addEventListener("click", stop);
     $("#btn-benchmark").addEventListener("click", benchmark);
+    $("#btn-clear-results")?.addEventListener("click", clearResults);
 
     $("#es-apply").addEventListener("click", applyEngineSettings);
     $("#es-spec").addEventListener("change", toggleEsDraftRow);
@@ -867,6 +1007,7 @@
         renderPresetChips();
         renderGroups();
         renderArgs();
+        updateResetMemoryButton();
       }
     } catch (error) {
       toast(`API に接続できません: ${error.message}`, "warn");
@@ -880,6 +1021,7 @@
     await loadStatus();
     await refreshHealth();
     await loadResults();
+    loadGgufList();
     setInterval(refreshStatus, 3000);
     setInterval(refreshHealth, 10000);
   }

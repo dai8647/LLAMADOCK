@@ -25,6 +25,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+const MAX_RUNS_PER_CONFIG = 100;
+
 export function fingerprint(params) {
   return Object.keys(params || {})
     .sort()
@@ -70,6 +72,11 @@ export async function addRun(path, run) {
     error: run.error || null,
   };
   config.runs.push(entry);
+  // Keep the file bounded: per-config history beyond the newest 100 runs has
+  // no effect on rollup/qualification, so drop the oldest entries.
+  if (config.runs.length > MAX_RUNS_PER_CONFIG) {
+    config.runs.splice(0, config.runs.length - MAX_RUNS_PER_CONFIG);
+  }
   rollup(config);
   results.updated = new Date().toISOString();
 
