@@ -111,6 +111,27 @@
           "help": "Transformer layers offloaded to GPU. Core knob for the CPU/GPU split."
         },
         {
+          "id": "cpu_ffn",
+          "label": "Keep all FFN on CPU (--cpu-ffn)",
+          "type": "bool",
+          "default": false,
+          "flags": ["--cpu-ffn"],
+          "per_model": true,
+          "advanced": true,
+          "help": "Dense-model counterpart of --cpu-moe: keep every FFN weight in CPU RAM, attention + KV stay on GPU. Requires a build with John-194's PR #26622 (--n-cpu-ffn); older builds fail to start with an unknown-flag error, so only enable after building a supporting engine."
+        },
+        {
+          "id": "n_cpu_ffn",
+          "label": "CPU FFN layers (--n-cpu-ffn)",
+          "type": "int",
+          "default": "",
+          "flags": ["--n-cpu-ffn"],
+          "min": 0,
+          "per_model": true,
+          "advanced": true,
+          "help": "Number of (dense) FFN layers kept in CPU, counted from the highest layer like --n-cpu-moe. Empty = off. Requires PR #26622 build; leave empty for engines without it."
+        },
+        {
           "id": "cache_type_k",
           "label": "KV cache type K",
           "type": "select",
