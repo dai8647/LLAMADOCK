@@ -674,6 +674,118 @@
     await refreshStatus();
   }
 
+  /* ---------- engine settings (coder engine 8080) ---------- */
+
+  function setEsStatus(msg, cls) {
+    const el = $("#es-status");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.className = "es-status " + (cls || "muted");
+  }
+
+  function toggleEsDraftRow() {
+    const row = $("#es-draft-row");
+    if (row) row.classList.toggle("hidden", $("#es-spec").value !== "draft-dflash");
+  }
+
+  async function loadEngineSettings() {
+    try {
+      const r = await fetch("/api/engine-settings");
+      const j = await r.json();
+      if (!j.ok) {
+        setEsStatus(j.message || "サーバー未起動（引数ファイルなし）", "warn");
+        return;
+      }
+      $("#es-ctk").value = [...$("#es-ctk").options].some((o) => o.value === j.ctk) ? j.ctk : "q8_0";
+      $("#es-ctv").value = [...$("#es-ctv").options].some((o) => o.value === j.ctv) ? j.ctv : "q8_0";
+      $("#es-fa").checked = !!j.fa;
+      if (j.context) $("#es-context").value = j.context;
+      if (j.cacheRam != null) $("#es-cacheram").value = j.cacheRam;
+      const specSel = $("#es-spec");
+      specSel.value = [...specSel.options].some((o) => o.value === j.specType) ? j.specType : "off";
+      $("#es-draft").value = j.specDraftModel || "";
+      toggleEsDraftRow();
+      if (!j.supervisorRunning || j.breakerOpen) {
+        setEsStatus("supervisor 停止中（適用しても再起動されません）", "warn");
+      } else {
+        setEsStatus("", "");
+      }
+    } catch {
+      setEsStatus("設定を取得できません", "err");
+    }
+  }
+
+  async function applyEngineSettings() {
+    const btn = $("#es-apply");
+    btn.disabled = true;
+    setEsStatus("適用中…", "warn");
+    const body = {
+      ctk: $("#es-ctk").value,
+      ctv: $("#es-ctv").value,
+      fa: $("#es-fa").checked,
+      context: Number($("#es-context").value) || undefined,
+      cacheRam: Number($("#es-cacheram").value),
+      specType: $("#es-spec").value,
+    };
+    if (body.specType === "draft-dflash") {
+      body.specDraftModel = $("#es-draft").value.trim();
+      if (!body.specDraftModel) {
+        setEsStatus("DFlash にはドラフトモデルのパスが必要です", "err");
+        btn.disabled = false;
+        return;
+      }
+    }
+    try {
+      const r = await fetch("/api/engine-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        setEsStatus(j.message || "適用に失敗しました", "err");
+        btn.disabled = false;
+        return;
+      }
+      if (!j.restarted) {
+        setEsStatus(j.message || "保存のみ（supervisor 停止中）", "warn");
+        btn.disabled = false;
+        return;
+      }
+      await waitEngineRestart();
+    } catch (error) {
+      setEsStatus("適用に失敗しました: " + error.message, "err");
+      btn.disabled = false;
+    }
+  }
+
+  async function waitEngineRestart() {
+    setEsStatus("再起動中…（モデル読込まで最大3分）", "warn");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let sawDown = false;
+    const start = Date.now();
+    while (Date.now() - start < 180000) {
+      await sleep(2000);
+      try {
+        const r = await fetch("/api/engine-health", { cache: "no-store" });
+        const j = await r.json();
+        if (!j.upstream.up) sawDown = true;
+        if (j.upstream.up && (sawDown || Date.now() - start > 20000)) {
+          setEsStatus("✅ 再起動完了", "ok");
+          await loadEngineSettings();
+          const applyBtn = $("#es-apply");
+          if (applyBtn) applyBtn.disabled = false;
+          return;
+        }
+      } catch {
+        /* keep polling */
+      }
+    }
+    setEsStatus("⚠ 再起動を確認できませんでした（3分経過）。ログを確認してください。", "err");
+    const applyBtn = $("#es-apply");
+    if (applyBtn) applyBtn.disabled = false;
+  }
+
   /* ---------- refresh / boot ---------- */
 
   function refresh() {
@@ -722,6 +834,10 @@
     $("#btn-launch").addEventListener("click", launch);
     $("#btn-stop").addEventListener("click", stop);
     $("#btn-benchmark").addEventListener("click", benchmark);
+
+    $("#es-apply").addEventListener("click", applyEngineSettings);
+    $("#es-spec").addEventListener("change", toggleEsDraftRow);
+    loadEngineSettings();
 
     $("#btn-copy-args").addEventListener("click", async () => {
       try {

@@ -761,6 +761,60 @@ code, pre {
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* ---------------- Engine settings card ---------------- */
+
+.es-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.es-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.es-row select,
+.es-row input[type="number"],
+.es-row input[type="text"] {
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--sans);
+}
+
+.es-row select { max-width: 180px; }
+.es-row input[type="number"] { width: 96px; }
+.es-row input[type="text"] {
+  width: 190px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.es-unit { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+
+.es-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.es-actions { margin-top: 10px; }
+
+.es-status { font-size: 12px; margin-top: 8px; min-height: 1.2em; }
+.es-status.ok { color: var(--green); }
+.es-status.warn { color: var(--amber); }
+.es-status.err { color: var(--red); }
+
 /* ---------------- Scrollbars ---------------- */
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }

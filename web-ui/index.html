@@ -118,6 +118,57 @@
           <div id="platform-body" class="muted">確認中…</div>
         </div>
 
+        <div class="card" id="engine-settings-card">
+          <div class="card-title">コーダーエンジン設定（8080）</div>
+          <div class="es-row">
+            <span class="es-label">KV キー</span>
+            <select id="es-ctk">
+              <option value="q8_0">q8_0</option>
+              <option value="q4_0">q4_0</option>
+              <option value="f16">f16</option>
+              <option value="none">なし</option>
+            </select>
+          </div>
+          <div class="es-row">
+            <span class="es-label">KV 値</span>
+            <select id="es-ctv">
+              <option value="q8_0">q8_0</option>
+              <option value="q4_0">q4_0</option>
+              <option value="f16">f16</option>
+              <option value="turbo3">turbo3</option>
+              <option value="none">なし</option>
+            </select>
+          </div>
+          <div class="es-row">
+            <span class="es-label">Flash Attention</span>
+            <label class="es-check"><input type="checkbox" id="es-fa"> 有効</label>
+          </div>
+          <div class="es-row">
+            <span class="es-label">コンテキスト</span>
+            <input type="number" id="es-context" min="1024" max="262144" step="1024">
+          </div>
+          <div class="es-row">
+            <span class="es-label">キャッシュ RAM</span>
+            <span class="es-unit"><input type="number" id="es-cacheram" min="0" max="131072" step="1024"> MiB</span>
+          </div>
+          <div class="es-row">
+            <span class="es-label">投機的デコード</span>
+            <select id="es-spec">
+              <option value="off">Off</option>
+              <option value="draft-mtp">MTP / NextN（自己ドラフト）</option>
+              <option value="draft-dflash">DFlash（外部ドラフト・実験）</option>
+            </select>
+          </div>
+          <div class="es-row hidden" id="es-draft-row">
+            <span class="es-label">ドラフトモデル</span>
+            <input type="text" id="es-draft" placeholder="C:\\...\\draft.gguf" spellcheck="false">
+          </div>
+          <div class="es-actions">
+            <button id="es-apply" class="btn btn-primary btn-block" type="button">適用（サーバー再起動）</button>
+            <div id="es-status" class="es-status muted"></div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-title">計測（実測のみ表示）</div>
           <p class="muted small">

@@ -348,6 +348,108 @@ export function createAppServer() {
       return;
     }
 
+    if (pathname === "/api/engine-settings") {
+      if (req.method === "GET") {
+        const args = await readJsonSafe(SERVER_ARGUMENTS_PATH);
+        const sup = await readSupervisorState();
+        if (!Array.isArray(args)) {
+          sendJson(res, 200, { ok: false, error: "no_arguments_file", message: "server-arguments.json がありません。先に select-model.ps1 で起動してください。", ...sup });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          ...sup,
+          model: flagValue(args, "-m"),
+          alias: flagValue(args, "-a"),
+          ctk: flagValue(args, "-ctk") || "none",
+          ctv: flagValue(args, "-ctv") || "none",
+          fa: flagValue(args, "-fa") === "on",
+          context: Number(flagValue(args, "-c")) || null,
+          cacheRam: Number(flagValue(args, "--cache-ram")) || null,
+          specType: flagValue(args, "--spec-type") || "off",
+          specDraftModel: flagValue(args, "--spec-draft-model") || flagValue(args, "-md") || "",
+          specDraftNMax: Number(flagValue(args, "--spec-draft-n-max")) || null,
+        });
+        return;
+      }
+      if (req.method === "POST") {
+        try {
+          const body = await readJsonBody(req);
+          const current = await readJsonSafe(SERVER_ARGUMENTS_PATH);
+          if (!Array.isArray(current)) {
+            sendJson(res, 409, { ok: false, error: "no_arguments_file", message: "server-arguments.json がありません。先に select-model.ps1 で起動してください。" });
+            return;
+          }
+          const next = [...current];
+
+          if (body.ctk !== undefined) setFlag(next, "-ctk", body.ctk === "none" ? null : body.ctk);
+          if (body.ctv !== undefined) setFlag(next, "-ctv", body.ctv === "none" ? null : body.ctv);
+          if (body.fa !== undefined) setFlag(next, "-fa", body.fa ? "on" : "off");
+          if (body.context !== undefined && Number.isFinite(Number(body.context))) {
+            setFlag(next, "-c", clampInt(body.context, 1024, 262144, 32768));
+          }
+          if (body.cacheRam !== undefined && Number.isFinite(Number(body.cacheRam))) {
+            setFlag(next, "--cache-ram", clampInt(body.cacheRam, 0, 131072, 8192));
+          }
+
+          if (body.specType !== undefined) {
+            // Clear every spec-related flag first, then rebuild for the mode.
+            for (const f of ["--spec-type", "--spec-draft-model", "-md", "--spec-draft-n-max", "--spec-draft-n-min", "-ngld", "-ctkd", "-ctvd"]) {
+              setFlag(next, f, null);
+            }
+            if (body.specType === "draft-mtp") {
+              // Self-draft: the combined *_MTP.gguf main model is its own draft
+              const mainModel = flagValue(next, "-m");
+              setFlag(next, "-md", mainModel);
+              setFlag(next, "--spec-type", "draft-mtp");
+              setFlag(next, "--spec-draft-n-max", "2");
+              setFlag(next, "--spec-draft-n-min", "1");
+              const ctk = flagValue(next, "-ctk");
+              const ctv = flagValue(next, "-ctv");
+              if (ctk) setFlag(next, "-ctkd", ctk);
+              if (ctv) setFlag(next, "-ctvd", ctv);
+              setFlag(next, "-ngld", "auto");
+            } else if (body.specType === "draft-dflash") {
+              const draft = String(body.specDraftModel || "").trim();
+              if (!draft) {
+                sendJson(res, 400, { ok: false, error: "draft_model_required", message: "DFlash にはドラフトモデル（GGUF）のパスが必要です。" });
+                return;
+              }
+              setFlag(next, "--spec-type", "draft-dflash");
+              setFlag(next, "--spec-draft-model", draft);
+              setFlag(next, "--spec-draft-n-max", String(clampInt(body.specDraftNMax, 1, 32, 15)));
+            }
+            // "off": nothing to add.
+          }
+
+          // Atomic write (tmp + rename), same pattern as saveModelsConfig.
+          const tmp = `${SERVER_ARGUMENTS_PATH}.tmp`;
+          await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+          await rename(tmp, SERVER_ARGUMENTS_PATH);
+
+          const sup = await readSupervisorState();
+          if (!sup.supervisorRunning || sup.breakerOpen) {
+            sendJson(res, 200, { ok: true, restarted: false, reason: "supervisor_stopped", message: "設定は保存しました。supervisor 停止中のため再起動はスキップしました。select-model.ps1 で起動し直してください。" });
+            return;
+          }
+          await writeFile(RESTART_FLAG_PATH, `${JSON.stringify({ reason: "ui_settings_change", timestamp: new Date().toISOString() }, null, 2)}\n`, "utf8");
+          sendJson(res, 200, { ok: true, restarted: true, message: "再起動を要求しました。" });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "engine_settings_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+
+    if (pathname === "/api/engine-health") {
+      // Server-side probe of the coder engine (browser cannot hit 8090/8080
+      // directly: no CORS headers on the gateway).
+      sendJson(res, 200, { ok: true, upstream: await probeUpstreamHealth(), checkedAt: new Date().toISOString() });
+      return;
+    }
+
     if (pathname === "/api/status") {
       sendJson(res, 200, {
         ok: true,
@@ -399,4 +501,41 @@ function clampInt(value, min, max, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+// --- Engine settings helpers (supervisor-managed coder engine, 8080/8090) ---
+
+function flagValue(args, flag) {
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+}
+
+// value === null removes the flag together with its value.
+function setFlag(args, flag, value) {
+  const i = args.indexOf(flag);
+  if (value === null) {
+    if (i >= 0) args.splice(i, 2);
+    return args;
+  }
+  if (i >= 0) args[i + 1] = String(value);
+  else args.push(flag, String(value));
+  return args;
+}
+
+async function readSupervisorState() {
+  const status = await readJsonSafe(SUPERVISOR_STATUS_PATH);
+  return {
+    supervisorRunning: !!(status && status.supervisor_pid && status.state && status.state !== "stopped"),
+    state: status ? status.state : "unknown",
+    breakerOpen: !!(status && status.breaker_open),
+  };
+}
+
+async function probeUpstreamHealth() {
+  try {
+    const res = await fetch("http://127.0.0.1:8080/health", { signal: AbortSignal.timeout(2000) });
+    return { up: res.ok, status: res.status };
+  } catch {
+    return { up: false, status: null };
+  }
 }
