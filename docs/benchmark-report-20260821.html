@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LlamaDock ベンチマーク報告 2026-08-21</title>
+<style>
+  :root { --bg:#0f1117; --card:#171a23; --line:#262b38; --txt:#d8dde8; --sub:#8b93a7;
+          --acc:#5eead4; --acc2:#818cf8; --warn:#fbbf24; --bad:#f87171; --good:#34d399; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:"Segoe UI","Yu Gothic UI",Meiryo,sans-serif; font-size:14px; line-height:1.65; }
+  .wrap { max-width:1080px; margin:0 auto; padding:32px 24px 80px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  h1 .accent { color:var(--acc); }
+  .meta { color:var(--sub); margin-bottom:28px; font-size:12.5px; }
+  h2 { font-size:19px; margin:44px 0 12px; padding-left:12px; border-left:4px solid var(--acc2); }
+  h3 { font-size:15px; margin:20px 0 8px; color:var(--acc); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin:14px 0; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#1d2130; color:#aab3c7; white-space:nowrap; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .best { color:var(--acc); font-weight:700; }
+  .bad { color:var(--bad); }
+  .good { color:var(--good); }
+  .warn { color:var(--warn); }
+  .muted { color:var(--sub); }
+  .tl-dr { background:linear-gradient(135deg,#132a26,#171a23); border:1px solid #1e4d43;
+           border-radius:10px; padding:18px 22px; margin-bottom:8px; }
+  .tl-dr b { color:var(--acc); }
+  code { background:#222736; border-radius:4px; padding:1px 6px; font-size:12.5px;
+         font-family:Consolas,monospace; color:#a5f3fc; }
+  .sample { background:#10131b; border:1px dashed var(--line); border-radius:8px;
+            padding:12px 14px; margin:6px 0; font-size:13px; white-space:pre-wrap; }
+  ul { margin:6px 0; padding-left:22px; }
+  li { margin:3px 0; }
+  .pill { display:inline-block; border-radius:999px; padding:1px 10px; font-size:11.5px; margin-left:6px; vertical-align:middle; }
+  .p-keep { background:#12362b; color:var(--good); }
+  .p-cull { background:#3b1d24; color:var(--bad); }
+  footer { margin-top:56px; color:var(--sub); font-size:12px; border-top:1px solid var(--line); padding-top:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>LlamaDock <span class="accent">ベンチマーク＆修復報告</span></h1>
+<div class="meta">2026-08-21 / AMD Radeon RX 7800 XT 16GB (gfx1101) / ROCm 7.1 HIP on Windows / Ryzen 5 5500 /
+engines: AtomicBot b10033 ・ TurboTan b10536 ・ DFlash2 fork / 測定: llama-bench + llama-server 実リクエスト</div>
+
+<div class="tl-dr">
+<b>TL;DR</b><br>
+① TurboTan ビルドは <code>hipblas.dll</code> 名前不一致で CPU 落ちしていた → コピー1発で復活（tg128 <b>20.21 t/s</b>）。<br>
+② 昨夜の激遅（2.85 t/s）の原因 <code>-md</code> 二重ロード解消後、<b>理論値 49.6 t/s の約45%</b> で安定動作。同カードの公開ベンチ（dense 27B: 16.8〜19.4 t/s）と一致しており正常。<br>
+③ uncensored MTP モデル 4 本を統一条件で比較 → 総合優勝は <b>HauhauCS Aggressive IQ3_M（実効 28.32 t/s・acceptance 0.78）</b>、品質最良は <b>同 IQ4_XS</b>。<br>
+④ DFlash2 は純正ベースでは有効（acc 0.74）だが、改変ファインチューンでは半速（acc 0.29）→ 非推奨。<br>
+⑤ リストラ候補: <span class="bad">soyaakinohara 12G-MTP</span> / <span class="bad">heretic-ara.i1-Q4_K_S</span>
+</div>
+
+<!-- ================================ -->
+<h2>1. エンジン修復： TurboTan b10536</h2>
+<div class="card">
+<p>2026-08-21 11:10 再ビルド分が GPU で動かない原因を特定:</p>
+<ul>
+<li><code>ggml-hip.dll</code>（静的HIP・883MB）が <code>hipblas.dll</code> を名前指定インポート</li>
+<li>しかし ROCm 7.1 同梱は <code>libhipblas.dll</code> というファイル名 → LoadLibrary 失敗 → ROCm デバイス未登録で全レイヤーCPU実行（tg32 ≈ 2.1 t/s。10分タイムアウトはハングではなく激遅CPU実行だった）</li>
+<li><b>修正</b>: <code>libhipblas.dll</code> を <code>hipblas.dll</code> としてビルドルートへコピーするのみ</li>
+</ul>
+<table>
+<tr><th>engine</th><th>backend</th><th>pp512</th><th>tg128</th></tr>
+<tr><td>TurboTan（修正後）</td><td class="good">ROCm ✅</td><td class="num">223.38 ± 6.62</td><td class="num best">20.21 ± 0.22</td></tr>
+<tr><td>AtomicBot b10033（参考）</td><td>ROCm</td><td class="num">249.43 ± 3.15</td><td class="num">18.67 ± 0.04</td></tr>
+</table>
+<p class="muted">⚠️ ビルド更新のたびに hipblas.dll のコピー再配置が必要。また同ビルドは KV キャッシュ型 <code>turbo3/turbo4/tq3_0</code> をすべて拒否（select-model.ps1 のプローブが自動非表示化済み）。</p>
+</div>
+
+<!-- ================================ -->
+<h2>2. KVキャッシュ型 実受け入れ判定（プローブ結果）</h2>
+<div class="card">
+<table>
+<tr><th>type</th><th>AtomicBot K</th><th>AtomicBot V</th><th>TurboTan(修正後) K/V</th></tr>
+<tr><td>q8_0 / q5_1 / q5_0 / q4_0 / f16 / bf16</td><td class="good">OK</td><td class="good">OK</td><td class="good">OK</td></tr>
+<tr><td>turbo4</td><td class="good">OK</td><td class="good">OK</td><td class="bad">拒否</td></tr>
+<tr><td>turbo3</td><td class="good">OK</td><td class="good">OK</td><td class="bad">拒否</td></tr>
+<tr><td>tq3_0</td><td class="bad">拒否</td><td class="bad">拒否</td><td class="bad">拒否</td></tr>
+</table>
+<p class="muted">select-model.ps1 に実装した <code>Test-CacheTypeSupported</code> プローブが起動時にバイナリへ <code>-ctk/-ctv &lt;type&gt; --help</code> を投げ、拒否される選択肢をメニューから自動除去。これにより 11:45 に多発した <code>-ctv turbo3</code> 即死クラッシュを構造的に防止。</p>
+</div>
+
+<!-- ================================ -->
+<h2>3. 性能検証： 理論値との対比</h2>
+<div class="card">
+<p>帯域 624 GB/s ÷ 主モデル 12.6 GB ≒ <b>理論上限 49.6 t/s</b>（デコード）。</p>
+<table>
+<tr><th>構成</th><th>PP (tok/s)</th><th>TG (tok/s)</th><th>理論比</th></tr>
+<tr><td>bench スペック無し（AtomicBot ngl99 fa KV q8/q4）</td><td class="num">249.43</td><td class="num">18.67</td><td class="num">38%</td></tr>
+<tr><td>draft-mtp サーバ実効</td><td class="num">—</td><td class="num best">22.3 〜 28.3</td><td class="num best">45〜57%</td></tr>
+<tr><td class="bad">昨夜の異常値（-md 二重ロード）</td><td class="num bad">23〜43</td><td class="num bad">2.85</td><td class="num bad">6%</td></tr>
+</table>
+<p><b>検証結論</b>: 同カード公開ベンチの dense 27B Q3/Q4 は <b>16.8〜19.4 t/s</b>（sergiiob.dev ほか）→ 当方 16〜18.7 t/s と一致。TG は帯域律速で量子化差は ±3% 以内。「ROCm/gfx1101 のカーネル効率」説は概ね妥当だが、厳密には <b>K-quant が RDNA3 で不利・IQ 展開カーネルが有利</b>という量子化起因。改善余地は GPU_TARGETS=gfx1101 明示ビルドと IQ 系採用。PP は理論比で良好（240前後）。全セッションで <code>TOP_K op not supported on ROCm0</code> 警告あり（サンプラー一部CPUフォールバック）。</p>
+</div>
+
+<!-- ================================ -->
+<h2>4. モデル比較マトリクス（本命）</h2>
+<div class="card">
+<p class="muted">統一条件: ctx 16384 / FA on / KV q8_0+q4_0 / draft-mtp n_max=2 / 同一日本語プロンプト（「制約が創造性を生む」180字論述）/ AtomicBot engine</p>
+<table>
+<tr><th>モデル</th><th>bpw</th><th>GiB</th><th>tg128 bench</th><th>MTP 実効 t/s</th><th>acceptance</th><th>判定</th></tr>
+<tr><td><b>HauhauCS Aggressive IQ3_M</b></td><td class="num">3.66</td><td class="num">11.90</td><td class="num">17.94</td><td class="num best">28.32</td><td class="num best">0.782</td><td><span class="pill p-keep">速度の王</span></td></tr>
+<tr><td>HauhauCS Aggressive IQ4_XS</td><td class="num">4.25</td><td class="num">14.62</td><td class="num">18.22 (fit)</td><td class="num">19.27</td><td class="num">0.672</td><td><span class="pill p-keep">品質の王</span></td></tr>
+<tr><td>soyaakinohara 3.69bpw-12GB</td><td class="num">mixed</td><td class="num">11.72</td><td class="num">18.48</td><td class="num">24.03</td><td class="num">0.621</td><td><span class="pill p-cull">置き換え可能</span></td></tr>
+<tr><td>heretic-ara.i1-Q4_K_S（no MTP）</td><td class="num">~4.4</td><td class="num">14.73</td><td class="num">15.91 (fit)</td><td class="num bad">13.97</td><td class="num muted">—</td><td><span class="pill p-cull">リストラ候補</span></td></tr>
+<tr><td class="muted">zerodigest YMQ-S <i>(削除済み)</i></td><td class="num muted">2.5</td><td class="num muted">11.66</td><td class="num muted">18.70</td><td class="num muted">未測</td><td class="num muted">—</td><td class="muted">2.5bpw で品質不足により削除</td></tr>
+<tr><td class="muted">hotdogs mtp-IQ3_M <i>(削除済み)</i></td><td class="num muted">3.66</td><td class="num muted">11.88</td><td class="num muted">18.11</td><td class="num muted">未測</td><td class="num muted">—</td><td class="muted">HauhauCS に完全劣位のため削除</td></tr>
+</table>
+<p class="muted">※ TG bench は帯域律速で全モデル ±4% 差。実効速度の差は draft-mtp acceptance（0.62〜0.78）と、15GB 超は VRAM 収まらず自動部分オフロードになる点で発生。</p>
+
+<h3>品質レビュー（同一プロンプト出力）</h3>
+<p>全モデルとも短歌の制約を題材にした日本語論述が完成。<b>IQ4_XS が最も洗練</b>（語彙密度・文語的締まり）で bpw 通りの順位。</p>
+<div class="sample"><b>HauhauCS-IQ4_XS（品質1位）</b>
+制約は、無限の選択肢による迷いを排除し、思考を一点に集中させる力を持つ。身近な例として、短歌作成が挙げられる。五七五七七という厳格な字数制限があるからこそ、作者は冗長な表現を削ぎ落とし、最も本質的な言葉選びとリズムの構築に迫られる。この物理的・言語的な枷が、逆に比喩や留白の妙を引き出し、自由な発想では到達し得ない独自の美意識や創造的な表現を生み出すのである。</div>
+<div class="sample"><b>heretic-ara.i1（品質2位）</b>
+制約は思考の枠を狭めるのではなく、選択肢を絞り込むことで深い洞察を導く力を持つ。例えば、短歌は五・七・五・七・七という厳格な字数制限がある。この枷があるからこそ、作者は言葉を選別し、余白や掛詞を工夫して、限られた文字数に豊かな情感を凝縮させる。つまり、制約は創造の敵ではなく、本質を鋭く浮かび上がらせるための触媒なのである。</div>
+<div class="sample"><b>HauhauCS-IQ3_M（速度1位）</b>
+私は短歌作りに取り組んでいた際、五・七・五の厳しい定型という制約にぶつかりました。しかし、この窮屈な枠組みこそが、余計な言葉を削ぎ落とし、比喩表現を磨くきっかけになったのです。無限の自由度では、人はむしろ迷走しがちです。有限な条件が思考を研ぎ澄まし、思いもよらぬ発想を導き出す。</div>
+<div class="sample"><b>soyaakinohara</b>
+…文字数の上限がある場合、無駄を削ぎ落とし、最も本質的な表現を選ばなければなりません。その制限が、作家を既存の型に縛られず、意外な構成や言葉の選び方を模索させます。結果として、制約のない長編では得られない、緊縮さと鮮烈な印象が生み出されるのです。<span class="muted">（「緊縮さ」など語選びに僅かな違和感）</span></div>
+</div>
+
+<!-- ================================ -->
+<h2>5. DFlash2 投機的デコード検証</h2>
+<div class="card">
+<table>
+<tr><th>主モデル</th><th>acceptance</th><th>実効 t/s</th><th>baseline 比較</th></tr>
+<tr><td>純正系 Qwen3.8-27B</td><td class="num good">0.74</td><td class="num good">6.09 <span class="muted">(当時・他条件)</span></td><td>有効</td></tr>
+<tr><td>heretic-ara.i1-Q4_K_S（改変）ctx4096</td><td class="num bad">0.286</td><td class="num bad">8.07</td><td class="bad">baseline 16.02 の半速 → 逆効果</td></tr>
+</table>
+<p><b>結論</b>: DFlash2 ドラフトは純正ベース分布で学習されており、abliterated/heretic 系の改変モデルとは分布ミスマッチ。<b>ベースから離れたファインチューンには非推奨</b>。VRAM も主 14.7GB + ドラフト 1.09GB で ctx 4096 が限界（16K は OOM リスク）。MTP 内蔵 GGUF（draft-mtp）の方が改変モデルでも acceptance 0.62〜0.78 を維持し圧倒的に有利。</p>
+</div>
+
+<!-- ================================ -->
+<h2>6. リストラ候補</h2>
+<div class="card">
+<table>
+<tr><th>#</th><th>対象</th><th>理由</th><th>推奨</th></tr>
+<tr><td>A</td><td><b>soyaakinohara qwen3.8-27b-abliterated-3.69bpw-12GB-MTP</b>（11.7GiB）</td>
+<td>HauhauCS IQ3_M が全指標で上回る（実効 28.32 vs 24.03 / acceptance 0.78 vs 0.62 / 品質同等以上）</td>
+<td class="bad">削除推奨</td></tr>
+<tr><td>B</td><td><b>mradermacher heretic-ara.i1-Q4_K_S</b>（14.7GiB + mmproj 0.6GB）</td>
+<td>最遅（13.97 t/s）・MTP 非内蔵。品質は良いが HauhauCS IQ4_XS が品質・速度とも上回る。vision 用 mmproj が必要な場合のみ価値</td>
+<td class="bad">削除推奨<span class="muted">（vision 必要なら保持）</span></td></tr>
+<tr><td>C</td><td>incoai DFlash2 ドラフト ×2（計 3GB）</td>
+<td>現ラインナップに純正ベース主モデルが無く用途消失（改変モデルでは逆効果済み）</td>
+<td class="warn">保留（純正モデルを入れるなら保持）</td></tr>
+</table>
+<p><b>残す編成（推奨）</b>: <span class="good">HauhauCS IQ3_M = 日常・速度</span> ／ <span class="good">HauhauCS IQ4_XS = 品質優先</span> の 2 本体制。両方とも MTP 内蔵で SpecMode=MTP/NextN 使用。</p>
+</div>
+
+<!-- ================================ -->
+<h2>7. 本日の LlamaDock 修正一覧（コミット済み・push済み）</h2>
+<div class="card">
+<ul>
+<li><code>ac55269</code> V cache デフォルト turbo3→q4_0 / OpenClaude ワークスペース完全削除</li>
+<li><code>79599bd</code> DFlash2 dispatch 追加 / ドラフトGGUF除外 / TurboTan V デフォ修正</li>
+<li><code>26cf8f9</code> KV キャッシュ対応プローブ実装 / h3-chat dflash2 配線完了（UI・API・bin切替・排他制御）/ GPU プランナーを soyaakinohara MTP+mmproj に復旧 / ComfyUI 未起動時の起動提案 / format.ps1 破壊ガード</li>
+<li><code>c4400ab</code> runtimeCandidates に DFlash2/ExpertsLaguna/LongCat 登録</li>
+<li><code>6507db2</code> TurboTan 修復記録 + 本ベンチ結果を HANDOFF/model-notes 反映</li>
+<li>確認済みfix: reasoning low クラッシュ（--reasoning on/off マップ）、MTP -md 二重ロード削除</li>
+<li>ComfyUI 側: dflash2 プランナー配線完成・ComfyUI 0.33 起動スモーク合格（27s ready）</li>
+</ul>
+</div>
+
+<footer>
+Generated by LlamaDock maintenance session 2026-08-21 / 測定スクリプト・ログ: %TEMP%\opencode\modeltest\<br>
+機密情報なし。数値は単一マシン実測値であり断言ではなく仮説です（LlamaDock 方針に準拠）。
+</footer>
+
+</div>
+</body>
+</html>

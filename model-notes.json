@@ -56,12 +56,7 @@
  },
  {
   "pattern": "(?i)HauhauCS",
-  "note": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive MTP 搭載（IQ3_M = 11.9GiB / 3.66bpw・vision mmproj 同梱リポジトリ）。2026-08-21 実測 RX 7800 XT: bench tg128 18.33 t/s、draft-mtp 有効で **25.66 t/s**（acceptance 0.673）＝16GB VRAM 完全搭載の uncensored 系最速。draft-mtp 前提なので SpecMode は MTP/NextN を選ぶこと。",
-  "recommended_preset": "WebUIChat"
- },
- {
-  "pattern": "(?i)YMQ-S|YMQ-MTP",
-  "note": "zerodigest Qwen3.8-27B-Uncensored-YMQ（autoround architecture-aware）。YMQ-S = 12.53GB。bench tg128 18.70 t/s（4モデル中トップタイ）。MTP 内蔵。",
+  "note": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive MTP 搭載（vision mmproj 同梱リポジトリ）。2026-08-21 統一実測 RX 7800 XT（ctx16K/fa/KV q8_0+q4_0/draft-mtp n2）: **IQ3_M = 実効 28.32 t/s・acceptance 0.782 で速度の王**、IQ4_XS = 19.27 t/s（部分オフロード）だが品質最良。日常は IQ3_M、品質優先なら IQ4_XS。draft-mtp 前提なので SpecMode は MTP/NextN を選ぶこと。",
   "recommended_preset": "WebUIChat"
  }
 ]
