@@ -1779,7 +1779,7 @@ function Open-DeepSeekHarnessClient {
     $dshCmd = Join-Path $env:APPDATA "npm\dsh.cmd"
     if (Test-Path -LiteralPath $dshCmd) {
         $proc = Start-Process -FilePath $dshCmd -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @("web")
-        Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
+        Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:3080" -ForegroundColor Green
         return $proc
     }
 
@@ -1789,7 +1789,7 @@ function Open-DeepSeekHarnessClient {
         "@deepseek-ai/dsh@latest",
         "web"
     )
-    Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
+    Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:3080" -ForegroundColor Green
     return $proc
 }
 
@@ -3051,7 +3051,7 @@ if ($DryRun) {
     }
     elseif ($ClientMode -eq "DeepSeekHarness") {
         Write-Host "DRY RUN: DeepSeek Harness would open with DEEPSEEK_BASE_URL=$ClientBaseUrl/v1 DEEPSEEK_API_KEY=not-needed" -ForegroundColor Yellow
-        Write-Host "DRY RUN: http://127.0.0.1:5173 (dsh web)" -ForegroundColor Yellow
+        Write-Host "DRY RUN: http://127.0.0.1:3080 (dsh web)" -ForegroundColor Yellow
     }
     else {
         Write-Host "DRY RUN: native Computer would open:" -ForegroundColor Yellow
