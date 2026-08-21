@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LlamaDock ベンチレポート — --n-cpu-ffn / --cpu-ffn (PR #26622) — 2026-08-22</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0a0e13; color:#dbe4ee; font-family:"Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,"Segoe UI",sans-serif; font-size:14px; line-height:1.6; max-width:980px; margin:0 auto; padding:32px 20px; }
+  h1 { font-size:20px; border-bottom:1px solid rgba(148,163,184,.25); padding-bottom:10px; }
+  h2 { font-size:15px; margin-top:28px; color:#ffc85c; }
+  code, .mono { font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:#35c9b0; word-break:break-all; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:13px; }
+  th,td { border:1px solid rgba(148,163,184,.22); padding:6px 10px; text-align:left; }
+  th { background:#16202d; color:#8fa1b5; font-weight:600; }
+  tr.best td { background:rgba(74,222,128,.10); }
+  td.num, th.num { text-align:right; font-family:ui-monospace,Consolas,monospace; }
+  .good { color:#4ade80; font-weight:600; } .bad { color:#f87171; font-weight:600; } .warn { color:#fbbf24; }
+  .card { background:#111924; border:1px solid rgba(148,163,184,.18); border-radius:10px; padding:14px 16px; margin:14px 0; }
+  .muted { color:#8fa1b5; } .small { font-size:12px; }
+  ul { margin:6px 0; padding-left:22px; }
+</style>
+</head>
+<body>
+
+<h1>--n-cpu-ffn / --cpu-ffn 実装・実測レポート（Qwen3.8-27B / RX 7800 XT）</h1>
+<p class="muted">2026-08-22 · LlamaDock (llama-tq3) · PR ggml-org/llama.cpp#26622 (John-194) を AtomicBot フォークへ適用</p>
+
+<h2>1. 目的</h2>
+<p>Dense モデルの FFN 重みだけをシステム RAM へオフロードする新オプション <code>--n-cpu-ffn</code> / <code>-cffn</code> (<code>--cpu-ffn</code>) を
+AtomicBot (TurboQuant fork) に導入し、16GB VRAM 環境での速度・実用性を Qwen3.8-27B 系で実測検証する。
+Reddit の報告（「Qwen3.8 27B Q4_K_M が約 20 tok/s」）が本環境で再現するかを確認。</p>
+
+<h2>2. ビルド情報</h2>
+<div class="card small">
+<table>
+<tr><th>項目</th><th>値</th></tr>
+<tr><td>ソース</td><td><code>C:\llama-tq3</code> · branch <code>feature/n-cpu-ffn</code> · base <code>bf29aa37c</code></td></tr>
+<tr><td>パッチ</td><td>common/common.h（<code>LLM_FFN_DENSE_REGEX</code>, <code>llm_add_n_cpu_ffn_overrides()</code>）＋ common/arg.cpp（<code>-ncffn/--n-cpu-ffn N</code> 追加、<code>-cffn/--cpu-ffn</code> 追加※当方実装、<code>-ncmoe</code>/<code>-ncmoed</code> を共通ヘルパーへ refactor）。PR 本体に <code>--cpu-ffn</code> は無かったため <code>--cpu-moe</code> と同型で補完した</td></tr>
+<tr><td>ビルド</td><td><code>C:\llama-tq3\build-rocm71-ffn</code>（既存 <code>build-rocm71</code> は温存・無影響）<br>Ninja / Release / GGML_HIP=ON / gfx1101 / ROCm 7.1 clang / HIP_GRAPHS=ON / MMQ_MFMA=ON / NO_VMM=ON</td></tr>
+<tr><td>検証</td><td><code>--help</code> に両フラグ登録済み。フルGPUで旧ビルドと同等速度 → 機能追加の副作用なし</td></tr>
+</table>
+</div>
+
+<h2>3. 測定条件</h2>
+<ul>
+<li>GPU: Radeon RX 7800 XT 16GB (gfx1101) / ROCm 7.1 HIP / システム RAM: DDR5</li>
+<li>llama-cli 完了モード: プロンプト約 800 トークン（定型文反復）/ <code>-n 128</code> / <code>--temp 0</code> / warmup 有効 / 各 1 回</li>
+<li>pp = プロンプト処理 tok/s、tg = 生成 tok/s</li>
+<li>モデル（いずれも HauhauCS Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP、dense 27B）:
+  <ul>
+    <li>IQ3_M = 11.9 GiB（前回レポート基準: tg128 16–18.7 t/s 带）</li>
+    <li>IQ4_XS = 14.6 GiB（16GB VRAM に対しギリギリ組）</li>
+  </ul>
+</li>
+</ul>
+
+<h2>4. 結果</h2>
+<table>
+<tr><th>#</th><th>ビルド</th><th>モデル</th><th>設定</th><th class="num">pp tok/s</th><th class="num">tg tok/s</th><th>tg 変化</th></tr>
+<tr><td>R1</td><td>旧 (build-rocm71)</td><td>IQ3_M</td><td><code>-ngl 99</code></td><td class="num">180.2</td><td class="num">16.9</td><td>基準</td></tr>
+<tr><td>R2</td><td>新 (-ffn)</td><td>IQ3_M</td><td><code>-ngl 99</code></td><td class="num">180.1</td><td class="num">16.8</td><td class="good">±0%（リグレッションなし）</td></tr>
+<tr><td>R3</td><td>新</td><td>IQ3_M</td><td><code>-ngl 99 -ncffn 16</code></td><td class="num">127.9</td><td class="num">5.8</td><td class="bad">−65%</td></tr>
+<tr><td>R4</td><td>新</td><td>IQ3_M</td><td><code>-ngl 99 -cffn</code>（全FFN→CPU）</td><td class="num">164.5</td><td class="num">2.1</td><td class="bad">−88%</td></tr>
+<tr class="best"><td>R5</td><td>新</td><td>IQ4_XS</td><td><code>-ngl 99</code></td><td class="num">544.4</td><td class="num">29.0</td><td class="good">本機 dense 27B 最速記録</td></tr>
+<tr><td>R6</td><td>新</td><td>IQ4_XS</td><td><code>-ngl 99 -cffn</code></td><td class="num">176.4</td><td class="num">2.6</td><td class="bad">−91%</td></tr>
+</table>
+
+<h2>5. 考察</h2>
+<div class="card">
+<ul>
+<li><strong>Reddit の「約 20 tok/s」は本環境では非再現。</strong> Dense FFN の CPU オフロードは毎トークン全 FFN を DDR5 帯域経由で計算するため tg が帯域律速になり、RX 7800 XT + DDR5 では <span class="bad">-ncffn 16 で −65%、全オフロードで −88〜91%</span>。CUDA+高速メモリ前提の主張と理論的に整合しないため条件差が大きいと判断。</li>
+<li><strong>pp への影響は軽微</strong>（R3 −29% / R4 −9〜68%程度まで幅あり）。プロンプト処理は op-offload（CPU 側重みの一括 GPU ストリーミング）が働くため。長コンテキスト投入主体の用途なら実害は小さい。</li>
+<li><strong>本オプションの正しい使い道は「速度ではなく VRAM 余剰化」。</strong> IQ4_XS(14.6GiB) はフルGPUで KV/計算バッファの余地がほぼ無いが、例えば <code>-ncffn 24</code> 程度で数 GB 空ければ 32k→65k コンテキスト拡張が可能になる。<strong>速度より文脈長が必要な場合の選択肢</strong>として GUI スキーマ（<code>cpu_ffn</code>/<code>n_cpu_ffn</code>、追加済み）から利用する価値がある。</li>
+<li><strong>副次発見: HauhauCS IQ4_XS がフルGPUで tg 29.0 t/s / pp 544 t/s。</strong> 理論帯域上限（624 GB/s ÷ 14.6GiB ≈ 42 t/s）に対し ~70% 効率。IQ3_M が 16.9 t/s に留まったのは i-quant カーネルが RDNA3 で不利なためで、前回レポートの「IQ 系カーネル未最適」所見と整合。dense 27B を 16GB で回すなら IQ4_XS 一択。</li>
+</ul>
+</div>
+
+<h2>6. 推奨設定</h2>
+<table>
+<tr><th>目的</th><th>推奨</th></tr>
+<tr><td>最速で dense 27B</td><td><code>HauhauCS IQ4_XS -ngl 99</code>（tg 29 t/s）＋ MTP/draft-mtp 併用でさらに向上見込み</td></tr>
+<tr><td>長コンテキスト（KV 増設）</td><td>IQ4_XS + <code>-ncffn 16〜24</code>（tg は 3〜6 t/s 程度まで低下を覚悟。対話連打には不向き、資料読み込み→要約など pp 主導の用途向け）</td></tr>
+<tr><td>通常運用</td><td><code>--cpu-ffn</code> / <code>--n-cpu-ffn</code> は使わない（GUI でもデフォルト off 維持）</td></tr>
+</table>
+
+<h2>7. 成果物・パス</h2>
+<ul class="small">
+<li>新ビルド: <code>C:\llama-tq3\build-rocm71-ffn\bin\llama-server.exe</code>（他 llama-bench/cli 同梱）</li>
+<li>パッチ済みソース: <code>C:\llama-tq3</code> branch <code>feature/n-cpu-ffn</code>（未コミット・未プッシュ）</li>
+<li>生ログ: <code>C:\Users\dai86\AppData\Local\Temp\opencode\ffnbench\R*.log</code></li>
+<li>GUI 対応: <code>llama-tq3 (Downloads)</code> リポジトリの params-schema.json に <code>cpu_ffn</code> / <code>n_cpu_ffn</code> 追加済み（未コミット）。新エンジンを GUI 既定にする場合は <code>LLAMA_TQ3_ATOMICBOT_SERVER</code> で build-rocm71-ffn のバイナリを指すか、build-rocm71 を差し替え</li>
+<li>本レポート: <code>C:\Users\dai86\Downloads\llama-tq3\docs\benchmark-report-20260822-ncpuffn.html</code></li>
+</ul>
+
+</body>
+</html>
