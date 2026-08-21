@@ -1757,28 +1757,40 @@ function Open-ComfyUIClient {
 function Open-DeepSeekHarnessClient {
     # DeepSeek Harness — agent harness framework (npx auto-install + auto-update).
     # https://deepseek.com/harness/en/
+    # The harness's llm-deepseek adapter reads DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY
+    # from its launch environment. Pointing them at the LlamaDock gateway makes the
+    # harness run on the local llama.cpp model instead of the DeepSeek cloud API,
+    # and the env key also satisfies the web UI's "Add an API key" onboarding gate
+    # (credentials-local reports source:env as configured).
     $dshCheck = Join-Path $PSScriptRoot "tools\dsh-update.ps1"
     if (Test-Path -LiteralPath $dshCheck) {
         # Run update check in background (non-blocking)
         Start-Job -ScriptBlock { param($p) & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $p } -ArgumentList $dshCheck | Out-Null
     }
     Write-Host "DeepSeek Harness を起動しています..." -ForegroundColor Cyan
+    Write-Host "LLM backend: $ClientBaseUrl/v1 (ローカル llama.cpp / APIキー不要)" -ForegroundColor Cyan
+
+    $env:DEEPSEEK_BASE_URL = "$ClientBaseUrl/v1"
+    $env:DEEPSEEK_API_KEY = "not-needed"
 
     # Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
     # over npx. npx re-downloads the full ~450-package tree into a fresh _npx
     # cache on every launch, which can hang for minutes on first boot.
     $dshCmd = Join-Path $env:APPDATA "npm\dsh.cmd"
     if (Test-Path -LiteralPath $dshCmd) {
-        return Start-Process -FilePath $dshCmd -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @("web")
+        $proc = Start-Process -FilePath $dshCmd -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @("web")
+        Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
+        return $proc
     }
 
     $npx = if ($IsWindows -or $env:OS -eq "Windows_NT") { "npx.cmd" } else { "npx" }
-    return Start-Process -FilePath $npx -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @(
+    $proc = Start-Process -FilePath $npx -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @(
         "--yes",
         "@deepseek-ai/dsh@latest",
         "web"
     )
-
+    Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
+    return $proc
 }
 
 function Open-WorkspaceClient {
@@ -2034,7 +2046,7 @@ if ($PresetMode -eq "Prompt") {
     Write-Host " [4] Code - OpenClaude 向けの安定設定"
     Write-Host " [5] Agent Research - llama-agent と反復Web証拠収集"
     Write-Host " [6] Chat - Open WebUI（Web検索・会話圧縮）"
-    Write-Host " [7] DeepSeek Harness - エージェントハーネス（単体起動・モデル不要）"
+    Write-Host " [7] DeepSeek Harness - エージェントハーネス（ローカルLLM接続・APIキー不要）"
     Write-Host ""
 
     do {
@@ -2051,21 +2063,6 @@ if ($PresetMode -eq "Prompt") {
 
     $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "OpenClaudeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")
     $PresetMode = $presetValues[$presetSelection - 1]
-}
-
-# DeepSeek Harness is standalone (npx, port 5173) and does not need a running
-# llama-server. Launch it directly and exit, skipping all model/context prompts.
-if ($PresetMode -eq "DeepSeekHarness") {
-    if ($DryRun) {
-        Write-Host ""
-        Write-Host "DRY RUN: DeepSeek Harness would launch standalone (npx @deepseek-ai/dsh@latest web, port 5173). llama-server は不要。" -ForegroundColor Yellow
-        exit 0
-    }
-    Write-Host ""
-    Write-Host "DeepSeek Harness を起動しています（単体・モデル不要）..." -ForegroundColor Cyan
-    Open-DeepSeekHarnessClient | Out-Null
-    Write-Host "DeepSeek Harness を起動しました: http://127.0.0.1:5173" -ForegroundColor Green
-    exit 0
 }
 
 $isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding")
@@ -2117,6 +2114,15 @@ elseif ($PresetMode -eq "LlamaAgentResearch") {
 elseif ($PresetMode -eq "WebUIChat") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "WebUI" }
     if ($ContextIndex -eq 0) { $ContextIndex = 2 }
+    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
+    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
+    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
+    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
+    if ($McpMode -eq "Prompt") { $McpMode = "None" }
+}
+elseif ($PresetMode -eq "DeepSeekHarness") {
+    if ($ClientMode -eq "Prompt") { $ClientMode = "DeepSeekHarness" }
+    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2414,7 +2420,7 @@ if ($ClientMode -eq "Prompt") {
     Write-Host " [4] Computer - チャット・Web検索・会話圧縮"
     Write-Host " [5] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
     Write-Host " [6] ComfyUI - MiniMax H3 動画・音声生成"
-    Write-Host " [7] DeepSeek Harness - エージェントハーネス（自動アップデート）"
+    Write-Host " [7] DeepSeek Harness - エージェントハーネス（ローカルLLM接続）"
     Write-Host ""
 
     do {
@@ -3042,6 +3048,10 @@ if ($DryRun) {
     elseif ($ClientMode -eq "ComfyUI") {
         Write-Host "DRY RUN: ComfyUI would start on:" -ForegroundColor Yellow
         Write-Host "http://127.0.0.1:8188"
+    }
+    elseif ($ClientMode -eq "DeepSeekHarness") {
+        Write-Host "DRY RUN: DeepSeek Harness would open with DEEPSEEK_BASE_URL=$ClientBaseUrl/v1 DEEPSEEK_API_KEY=not-needed" -ForegroundColor Yellow
+        Write-Host "DRY RUN: http://127.0.0.1:5173 (dsh web)" -ForegroundColor Yellow
     }
     else {
         Write-Host "DRY RUN: native Computer would open:" -ForegroundColor Yellow

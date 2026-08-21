@@ -187,7 +187,13 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 - **URL**: https://deepseek.com/harness/en/
 - **起動**: `npx @deepseek-ai/dsh@latest web`（初回は自動インストール、以降は自動アップデート）
 - **ポート**: 5173（既定）
-- **ワークスペース**: ワークフロープリセット [7]（standalone 直接起動）またはワークスペースメニュー [7] から起動可能
+- **LLM バックエンド**: ローカル llama.cpp（8090 gateway 経由）。`Open-DeepSeekHarnessClient` が起動時に
+  `DEEPSEEK_BASE_URL=http://127.0.0.1:8090/v1` と `DEEPSEEK_API_KEY=not-needed` を環境変数として渡す。
+  dsh の `llm-deepseek` アダプタは `baseURL` を `config.baseURL → $DEEPSEEK_BASE_URL → api.deepseek.com`
+  の順で解決し、`/chat/completions` を叩く（llama-server の `/v1/chat/completions` と一致）。
+  環境変数のキーは credentials-local が `source:env` として `configured:true` を返すため、
+  Web UI の「Add an API key」オンボーディング画面もスキップされる。
+- **ワークスペース**: ワークフロープリセット [7]（モデル選択→llama-server 起動→dsh 起動）またはワークスペースメニュー [7]
 - **更新**: `tools/dsh-update.ps1` が起動時にバックグラウンドでバージョンチェック＋更新を実行
 
 ## 8. 次にやること（優先度順）

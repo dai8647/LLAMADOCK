@@ -110,7 +110,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 | **Code - OpenClaude** | OpenClaude 向けの安定設定 |
 | **Agent Research** | llama-agent + 反復 Web 調査ハーネス |
 | **Chat** | Open WebUI（Web 検索・会話コンパクション） |
-| **DeepSeek Harness** | エージェントハーネス（standalone・モデル不要、npx 自動インストール＋自動アップデート） |
+| **DeepSeek Harness** | エージェントハーネス（ローカル llama.cpp 接続・API キー不要、npx 自動インストール＋自動アップデート） |
 
 ---
 
