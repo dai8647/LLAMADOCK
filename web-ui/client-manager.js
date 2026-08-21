@@ -36,7 +36,7 @@ export const CLIENTS = [
   { id: "OpenCode", label: "OpenCode", desc: "ターミナルコーディング", kind: "cli" },
   { id: "WebUI", label: "Open WebUI / Computer", desc: "チャット・検索", kind: "web", port: 8000, health: { path: "/" } },
   { id: "LlamaAgent", label: "Llama Agent", desc: "反復調査", kind: "cli" },
-  { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 5173, standalone: true, health: { path: "/" } },
+  { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 3080, standalone: true, health: { path: "/" } },
   // standalone: the client runs its own server and does not need a running
   // llama-server — mirrors select-model.ps1's Open-ComfyUIClient comment
   // ("ComfyUI runs its own server on :8188 and does not depend on the
