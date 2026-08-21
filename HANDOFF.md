@@ -143,8 +143,14 @@ node tools/mcp-smoke.mjs
     - ベースモデル `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M` での動作確認済み。heretic-ara でも動作確認済み（アーキテクチャ一致ならOK）
     - **実測（2026-08-21, RX 7800 XT / ctx 4096 / fa on / KV q8_0+q4_0）**: 純正 Qwen3.8-27B 系では acceptance ≈0.74。一方 **heretic-ara.i1-Q4_K_S では acceptance 0.286・生成 8.07 t/s とベースライン 16.02 t/s の半分に悪化**（ドラフトは純正ベース分布で学習されており、abliterated 系改変モデルとは分布ミスマッチ）。**ベースから離れたファインチューンには DFlash2 非推奨**
     - VRAM 目安: 主モデル 14.7GB（Q4_K_S）+ ドラフト 1.09GB（Q4_K_M）で ctx 4096 がギリギリ。ctx 16384 以上は OOM リスク大
-- ⚠️ **TurboTan b10536 ビルド（2026-08-21 11:10 再ビルド分）は CPU 専用で壊れている**: `ggml-hip.dll`（静的HIP・883MB）のロード/初期化に失敗し `device_info` に ROCm デバイスが列挙されない（`-ngl 99` が無視され全レイヤー CPU 実行 → tg32 ≈ 2.1 t/s）。DSpark 自動切替がこのビルドへ飛ぶため注意。要ビルドやり直し（修正前の動作版への戻しも検討）
-  - 同ビルドは `-ctk/-ctv turbo3/turbo4/tq3_0` もすべて拒否する（select-model.ps1 の KV probe が自動で非表示化済み）。TQ3 モデル不在のため今日は影響なし
+- **uncensored MTP モデル追加（2026-08-21 ダウンロード・実測）**: `.lmstudio\models\` に 3 本追加（すべて MTP 内蔵・16GB VRAM 完全搭載・AtomicBot 動作）。bench 条件: ngl99 / fa on / KV q8_0+q4_0
+  - **HauhauCS Aggressive IQ3_M**（11.9GiB・3.66bpw）: tg128 18.33、**draft-mtp 実効 25.66 t/s（acceptance 0.673）= 現行最速**。人気 No.1（357K DL）
+  - zerodigest YMQ-S（12.53GB・2.5bpw 表記）: tg128 **18.70**（bench トップタイ）
+  - hotdogs abliterated mtp-IQ3_M（11.9GiB・3.66bpw）: tg128 18.11
+  - 従来の soyaakinohara 3.69bpw-12GB: tg128 18.67 / draft-mtp 22.28 t/s → **HauhauCS が +15% 上回り乗り換え推奨**
+  - 教訓: TG は帯域上限で 4 本とも ±3% 差のみ。差が付くのは draft-mtp の acceptance（0.55〜0.67）と品質（bpw・検閲除去手法）
+- ✅ **TurboTan b10536 ビルド修復済み（2026-08-21）**: 再ビルド分が GPU で動かない原因は `ggml-hip.dll` が `hipblas.dll` を名前指定インポートするが、ROCm 7.1 同梱は `libhipblas.dll` というファイル名のためロード失敗するだけだった → **b10536 ルートに `libhipblas.dll` を `hipblas.dll` としてコピー**で復旧（backend=ROCm、bench: pp512 223.4 / tg128 20.21 t/s・AtomicBot 比 TG +8%）。**ビルド更新のたびにこのコピーが必要**
+  - このビルドは `-ctk/-ctv turbo3/turbo4/tq3_0` を拒否する（select-model.ps1 の KV probe が自動で非表示化済み）
 
 ---
 

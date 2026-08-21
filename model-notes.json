@@ -53,5 +53,15 @@
   "note": "DFlash2: z-lab/llama.cpp-fork dflash2 ブランチから ROCm 7.1 HIP (gfx1101) ビルド。--spec-type draft-dflash。DFlash2 チェックポイント（incoai/Qwen3.8-27B-DFlash2-GGUF）が自動的に DFlash2 アーキテクチャ（grouped dynamic depthwise convolution + candidate selector）を有効化。主モデルは Qwen3.8-27B とアーキテクチャ一致が必須。",
   "warning": "AtomicBot/TurboTan では動作不可。DFlash2 専用ビルド engine が必要。",
   "recommended_preset": "OpenCodeCoding"
+ },
+ {
+  "pattern": "(?i)HauhauCS",
+  "note": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive MTP 搭載（IQ3_M = 11.9GiB / 3.66bpw・vision mmproj 同梱リポジトリ）。2026-08-21 実測 RX 7800 XT: bench tg128 18.33 t/s、draft-mtp 有効で **25.66 t/s**（acceptance 0.673）＝16GB VRAM 完全搭載の uncensored 系最速。draft-mtp 前提なので SpecMode は MTP/NextN を選ぶこと。",
+  "recommended_preset": "WebUIChat"
+ },
+ {
+  "pattern": "(?i)YMQ-S|YMQ-MTP",
+  "note": "zerodigest Qwen3.8-27B-Uncensored-YMQ（autoround architecture-aware）。YMQ-S = 12.53GB。bench tg128 18.70 t/s（4モデル中トップタイ）。MTP 内蔵。",
+  "recommended_preset": "WebUIChat"
  }
 ]
