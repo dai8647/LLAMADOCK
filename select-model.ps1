@@ -3077,8 +3077,10 @@ if ($isDeepSeek) {
 }
 
 if ($SpecMode -eq "MtpNextN") {
+    # MTP self-draft: do NOT pass -md (same model). The spec_mtp branch in
+    # llama.cpp creates a lightweight draft context from model_tgt directly,
+    # avoiding a second full model load that would double memory usage.
     $args += @(
-        "-md", $selected.FullName,
         "--spec-type", "draft-mtp",
         "--spec-draft-n-max", "2",
         "--spec-draft-n-min", "1",
