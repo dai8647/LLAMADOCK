@@ -2,7 +2,7 @@
 // ---------------------------------------------------------------------------
 // POST /api/connect maps a workspace client id to its real Windows launch,
 // mirroring select-model.ps1's Open-*Client functions:
-//   - Cline / OpenCode / OpenClaude -> tools/llamadock-client-shell.ps1
+//   - Cline / OpenCode -> tools/llamadock-client-shell.ps1
 //   - WebUI                          -> tools/computer-start.ps1 (Computer 0.9.9)
 //   - LlamaAgent                     -> llama-agent.exe (MCP web-search auto-start)
 //   - ComfyUI                        -> ComfyUI .venv python main.py (port 8188)
@@ -34,7 +34,6 @@ export const CLIENT_BASE_URL =
 export const CLIENTS = [
   { id: "Cline", label: "Cline", desc: "コーディング", kind: "cli" },
   { id: "OpenCode", label: "OpenCode", desc: "ターミナルコーディング", kind: "cli" },
-  { id: "OpenClaude", label: "OpenClaude", desc: "Claude Code 系", kind: "cli" },
   { id: "WebUI", label: "Open WebUI / Computer", desc: "チャット・検索", kind: "web", port: 8000, health: { path: "/" } },
   { id: "LlamaAgent", label: "Llama Agent", desc: "反復調査", kind: "cli" },
   { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 5173, standalone: true, health: { path: "/" } },
@@ -93,14 +92,6 @@ function windowsPlan(spec, { model, workspace, prompt }) {
         ...shellArgs, "-File", clientShell,
         "-Client", "OpenCode", "-ModelName", String(model || ""),
         "-ConfigPath", configPath, "-BaseUrl", baseUrl, "-Workspace", ws,
-      ];
-      return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
-    }
-    case "OpenClaude": {
-      const args = [
-        ...shellArgs, "-File", clientShell,
-        "-Client", "OpenClaude", "-ModelName", String(model || ""),
-        "-BaseUrl", baseUrl, "-Workspace", ws,
       ];
       return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
     }

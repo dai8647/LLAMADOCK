@@ -8,7 +8,7 @@ param(
     [int]$KCacheIndex = 0,
     [int]$VCacheIndex = 0,
     [int]$CacheRamMiB = -1,
-    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "OpenClaudeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")]
     [string]$PresetMode = "Prompt",
     [ValidateSet("Auto", "Light", "Standard", "Heavy")]
     [string]$ResearchMode = "Auto",
@@ -29,7 +29,7 @@ param(
     [string]$CpuMoeMode = "",
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
-    [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "OpenClaude", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
     [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat")]
     [string]$EngineMode = "Auto",
@@ -1040,22 +1040,6 @@ function Open-OpenCodeClient {
     return Start-Process -FilePath "powershell.exe" -PassThru -ArgumentList $shellArgs
 }
 
-function Open-OpenClaudeClient {
-    param([string]$ModelName)
-
-    $clientShell = Join-Path $PSScriptRoot "tools\llamadock-client-shell.ps1"
-    Write-Host "Opening OpenClaude in PowerShell..." -ForegroundColor Cyan
-    return Start-Process -FilePath "powershell.exe" -PassThru -ArgumentList @(
-        "-NoExit",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $clientShell,
-        "-Client", "OpenClaude",
-        "-ModelName", $ModelName,
-        "-BaseUrl", "$ClientBaseUrl/v1",
-        "-Workspace", $PSScriptRoot
-    )
-}
-
 function Open-LlamaAgentClient {
     param(
         [string]$ModelPath
@@ -1801,7 +1785,6 @@ function Open-WorkspaceClient {
         "ComfyUI" { return Open-ComfyUIClient }
         "LlamaAgent" { return Open-LlamaAgentClient -ModelPath $ModelPath }
         "OpenCode" { return Open-OpenCodeClient -ModelName $ModelName }
-        "OpenClaude" { return Open-OpenClaudeClient -ModelName $ModelName }
         "DeepSeekHarness" { return Open-DeepSeekHarnessClient }
         default {
             Set-ClineLocalModel -ModelName $ModelName
@@ -1860,9 +1843,9 @@ function Select-WorkspaceForSession {
     } while ($choice -notin @("1", "2", "3", "4", "5"))
     if ($choice -eq "1") { return @("relaunch", "") }
     if ($choice -eq "2") {
-        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] OpenClaude  [5] Llama Agent  [6] ComfyUI  [7] DeepSeek Harness"
+        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] Llama Agent  [5] ComfyUI  [6] DeepSeek Harness"
         $workspace = Read-Host "Select workspace"
-        $modes = @("WebUI", "Cline", "OpenCode", "OpenClaude", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
+        $modes = @("WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
@@ -2043,14 +2026,13 @@ if ($PresetMode -eq "Prompt") {
     Write-Host " [1] Manual - 全設定を手動選択"
     Write-Host " [2] Code - Cline 向けの安定設定"
     Write-Host " [3] Code - OpenCode 向けの安定設定"
-    Write-Host " [4] Code - OpenClaude 向けの安定設定"
-    Write-Host " [5] Agent Research - llama-agent と反復Web証拠収集"
-    Write-Host " [6] Chat - Open WebUI（Web検索・会話圧縮）"
-    Write-Host " [7] DeepSeek Harness - エージェントハーネス（ローカルLLM接続・APIキー不要）"
+    Write-Host " [4] Agent Research - llama-agent と反復Web証拠収集"
+    Write-Host " [5] Chat - Open WebUI（Web検索・会話圧縮）"
+    Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続・APIキー不要）"
     Write-Host ""
 
     do {
-        $presetInput = Read-Host "Select preset (1-7), or press Enter for Manual"
+        $presetInput = Read-Host "Select preset (1-6), or press Enter for Manual"
         if ([string]::IsNullOrWhiteSpace($presetInput)) {
             $presetSelection = 1
             $presetValid = $true
@@ -2059,9 +2041,9 @@ if ($PresetMode -eq "Prompt") {
             $presetSelection = 0
             $presetValid = [int]::TryParse($presetInput, [ref]$presetSelection)
         }
-    } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 7)
+    } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 6)
 
-    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "OpenClaudeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")
+    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")
     $PresetMode = $presetValues[$presetSelection - 1]
 }
 
@@ -2086,15 +2068,6 @@ if ($PresetMode -eq "ClineCoding") {
 }
 elseif ($PresetMode -eq "OpenCodeCoding") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "OpenCode" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
-    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
-    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
-    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
-    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
-    if ($McpMode -eq "Prompt") { $McpMode = "None" }
-}
-elseif ($PresetMode -eq "OpenClaudeCoding") {
-    if ($ClientMode -eq "Prompt") { $ClientMode = "OpenClaude" }
     if ($ContextIndex -eq 0) { $ContextIndex = 3 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
@@ -2298,7 +2271,7 @@ $kvOptions = @(
     [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "supported compact middle option" },
     [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "compact, more quality risk for K" },
     [PSCustomObject]@{ Label = "turbo4"; Type = "turbo4"; Note = "TurboQuant 4.5bit" },
-    [PSCustomObject]@{ Label = "turbo3"; Type = "turbo3"; Note = "TurboQuant 3.5bit, compact default for V" },
+    [PSCustomObject]@{ Label = "turbo3"; Type = "turbo3"; Note = "TurboQuant 3.5bit" },
     [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "uncompressed compatibility fallback" },
     [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "uncompressed compatibility fallback, lower memory than f32" }
 )
@@ -2389,7 +2362,7 @@ else {
         }
     }
     else {
-        $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } elseif ($requiredEngine -eq "ExpertsLaguna" -or $requiredEngine -eq "LongCat") { "q4_0" } elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai") { "q4_0" } else { "turbo3" }
+        $defaultVType = if ($requiredEngine -eq "TurboTan") { "tq3_0" } else { "q4_0" }
         do {
             $defaultVLabel = $defaultVType
             $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
@@ -2416,15 +2389,14 @@ if ($ClientMode -eq "Prompt") {
     Write-Host "Workspace:" -ForegroundColor Green
     Write-Host " [1] Cline - コーディングエージェント"
     Write-Host " [2] OpenCode - ターミナルコーディングエージェント"
-    Write-Host " [3] OpenClaude - ターミナルコーディングエージェント"
-    Write-Host " [4] Computer - チャット・Web検索・会話圧縮"
-    Write-Host " [5] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
-    Write-Host " [6] ComfyUI - MiniMax H3 動画・音声生成"
-    Write-Host " [7] DeepSeek Harness - エージェントハーネス（ローカルLLM接続）"
+    Write-Host " [3] Computer - チャット・Web検索・会話圧縮"
+    Write-Host " [4] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
+    Write-Host " [5] ComfyUI - MiniMax H3 動画・音声生成"
+    Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続）"
     Write-Host ""
 
     do {
-        $clientInput = Read-Host "Select workspace (1-7), or press Enter for Cline"
+        $clientInput = Read-Host "Select workspace (1-6), or press Enter for Cline"
         if ([string]::IsNullOrWhiteSpace($clientInput)) {
             $clientSelection = 1
             $clientValid = $true
@@ -2433,14 +2405,13 @@ if ($ClientMode -eq "Prompt") {
             $clientSelection = 0
             $clientValid = [int]::TryParse($clientInput, [ref]$clientSelection)
         }
-    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 7)
+    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 6)
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
-    elseif ($clientSelection -eq 3) { $ClientMode = "OpenClaude" }
-    elseif ($clientSelection -eq 4) { $ClientMode = "WebUI" }
-    elseif ($clientSelection -eq 5) { $ClientMode = "LlamaAgent" }
-    elseif ($clientSelection -eq 6) { $ClientMode = "ComfyUI" }
+    elseif ($clientSelection -eq 3) { $ClientMode = "WebUI" }
+    elseif ($clientSelection -eq 4) { $ClientMode = "LlamaAgent" }
+    elseif ($clientSelection -eq 5) { $ClientMode = "ComfyUI" }
     else { $ClientMode = "DeepSeekHarness" }
 }
 
@@ -3035,11 +3006,6 @@ if ($DryRun) {
         Write-Host "llamadock/$modelShort"
         Write-Host "DRY RUN: OpenCode would open" -ForegroundColor Yellow
     }
-    elseif ($ClientMode -eq "OpenClaude") {
-        Write-Host "DRY RUN: OpenClaude would use model:" -ForegroundColor Yellow
-        Write-Host $modelShort
-        Write-Host "DRY RUN: OpenClaude would open with OPENAI_BASE_URL=$ClientBaseUrl/v1" -ForegroundColor Yellow
-    }
     elseif ($ClientMode -eq "LlamaAgent") {
         Write-Host "DRY RUN: llama-agent Deep Research would open with pre-collected web evidence:" -ForegroundColor Yellow
         Write-Host $LlamaAgentPath
@@ -3106,10 +3072,6 @@ if (-not $DryRun) {
             }
             elseif ($ClientMode -eq "OpenCode") {
                 Open-OpenCodeClient -ModelName $existingModel
-                Write-Host ""
-            }
-            elseif ($ClientMode -eq "OpenClaude") {
-                Open-OpenClaudeClient -ModelName $existingModel
                 Write-Host ""
             }
             elseif ($ClientMode -eq "LlamaAgent") {

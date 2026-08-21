@@ -12,7 +12,6 @@
 | --- | --- |
 | **Cline** | コーディング用エージェント |
 | **OpenCode** | ローカル OpenAI 互換 API に接続するターミナル型コーディングエージェント |
-| **OpenClaude** | ローカル OpenAI 互換 API に接続する Claude Code 系ターミナルエージェント |
 | **Open WebUI (Computer)** | 会話・Web 検索・コンパクション対応のブラウザ UI |
 | **Llama Agent** | ターミナル型エージェント + 反復 Web 調査ハーネス |
 | **ComfyUI** | MiniMax H3 ビデオ / オーディオ生成 |
@@ -107,7 +106,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 | **Manual** | すべて手動選択 |
 | **Code - Cline** | Cline 向けの安定設定 |
 | **Code - OpenCode** | OpenCode 向けの安定設定 |
-| **Code - OpenClaude** | OpenClaude 向けの安定設定 |
 | **Agent Research** | llama-agent + 反復 Web 調査ハーネス |
 | **Chat** | Open WebUI（Web 検索・会話コンパクション） |
 | **DeepSeek Harness** | エージェントハーネス（ローカル llama.cpp 接続・API キー不要、npx 自動インストール＋自動アップデート） |
@@ -211,11 +209,11 @@ npm run start:mcp    # MCP ウェブ検索サーバー（http://127.0.0.1:3100/m
 
 ### ワークスペース接続（`POST /api/connect`）
 
-起動中のサーバーに対して Cline / OpenCode / OpenClaude / Open WebUI /
+起動中のサーバーに対して Cline / OpenCode / Open WebUI /
 Llama Agent / DeepSeek Harness / ComfyUI を接続します（右カラムの「ワークスペース接続」）。
 
 - **Windows**: `web-ui/client-manager.js` が `select-model.ps1` の `Open-*Client` と同じ起動経路を
-  （detached で）実行します。Cline / OpenCode / OpenClaude は `tools/llamadock-client-shell.ps1`、
+  （detached で）実行します。Cline / OpenCode は `tools/llamadock-client-shell.ps1`、
   WebUI は `tools/computer-start.ps1`、
   LlamaAgent は `llama-agent.exe`、ComfyUI は `main.py --port 8188`。接続先は回復ゲートウェイ
   `http://127.0.0.1:8090/v1` です。

@@ -3,7 +3,7 @@
  * Small OpenAI-compatible gateway used by LlamaDock clients.
  *
  * It keeps UTF-8 and streaming behavior identical for Cline, OpenCode,
- * OpenClaude, Computer, and the research clients.  If a client disconnects
+ * Computer, and the research clients.  If a client disconnects
  * while llama-server is still inside a long prefill, the gateway writes a
  * restart request consumed by llamadock-server-supervisor.ps1.  llama-server
  * has no reliable Windows-side cancel endpoint for this case, so recovering

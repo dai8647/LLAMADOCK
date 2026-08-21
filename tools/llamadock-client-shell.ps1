@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Cline", "OpenCode", "OpenClaude")]
+    [ValidateSet("Cline", "OpenCode")]
     [string]$Client,
     [Parameter(Mandatory = $true)]
     [string]$ModelName,
@@ -38,12 +38,6 @@ switch ($Client) {
         $env:OPENCODE_CONFIG = $ConfigPath
         $env:OPENAI_API_KEY = "not-needed"
         & opencode -m "llamadock/$ModelName" (Get-Location).Path
-    }
-    "OpenClaude" {
-        $env:CLAUDE_CODE_USE_OPENAI = "1"
-        $env:OPENAI_BASE_URL = $BaseUrl
-        $env:OPENAI_API_KEY = "not-needed"
-        & openclaude --provider openai --model $ModelName
     }
 }
 

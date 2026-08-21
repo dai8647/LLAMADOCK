@@ -35,7 +35,7 @@
           "id": "preset",
           "label": "Workflow preset",
           "type": "select",
-          "allowed": ["Manual", "ClineCoding", "OpenCodeCoding", "OpenCodeHarness", "OpenClaudeCoding", "LlamaAgentResearch", "DeepResearchLight", "DeepResearchStandard", "DeepResearchHeavy", "WebUIChat"],
+          "allowed": ["Manual", "ClineCoding", "OpenCodeCoding", "OpenCodeHarness", "LlamaAgentResearch", "DeepResearchLight", "DeepResearchStandard", "DeepResearchHeavy", "WebUIChat"],
           "default": "Manual",
           "flags": [],
           "per_model": true,
