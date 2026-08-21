@@ -2702,12 +2702,19 @@ if (-not $DryRun -and -not $isQuickLaunch) {
     } while (-not $reasoningValid -or $reasoningSelection -lt 1 -or $reasoningSelection -gt $reasoningOptions.Count)
 
     $selectedReasoning = $reasoningOptions[$reasoningSelection - 1]
-    $effectiveReasoningMode = $selectedReasoning.Value
+    # Map reasoning selection to --reasoning flag (on/off only) and chat-template-kwargs
+    if ($selectedReasoning.Value -eq "off") {
+        $effectiveReasoningMode = "off"
+    }
+    else {
+        # low/medium/high → reasoning on + reasoning_effort in chat-template-kwargs
+        $effectiveReasoningMode = "on"
+    }
     # Set chat-template-kwargs from reasoning selection if user didn't provide custom kwargs
     if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs)) {
         $effectiveChatTemplateKwargs = $selectedReasoning.ChatKwargs
     }
-    Write-Host "Reasoning mode: $effectiveReasoningMode" -ForegroundColor Green
+    Write-Host "Reasoning mode: $($selectedReasoning.Value) (--reasoning $effectiveReasoningMode)" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -2717,7 +2724,9 @@ if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
 }
 if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and ($requiredEngine -eq "TurboTan" -or $ClientMode -eq "LlamaAgent")) {
     $effectiveChatTemplateKwargs = '{"enable_thinking":false}'
-    $effectiveReasoningMode = "off"
+    if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode)) {
+        $effectiveReasoningMode = "off"
+    }
 }
 
 # If user provided custom chat-template-kwargs, parse effectiveReasoningMode from it
