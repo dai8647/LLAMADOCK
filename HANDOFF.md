@@ -151,6 +151,10 @@ node tools/mcp-smoke.mjs
   - 教訓: TG は帯域上限で 4 本とも ±3% 差のみ。差が付くのは draft-mtp の acceptance（0.55〜0.67）と品質（bpw・検閲除去手法）
 - ✅ **TurboTan b10536 ビルド修復済み（2026-08-21）**: 再ビルド分が GPU で動かない原因は `ggml-hip.dll` が `hipblas.dll` を名前指定インポートするが、ROCm 7.1 同梱は `libhipblas.dll` というファイル名のためロード失敗するだけだった → **b10536 ルートに `libhipblas.dll` を `hipblas.dll` としてコピー**で復旧（backend=ROCm、bench: pp512 223.4 / tg128 20.21 t/s・AtomicBot 比 TG +8%）。**ビルド更新のたびにこのコピーが必要**
   - このビルドは `-ctk/-ctv turbo3/turbo4/tq3_0` を拒否する（select-model.ps1 の KV probe が自動で非表示化済み）
+- **--n-cpu-ffn 統合（2026-08-22）**: select-model.ps1 に `-CpuFfnLayers` 追加（""=off 既定 / "all"=--cpu-ffn / 数字=--n-cpu-ffn N）。起動時プローブで PR #26622 非対応ビルドはエラー終了（プローブ自体も ROCm DLL PATH 保護付き）。**通常運用では使わない**こと（実測 TG −65〜91%）→ 詳細は `docs/benchmark-report-20260822-ncpuffn.html`
+- **KV キャッシュ戦略の改訂（2026-08-22, 新ビルド bf29aa37c base）**: 新カーネルでは KV 量子化のデクォン overhead が支配的。HauhauCS IQ4_XS 実測: **f16/f16 KV で pp512 558.7 t/s（q8/q4 比 +134%）・tg512 17.1 t/s（+9%）**。ただし f16 KV は VRAM 2倍必要 → **ctx ≤8K なら f16、16K 以上は q8_0+q4_0 が現実解**。旧「KV q8/q4 最適」所見は旧ビルド限定の知見に訂正
+- **MTP acceptance は日変動大**: 同一モデル・同一プロンプトでも 0.36〜0.78 の幅を実測 → draft-mtp の効果はレンジで見ること（IQ3_M+MTP 実効 18〜28 t/s）。速度比較には llama-bench（r3 平均・spec 無し）を使い、MTP 込み数値は参考値扱い
+- **webgui.bat 追加（2026-08-22）**: フロントドア `[3] Web GUI` または直接 bat で `http://127.0.0.1:3000` を起動。PORT 環境変数は bat 内で 3000 に固定済み
 
 ---
 

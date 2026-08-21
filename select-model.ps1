@@ -27,6 +27,11 @@ param(
     [string]$MoeExpertsCount = "",
     # CPU MoE layers (--n-cpu-moe): Auto / 0-99 / Custom. Empty = interactive picker.
     [string]$CpuMoeMode = "",
+    # Dense FFN CPU offload (--n-cpu-ffn N / --cpu-ffn). Empty = off (default).
+    # "" = off, "all" = --cpu-ffn, digits = --n-cpu-ffn N. Requires a build with
+    # PR ggml-org/llama.cpp#26622; probed at launch and refused otherwise.
+    # Measured 2026-08-22: TG -65..-91% — for long-context VRAM freeing only.
+    [string]$CpuFfnLayers = "",
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
@@ -3147,6 +3152,45 @@ if ($SpecMode -eq "MtpNextN") {
         "-ctkd", "$effectiveKCacheType",
         "-ctvd", "$effectiveVCacheType"
     )
+}
+
+if ($CpuFfnLayers -ne "") {
+    # Dense FFN CPU offload (PR ggml-org/llama.cpp#26622). Probe the binary
+    # first: unknown flags abort llama-server at startup (see turbo3/DSpark
+    # history). Off by default — measured TG -65..-91%; the use case is
+    # freeing VRAM for longer contexts, not speed.
+    # HIP builds cannot even launch --help without the ROCm DLLs on PATH,
+    # which would make the probe misread "no output" as "unsupported".
+    $oldProbePath = $env:PATH
+    try {
+        $hipRoot = "C:\Program Files\AMD\ROCm"
+        if (Test-Path -LiteralPath $hipRoot) {
+            $latestHip = $null
+            foreach ($d in (Get-ChildItem -LiteralPath $hipRoot -Directory -ErrorAction SilentlyContinue)) {
+                if ($null -eq $latestHip -or $d.Name -gt $latestHip.Name) { $latestHip = $d }
+            }
+            if ($latestHip) { $env:PATH = "$(Join-Path $latestHip.FullName 'bin');$env:PATH" }
+        }
+        $ffnHelp = & $ServerPath --help 2>&1 | Out-String
+    }
+    finally {
+        $env:PATH = $oldProbePath
+    }
+    if ($LASTEXITCODE -ne 0 -or $ffnHelp -notmatch "--n-cpu-ffn") {
+        Write-Host "ERROR: -CpuFfnLayers requires an engine build with PR ggml-org/llama.cpp#26622 (--n-cpu-ffn)." -ForegroundColor Red
+        Write-Host "Engine: $ServerPath" -ForegroundColor Red
+        exit 1
+    }
+    if ($CpuFfnLayers -eq "all") {
+        $args += @("--cpu-ffn")
+    }
+    elseif ($CpuFfnLayers -match "^\d+$") {
+        $args += @("--n-cpu-ffn", "$CpuFfnLayers")
+    }
+    else {
+        Write-Host "ERROR: -CpuFfnLayers must be a number or 'all' (got: $CpuFfnLayers)." -ForegroundColor Red
+        exit 1
+    }
 }
 
 if ($SpecMode -eq "DSpark") {

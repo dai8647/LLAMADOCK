@@ -2,6 +2,9 @@
 chcp 65001 >nul
 title LlamaDock Web GUI
 setlocal
+rem Pin the port so a user-level PORT env var cannot move the server away
+rem from the URL the browser opener (and this file) expects.
+set "PORT=3000"
 set "LLAMADOCK_GUI_URL=http://127.0.0.1:3000"
 
 rem Open the browser only after the server answers /api/health.
