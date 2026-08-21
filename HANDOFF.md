@@ -22,7 +22,7 @@
 | サービス | ポート | 起動元 | 内容 |
 |---|---|---|---|
 | ComfyUI | 8188 | `select-model.ps1`（ck プロファイル） | 動画・画像生成本体 |
-| **DeepSeek Harness** | 5173 | `npx @deepseek-ai/dsh@latest web` | エージェントハーネス（npx 自動インストール＋自動アップデート） |
+| **DeepSeek Harness** | 3080 | `npx @deepseek-ai/dsh@latest web` | エージェントハーネス（npx 自動インストール＋自動アップデート） |
 | h3-chat（Web UI） | 8189 | `tools/h3-chat.ps1` | 企画チャット + 生成ボタン UI |
 | 企画 LLM（llama-server） | 8190 | `tools/h3-chat.ps1` | Qwen3.5 企画（CPU・mmproj 視覚付き） |
 
@@ -186,7 +186,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 ### DeepSeek Harness（エージェントハーネス）
 - **URL**: https://deepseek.com/harness/en/
 - **起動**: `npx @deepseek-ai/dsh@latest web`（初回は自動インストール、以降は自動アップデート）
-- **ポート**: 5173（既定）
+- **ポート**: 3080（既定）
 - **LLM バックエンド**: ローカル llama.cpp（8090 gateway 経由）。`Open-DeepSeekHarnessClient` が起動時に
   `DEEPSEEK_BASE_URL=http://127.0.0.1:8090/v1` と `DEEPSEEK_API_KEY=not-needed` を環境変数として渡す。
   dsh の `llm-deepseek` アダプタは `baseURL` を `config.baseURL → $DEEPSEEK_BASE_URL → api.deepseek.com`
