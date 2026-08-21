@@ -287,3 +287,12 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - 音声解析パーサー修正（multi-line/single-line 両対応）
 - 企画 LLM 候補の自動検出（.lmstudio\models スキャン）
 - 企画 LLM パラメータ UI 化: KV Key/Value 圧縮、Flash Attention、Reasoning Effort/Budget を詳細設定パネルから変更可能（`/api/plan-settings` エンドポイント経由）
+
+### h3-chat UI 修正 + デザイン刷新（2026-08-21・commit 036e2dd）
+ユーザー報告「UI がおかしい」の原因を DOM 実測で特定し修正:
+- **CSS コメント破損**: `<style>` 内に Python 風 `# コメント` が混入し、CSS パーサーが後続の `.seg { ... }` ルールごと無効化していた → モード pill が横並びにならず縦積み。`/* */` に修正
+- **未定義変数**: `#planparams` の `color:var(--fg)`（未定義）→ `var(--text)` に修正
+- **フッター圧縮崩れ（本命）**: フッターが 1 行の flex に 11 要素を詰め込み、メイン入力欄が幅 26px・音声設定が 39px まで潰れていた → 4 段構成に再構築（①モード pill + 長さ ②企画/参照トグル + ボタン群 ③詳細設定・音声パネルを左右 2 列 grid ④全幅入力欄 + 生成ボタン）。入力欄は 1144px に復活
+- **btn-reset 表示バグ**: CSS `#btn-reset{display:none}` に対し JS が `style.display=""` で表示しようとして CSS が勝り永遠に出ない → `"inline-block"` に修正
+- **デザイン刷新（シネマスタジオ調）**: シアン〜ブルーのグラデーションアクセント、発光ステータスドット、グラデーション生成ボタン、回転マーカー付き折り畳みパネル、ガラス風ヘッダー/フッター
+- 検証: HTML タグバランス（Python HTMLParser で BALANCED）・ブラウザ DOM 実測で pill 横並び/パネル開閉/企画モードトグルを確認済み
