@@ -2922,6 +2922,15 @@ if ($SpecMode -eq "DFlash2") {
         Write-Host "Build the DFlash2 fork (z-lab/llama.cpp-fork dflash2 branch) with ROCm 7.1." -ForegroundColor Red
         exit 1
     }
+    # DFlash2 benefits from low reasoning effort to avoid excessive thinking.
+    # Override chat-template-kwargs and reasoning mode unless user explicitly set them.
+    if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs)) {
+        $effectiveChatTemplateKwargs = '{"reasoning_effort":"low"}'
+        $effectiveReasoningMode = ""
+        if (-not $isQuickLaunch) {
+            Write-Host "DFlash2: reasoning effort set to low (override with --ChatTemplateKwargs)" -ForegroundColor Yellow
+        }
+    }
 }
 
 # Prompt MCP helper selection

@@ -139,6 +139,7 @@ node tools/mcp-smoke.mjs
   - DFlash2（llama.cpp PR #27342）: upstream PR ブランチから ROCm 7.1 HIP (gfx1101) ビルド済み（`C:\Users\dai86\Downloads\llama-dflash2\build-rocm71`）。`--spec-type draft-dflash` + DFlash2 チェックポイントで使用可。ドラフト: incoai/Qwen3.8-27B-DFlash2-GGUF (Q4_K_M)。env `LLAMADOCK_DFLASH2_DRAFT` で上書き可
     - **バグ修正済み（2件）**: (1) `ggml/src/gguf.cpp` — DFlash2 GGUF の `general.tags` が ARRAY of ARRAY（ネスト配列）なのにパーサーが1段しか対応していなかった → ネスト配列をスキップするロジックを追加 (2) `common/speculative.cpp` — ドラフトモデルロード時に `params.model.path`（メインモデル）を参照していたバグを `model_path`（ドラフトモデル）に修正
     - 選択肢: `[4] DFlash2` (SpecMode)。DFlash2 エンジンに自動切替。Draft GGUF が見つからない場合はエラー
+    - reasoning effort は自動で `low` に設定（思考量抑制）。`--ChatTemplateKwargs` で上書き可（例: `'{"reasoning_effort":"medium"}'`）
     - ベースモデル `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M` での動作確認済み。heretic-ara でも動作確認済み（アーキテクチャ一致ならOK）
 
 ---
