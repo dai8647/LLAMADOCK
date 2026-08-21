@@ -1890,6 +1890,9 @@ $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "AtomicBot"; Path = $AtomicBotServerPath }
     [PSCustomObject]@{ Name = "TurboTan"; Path = $TurboTanServerPath },
     [PSCustomObject]@{ Name = "PrismBonsai"; Path = $PrismBonsaiServerPath },
+    [PSCustomObject]@{ Name = "ExpertsLaguna"; Path = $ExpertsLagunaServerPath },
+    [PSCustomObject]@{ Name = "LongCat"; Path = $LongCatServerPath },
+    [PSCustomObject]@{ Name = "DFlash2"; Path = $DFlash2ServerPath },
     [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
     [PSCustomObject]@{ Name = "OfficialHIP"; Path = $OfficialHIPServerPath },
     [PSCustomObject]@{ Name = "OfficialCPU"; Path = $OfficialCPUServerPath }

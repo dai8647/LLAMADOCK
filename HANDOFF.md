@@ -141,6 +141,10 @@ node tools/mcp-smoke.mjs
     - 選択肢: `[4] DFlash2` (SpecMode)。DFlash2 エンジンに自動切替。Draft GGUF が見つからない場合はエラー
     - reasoning effort は自動で `low` に設定（思考量抑制）。`--ChatTemplateKwargs` で上書き可（例: `'{"reasoning_effort":"medium"}'`）
     - ベースモデル `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M` での動作確認済み。heretic-ara でも動作確認済み（アーキテクチャ一致ならOK）
+    - **実測（2026-08-21, RX 7800 XT / ctx 4096 / fa on / KV q8_0+q4_0）**: 純正 Qwen3.8-27B 系では acceptance ≈0.74。一方 **heretic-ara.i1-Q4_K_S では acceptance 0.286・生成 8.07 t/s とベースライン 16.02 t/s の半分に悪化**（ドラフトは純正ベース分布で学習されており、abliterated 系改変モデルとは分布ミスマッチ）。**ベースから離れたファインチューンには DFlash2 非推奨**
+    - VRAM 目安: 主モデル 14.7GB（Q4_K_S）+ ドラフト 1.09GB（Q4_K_M）で ctx 4096 がギリギリ。ctx 16384 以上は OOM リスク大
+- ⚠️ **TurboTan b10536 ビルド（2026-08-21 11:10 再ビルド分）は CPU 専用で壊れている**: `ggml-hip.dll`（静的HIP・883MB）のロード/初期化に失敗し `device_info` に ROCm デバイスが列挙されない（`-ngl 99` が無視され全レイヤー CPU 実行 → tg32 ≈ 2.1 t/s）。DSpark 自動切替がこのビルドへ飛ぶため注意。要ビルドやり直し（修正前の動作版への戻しも検討）
+  - 同ビルドは `-ctk/-ctv turbo3/turbo4/tq3_0` もすべて拒否する（select-model.ps1 の KV probe が自動で非表示化済み）。TQ3 モデル不在のため今日は影響なし
 
 ---
 
