@@ -332,16 +332,6 @@ if (-not $SkipDryRun) {
     $presets = $validPresets
 
     foreach ($preset in $presets) {
-        if ($preset -eq "DeepSeekHarness") {
-            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher -DryRun -PresetMode $preset -ModelIndex 1 -ExistingServerMode Quit 2>&1
-            if ($LASTEXITCODE -ne 0 -or ($out -join "`n") -notmatch "DeepSeek Harness would launch standalone") {
-                Write-Host "Dry run failed: $preset" -ForegroundColor Red
-                $out | Select-Object -Last 40
-                exit 1
-            }
-            Write-Host "Dry run OK: $preset"
-            continue
-        }
         $modelIndex = Get-SweepModelIndex
         $kIndex = 1
         $vIndex = 6
@@ -417,6 +407,10 @@ if (-not $SkipDryRun) {
         }
         if ($preset -eq "OpenClaudeCoding" -and $joined -notmatch "OPENAI_BASE_URL=http://127.0.0.1:8090/v1") {
             Write-Host "OpenClaude preset did not pass the local endpoint." -ForegroundColor Red
+            exit 1
+        }
+        if ($preset -eq "DeepSeekHarness" -and $joined -notmatch "DEEPSEEK_BASE_URL=http://127.0.0.1:8090/v1") {
+            Write-Host "DeepSeekHarness preset did not pass the local endpoint." -ForegroundColor Red
             exit 1
         }
 
