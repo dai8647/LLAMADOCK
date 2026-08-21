@@ -32,8 +32,8 @@
 // ---------------------------------------------------------------------------
 
 import http from "node:http";
-import { createReadStream } from "node:fs";
-import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { readFile, writeFile, rename, mkdir, readdir, stat } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, normalize, extname, resolve, sep } from "node:path";
 
@@ -55,6 +55,153 @@ const SUPERVISOR_DIR = join(ROOT, "mcp-data", "server-supervisor");
 const SERVER_ARGUMENTS_PATH = join(SUPERVISOR_DIR, "server-arguments.json");
 const SUPERVISOR_STATUS_PATH = join(SUPERVISOR_DIR, "status.json");
 const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
+
+// --- Engine runtime resolution (mirrors select-model.ps1) ---
+// Same candidate lists and env overrides as the PowerShell core so the GUI
+// launcher picks the exact same binary the CLI flow would pick.
+const ENGINE_CANDIDATES = [
+  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71\\bin\\llama-server.exe", "C:\\llama-tq3\\build\\bin\\llama-server.exe"] },
+  { name: "TurboTan", env: "LLAMA_TQ3_TURBOTAN_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-b10536-rocm\\llama-server.exe", "C:\\llama-tq3-turbotan\\build\\bin\\llama-server.exe"] },
+  { name: "OfficialVulkan", env: "LLAMADOCK_OFFICIAL_VULKAN_SERVER", paths: ["C:\\llama.cpp-vulkan\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-vulkan\\llama-server.exe"] },
+  { name: "OfficialHIP", env: "LLAMADOCK_OFFICIAL_HIP_SERVER", paths: ["C:\\llama.cpp-hip\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-hip\\llama-server.exe"] },
+  { name: "OfficialCPU", env: "LLAMADOCK_OFFICIAL_CPU_SERVER", paths: ["C:\\llama.cpp-cpu\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-cpu\\llama-server.exe"] },
+  { name: "PrismBonsai", env: "LLAMA_TQ3_PRISM_BONSAI_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build-rocm71\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build-win-vulkan\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build\\bin\\llama-server.exe"] },
+  { name: "ExpertsLaguna", env: "LLAMA_TQ3_EXPERTS_LAGUNA_SERVER", paths: ["C:\\Users\\dai86\\llama-cpp-turboquant-experts-laguna\\build-hip\\bin\\llama-server.exe", "C:\\Users\\dai86\\llama-cpp-turboquant\\build-hip\\bin\\llama-server.exe"] },
+  { name: "LongCat", env: "LLAMA_TQ3_LONGCAT_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build-rocm71\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build\\bin\\llama-server.exe"] },
+  { name: "DFlash2", env: "LLAMA_TQ3_DFLASH2_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-dflash2\\build-rocm71\\bin\\llama-server.exe"] },
+];
+
+function resolveEngineBin(name) {
+  const cand = ENGINE_CANDIDATES.find(
+    (e) => e.name.toLowerCase() === String(name || "").trim().toLowerCase(),
+  );
+  if (!cand) return null;
+  const fromEnv = process.env[cand.env];
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  for (const p of cand.paths) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+function engineHint(cand) {
+  return `確認パス: ${cand.paths.join(" / ")}（env ${cand.env} で上書き可）`;
+}
+
+// Model -> required engine routing, same order as select-model.ps1's
+// Get-RequiredEngine (Ternary before DeepSeek so REAP/TQ3 mixes route right).
+function requiredEngineForModel(modelName) {
+  const m = String(modelName || "");
+  if (/ternary|bonsai/i.test(m)) return "PrismBonsai";
+  if (/deepseek|ds4-compact|reap[-_ ]?k128|laguna/i.test(m)) return "ExpertsLaguna";
+  if (/tq3_4s|tq3/i.test(m)) return "TurboTan";
+  if (/longcat/i.test(m)) return "LongCat";
+  if (/dflash2/i.test(m)) return "DFlash2";
+  return "AtomicBot";
+}
+
+let rocmBinCache;
+function resolveRocmBin() {
+  if (rocmBinCache !== undefined) return rocmBinCache;
+  try {
+    const root = "C:\\Program Files\\AMD\\ROCm";
+    const byVersion = readdirSync(root)
+      .filter((n) => /^\d+(\.\d+)*$/.test(n))
+      .sort((a, b) => {
+        const pa = a.split(".").map(Number);
+        const pb = b.split(".").map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+          const d = (pa[i] || 0) - (pb[i] || 0);
+          if (d) return -d; // newest first
+        }
+        return 0;
+      });
+    for (const v of byVersion) {
+      const bin = join(root, v, "bin");
+      if (existsSync(bin)) {
+        rocmBinCache = bin;
+        return bin;
+      }
+    }
+  } catch {
+    /* no ROCm installed */
+  }
+  rocmBinCache = null;
+  return null;
+}
+
+// GGUF model lookup under MODELS_BASE (same default as select-model.ps1).
+function expandEnvVars(value) {
+  return String(value || "").replace(/%([^%]+)%/g, (_, name) => process.env[name] ?? `%${name}%`);
+}
+
+export const MODELS_BASE = expandEnvVars(
+  process.env.LLAMADOCK_MODELS_BASE || "C:\\Users\\dai86\\.lmstudio\\models",
+);
+
+async function findModelFile(modelName, maxDepth = 6) {
+  const raw = String(modelName || "").trim();
+  if (!raw) return null;
+  // A full/relative path is used verbatim when it exists.
+  if (/[\\/]/.test(raw)) return existsSync(raw) ? resolve(raw) : null;
+
+  const target = raw.toLowerCase();
+  async function walk(dir, depth) {
+    if (depth > maxDepth) return null;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    for (const ent of entries) {
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        const hit = await walk(full, depth + 1);
+        if (hit) return hit;
+      } else if (ent.name.toLowerCase() === target) {
+        return full;
+      }
+    }
+    return null;
+  }
+  return existsSync(MODELS_BASE) ? walk(MODELS_BASE, 0) : null;
+}
+
+// GET /api/models/scan — every *.gguf under MODELS_BASE (60s cache). Feeds the
+// add-model dialog's datalist so users pick real files instead of typing names.
+let ggufScanCache = null;
+async function scanGgufModels(maxDepth = 6) {
+  if (ggufScanCache && Date.now() - ggufScanCache.at < 60000) return ggufScanCache.models;
+  const out = [];
+  async function walk(dir, depth) {
+    if (depth > maxDepth) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await walk(full, depth + 1);
+      } else if (ent.name.toLowerCase().endsWith(".gguf")) {
+        let sizeGb = null;
+        try {
+          sizeGb = Math.round(((await stat(full)).size / 1073741824) * 10) / 10;
+        } catch {
+          /* unreadable — keep null */
+        }
+        out.push({ name: ent.name, sizeGb, path: full });
+      }
+    }
+  }
+  if (existsSync(MODELS_BASE)) await walk(MODELS_BASE, 0);
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  ggufScanCache = { at: Date.now(), models: out };
+  return out;
+}
 
 // Single runtime launcher shared by every request (state machine owns the
 // child process + health polling). Upstream port overridable for sandboxes
@@ -97,7 +244,11 @@ async function loadModelsConfig() {
 async function saveModelsConfig(patch) {
   const current = await loadModelsConfig();
   const models = current.models || {};
-  if (patch.model && patch.overrides) {
+  // reset:true removes the model's whole memory entry so every param falls
+  // back to profile/default again — the "undo a bad memory" path.
+  if (patch.model && patch.reset) {
+    delete models[patch.model];
+  } else if (patch.model && patch.overrides) {
     models[patch.model] = { ...(models[patch.model] || {}), ...patch.overrides };
   }
   const next = { ...current, models, updated: new Date().toISOString() };
@@ -152,7 +303,13 @@ function sendStatic(res, pathname) {
   }
   const stream = createReadStream(filePath);
   stream.on("error", () => {
-    sendJson(res, 404, { error: "not_found", message: `${pathname} is not served by the LlamaDock GUI` });
+    // Headers may already be on the wire when a read fails mid-stream; only
+    // the not-yet-opened case can still send a JSON error.
+    if (!res.headersSent) {
+      sendJson(res, 404, { error: "not_found", message: `${pathname} is not served by the LlamaDock GUI` });
+    } else {
+      res.destroy();
+    }
   });
   stream.on("open", () => {
     res.writeHead(200, { "Content-Type": MIME[extname(filePath)] || "application/octet-stream" });
@@ -201,8 +358,8 @@ export function createAppServer() {
           const body = await readJsonBody(req);
           const schema = (await readBootstrapPayload()).schema;
           const clean = filterPerModelParams(schema, body.overrides);
-          const next = await saveModelsConfig({ model: body.model, overrides: clean });
-          sendJson(res, 200, { ok: true, saved: clean, modelsConfig: next });
+          const next = await saveModelsConfig({ model: body.model, overrides: clean, reset: !!body.reset });
+          sendJson(res, 200, { ok: true, saved: body.reset ? null : clean, reset: !!body.reset, modelsConfig: next });
         } catch (error) {
           sendJson(res, 400, { ok: false, error: errorMessage(error) });
         }
@@ -230,17 +387,51 @@ export function createAppServer() {
             modelsConfig: payload.modelsConfig,
             overrides: body.params || {},
           });
-          const engine = String(body.engine || resolved.engine || "").trim() || null;
+          // Engine resolution mirrors select-model.ps1: schema/preset choice
+          // first ("Auto" falls through), then the model-name routing table.
+          const requestedEngine = String(body.engine || resolved.engine || "").trim();
+          const engineName = !requestedEngine || /^auto$/i.test(requestedEngine)
+            ? requiredEngineForModel(model)
+            : requestedEngine;
+          const cand = ENGINE_CANDIDATES.find(
+            (e) => e.name.toLowerCase() === engineName.toLowerCase(),
+          );
+          const engineBin = process.env.LLAMADOCK_ENGINE_BIN
+            || (cand ? resolveEngineBin(engineName) : null);
+          if (!engineBin) {
+            sendJson(res, 409, {
+              ok: false,
+              error: "engine_not_found",
+              message: `エンジン「${engineName}」の llama-server が見つかりません。${cand ? engineHint(cand) : `スキーマの engine 値「${engineName}」はランタイム候補にありません（${ENGINE_CANDIDATES.map((e) => e.name).join(" / ")}）。`}`,
+            });
+            return;
+          }
+          // Resolve the GGUF on disk: explicit path > MODELS_BASE lookup.
+          // A name-only model that exists nowhere must fail here with a clear
+          // message instead of spawning a doomed llama-server.
+          const modelPath = /[\\/]/.test(String(body.modelPath || ""))
+            ? (existsSync(body.modelPath) ? resolve(body.modelPath) : null)
+            : await findModelFile(model);
+          if (!modelPath) {
+            sendJson(res, 409, {
+              ok: false,
+              error: "model_not_found",
+              message: `GGUF「${model}」が見つかりません。モデルベース: ${MODELS_BASE}（env LLAMADOCK_MODELS_BASE で変更可）。「+ 追加」ダイアログではスキャン済みファイルを選ぶのが確実です。`,
+            });
+            return;
+          }
           const port = Number(body.port || DEFAULT_UPSTREAM_PORT);
           const { args, env } = buildArgs(payload.schema, resolved, {
-            model: String(body.modelPath || model), // Phase 1 core supplies the real GGUF path on Windows
+            model: modelPath,
             host: "127.0.0.1",
             port,
           });
 
           const result = await launchManager.launch({
             model,
-            engine,
+            engine: engineName,
+            engineBin,
+            extraPath: resolveRocmBin(),
             args,
             env,
             port,
@@ -303,6 +494,34 @@ export function createAppServer() {
     if (pathname === "/api/results") {
       if (req.method === "GET") {
         sendJson(res, 200, summarize(await loadResults(RESULTS_PATH)));
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+
+    if (pathname === "/api/results/clear") {
+      if (req.method === "POST") {
+        const empty = { version: 1, updated: new Date().toISOString(), configs: [] };
+        await mkdir(CONFIG_DIR, { recursive: true });
+        const tmp = `${RESULTS_PATH}.tmp`;
+        await writeFile(tmp, `${JSON.stringify(empty, null, 2)}\n`, "utf8");
+        await rename(tmp, RESULTS_PATH);
+        sendJson(res, 200, { ok: true, message: "実測記録をクリアしました", results: summarize(empty) });
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+
+    if (pathname === "/api/models/scan") {
+      if (req.method === "GET") {
+        try {
+          const models = await scanGgufModels();
+          sendJson(res, 200, { ok: true, base: MODELS_BASE, count: models.length, models });
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: "scan_failed", message: errorMessage(error) });
+        }
         return;
       }
       sendJson(res, 405, { ok: false, error: "Method not allowed" });
@@ -398,9 +617,10 @@ export function createAppServer() {
               setFlag(next, f, null);
             }
             if (body.specType === "draft-mtp") {
-              // Self-draft: the combined *_MTP.gguf main model is its own draft
-              const mainModel = flagValue(next, "-m");
-              setFlag(next, "-md", mainModel);
+              // Self-draft: the combined *_MTP.gguf main model carries its own
+              // MTP heads — select-model.ps1 does NOT add -md, and the running
+              // supervisor config works without it. Only add it when the UI
+              // explicitly supplies one.
               setFlag(next, "--spec-type", "draft-mtp");
               setFlag(next, "--spec-draft-n-max", "2");
               setFlag(next, "--spec-draft-n-min", "1");
@@ -409,6 +629,8 @@ export function createAppServer() {
               if (ctk) setFlag(next, "-ctkd", ctk);
               if (ctv) setFlag(next, "-ctvd", ctv);
               setFlag(next, "-ngld", "auto");
+              const explicitDraft = String(body.specDraftModel || "").trim();
+              if (explicitDraft) setFlag(next, "-md", explicitDraft);
             } else if (body.specType === "draft-dflash") {
               const draft = String(body.specDraftModel || "").trim();
               if (!draft) {
@@ -468,6 +690,12 @@ export function createAppServer() {
         upstreamEndpoint: `http://127.0.0.1:${launchManager.summary().port}`,
         runtime: launchManager.summary(),
         clients: clientManager.summary(),
+        // Per-engine binary availability, so the GUI can show which runtimes
+        // are actually installed instead of failing at launch time.
+        engines: ENGINE_CANDIDATES.map((e) => ({
+          name: e.name,
+          found: !!(process.env.LLAMADOCK_ENGINE_BIN || resolveEngineBin(e.name)),
+        })),
       });
       return;
     }
@@ -542,7 +770,7 @@ async function readSupervisorState() {
 
 async function probeUpstreamHealth() {
   try {
-    const res = await fetch("http://127.0.0.1:8080/health", { signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`http://127.0.0.1:${DEFAULT_UPSTREAM_PORT}/health`, { signal: AbortSignal.timeout(2000) });
     return { up: res.ok, status: res.status };
   } catch {
     return { up: false, status: null };

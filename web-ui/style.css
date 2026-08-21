@@ -261,6 +261,9 @@ code, pre {
 .badge-engine { color: var(--teal); border-color: rgba(53, 201, 176, 0.35); background: var(--teal-dim); }
 .badge-preset { color: var(--accent-strong); border-color: rgba(242, 179, 61, 0.35); background: var(--accent-dim); }
 .badge-warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.35); }
+.badge-running { color: var(--green); border-color: rgba(74, 222, 128, 0.45); background: rgba(74, 222, 128, 0.12); font-weight: 600; }
+
+.engine-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 70%; }
 
 .side-title {
   margin: 18px 0 8px;
@@ -661,6 +664,25 @@ code, pre {
 /* ---------------- Benchmark results (Phase 4) ---------------- */
 
 .btn-block { width: 100%; margin-top: 10px; }
+
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.result-actions select {
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: var(--sans);
+}
+
+.result-actions #btn-benchmark { flex: 1 1 auto; }
 
 .results-list {
   list-style: none;

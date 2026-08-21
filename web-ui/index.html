@@ -64,6 +64,7 @@
     <section class="column col-params" aria-label="パラメータ">
       <div class="col-head params-head">
         <h2>パラメータ</h2>
+        <button id="btn-reset-memory" class="btn btn-ghost btn-sm hidden" type="button" title="このモデルの記憶した値を消去し、プロファイル/既定値に戻します">記憶リセット</button>
         <div class="model-meta" id="model-meta">モデル未選択</div>
       </div>
 
@@ -84,6 +85,7 @@
           <span>生成される起動引数（プレビュー）</span>
           <div class="args-actions">
             <button id="btn-copy-args" class="btn btn-ghost btn-sm" type="button">コピー</button>
+            <button id="btn-launch-args" class="btn btn-primary btn-sm" type="button" title="このプレビュー通りの設定で起動します">この設定で起動</button>
           </div>
         </div>
         <pre id="args-preview" class="args-preview">—</pre>
@@ -120,6 +122,10 @@
 
         <div class="card" id="engine-settings-card">
           <div class="card-title">コーダーエンジン設定（8080）</div>
+          <p class="muted small">
+            supervisor 管理のコーダーエンジン（127.0.0.1:8080）専用の設定です。
+            中央のパラメータとは独立に <code>server-arguments.json</code> を書き換え、適用時にサーバーを再起動します。
+          </p>
           <div class="es-row">
             <span class="es-label">KV キー</span>
             <select id="es-ctk">
@@ -181,9 +187,17 @@
             <div class="metric"><span class="metric-value" id="m-vram">—</span><span class="metric-label">VRAM</span></div>
             <div class="metric"><span class="metric-value" id="m-ram">—</span><span class="metric-label">RAM</span></div>
           </div>
-          <button id="btn-benchmark" class="btn btn-primary btn-block" type="button" title="起動中のサーバーに対して3回のChat Completionsを実行し、tok/s を run-results.json に記録します">
-            計測実行（3回）
-          </button>
+          <div class="result-actions">
+            <select id="bench-runs" title="計測回数">
+              <option value="1">1回</option>
+              <option value="3" selected>3回</option>
+              <option value="5">5回</option>
+            </select>
+            <button id="btn-benchmark" class="btn btn-primary" type="button" title="起動中のサーバーに対してChat Completionsを実行し、tok/s を run-results.json に記録します">
+              計測実行
+            </button>
+            <button id="btn-clear-results" class="btn btn-ghost btn-sm" type="button" title="run-results.json を空にします">記録クリア</button>
+          </div>
           <ul class="results-list" id="results-list">
             <li class="result-empty">まだ実測記録がありません。「起動 → 計測実行」で蓄積されます。</li>
           </ul>
@@ -216,7 +230,8 @@
       <h2>モデルを追加</h2>
       <label class="field">
         <span>GGUF ファイル名（例: Qwen3.5-9B-Q5_K_M.gguf）</span>
-        <input id="add-model-name" type="text" autocomplete="off" placeholder="ModelName-9B-Q5_K_M.gguf" />
+        <input id="add-model-name" type="text" autocomplete="off" list="gguf-suggestions" placeholder="ModelName-9B-Q5_K_M.gguf" />
+        <datalist id="gguf-suggestions"></datalist>
       </label>
       <label class="field">
         <span>サイズ（GB、任意）</span>

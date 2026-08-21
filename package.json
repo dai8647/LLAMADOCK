@@ -6,7 +6,8 @@
   "scripts": {
     "start:mcp": "node mcp-server.js",
     "start:web": "node web-ui/server.js",
-    "start": "node web-ui/server.js"
+    "start": "node web-ui/server.js",
+    "test": "node --test \"web-ui/*.test.mjs\""
   },
   "keywords": [],
   "author": "",
