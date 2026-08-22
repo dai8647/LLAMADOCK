@@ -312,7 +312,15 @@ function sendStatic(res, pathname) {
     }
   });
   stream.on("open", () => {
-    res.writeHead(200, { "Content-Type": MIME[extname(filePath)] || "application/octet-stream" });
+    // The GUI ships without build hashes, so browsers must never serve a
+    // stale app.js/index.html from heuristic caching (that hid new features
+    // like the DeepSeekHarness row after updates).
+    const type = MIME[extname(filePath)];
+    const headers = { "Content-Type": type || "application/octet-stream" };
+    if (/^(text\/html|text\/javascript|text\/css|application\/json)/.test(type || "")) {
+      headers["Cache-Control"] = "no-store";
+    }
+    res.writeHead(200, headers);
     stream.pipe(res);
   });
 }
