@@ -14,7 +14,7 @@ for /f "delims=" %%D in ('powershell -NoProfile -Command "Get-ChildItem 'C:\Prog
 )
 if defined HIP_PATH set "PATH=%HIP_PATH%\bin;%PATH%"
 
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0select-model.ps1"
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0select-model.ps1" %*
 
 echo.
 if %ERRORLEVEL% neq 0 (
