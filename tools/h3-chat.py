@@ -69,11 +69,15 @@ WORKFLOWS = {
 ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250}
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
-# workflows). "default" is the int8 pruned PinkCherry; "10eros" is the
-# NVFP4 10Eros-Max beta2 (12.5GB, higher quality, 16GB-VRAM friendly).
+# workflows). "default" is the NVFP4 10Eros-Max beta2 (11.7GB — smaller AND
+# higher quality than the old int8 default, so it took over as default).
 DITS = {
-    "default": "alpha-0.5-testing\\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors",
+    # 10Eros-Max beta2 NVFP4 (11.7GB) is both smaller and higher quality than
+    # the old int8 default — it is the new "default". The PinkCherry int8
+    # stays selectable under the "pinkcherry" key.
+    "default": "10Eros-Max\\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4.safetensors",
     "10eros": "10Eros-Max\\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4.safetensors",
+    "pinkcherry": "alpha-0.5-testing\\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors",
 }
 NODE_UNET = "1"
 
@@ -503,7 +507,10 @@ SESSION_LOCK = threading.Lock()
 # stop ComfyUI + planning LLM (freeing GPU/RAM) even if the browser tab is
 # closed. The browser shows a shorter interactive countdown; this is the
 # guarantee that "作成終わったらちゃんと落とす".
-AUTO_STOP_SECONDS = 180
+# Idle auto-stop is now OPT-IN: 0 disables the background watcher entirely so
+# users can keep generating (続きの動画 / 別の参照画像) without the stack being
+# killed under them. Set LLAMADOCK_H3_AUTOSTOP=180 to restore the old behavior.
+AUTO_STOP_SECONDS = int(os.environ.get("LLAMADOCK_H3_AUTOSTOP", "0") or 0)
 
 
 def _stop_stack(server):
@@ -544,6 +551,8 @@ class _AutoStop(threading.Thread):
             self._done_at = None
 
     def run(self):
+        if AUTO_STOP_SECONDS <= 0:
+            return  # opt-in only: never kill the stack automatically
         while True:
             time.sleep(10)
             with self._lock:
@@ -1025,8 +1034,8 @@ HTML = """<!doctype html>
       <summary>⚙ 詳細設定（動画モデル・キー画像エンジン・企画 LLM）</summary>
       <div class="advgroup">
         <span class="hint">動画モデル:</span>
-        <label><input type="radio" name="dit" value="default" checked> 標準 int8（PinkCherry）</label>
-        <label><input type="radio" name="dit" value="10eros"> 10Eros NVFP4（高画質）</label>
+            <label><input type="radio" name="dit" value="default" checked> 10Eros NVFP4（高画質・11.7GB・既定）</label>
+            <label><input type="radio" name="dit" value="pinkcherry"> PinkCherry int8（旧既定・19.5GB）</label>
       </div>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
@@ -1243,7 +1252,9 @@ async function send() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        ref: $("#refmode").checked, image: curImageFilename,
+        // 選んだ画像は常に参照される（参照モード checkbox が OFF でも自動有効）。
+        // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
+        ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
         audio: audioSpec(), length: lenValue()
       })
     });
@@ -1283,6 +1294,10 @@ async function plan(text) {
       // characters that would break the inline-JSON escaping.
       lastFinalPrompt = j.final_prompt;
       planStage = "video";
+      // 生成される内容をユーザーが事前に確認できるよう、最終プロンプトを
+      // 折りたたみで必ず提示する（「LLMが考えるのはいいが何が出るか
+      // わからない」問題の対策）。
+      html += '<details class="thinkbox"><summary>📝 LLMが考えた動画プロンプト（クリックで確認）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.final_prompt) + '</pre></details>';
       html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
     }
     if (j.audio && (j.audio.voice || j.audio.dialogue || j.audio.sfx || j.audio.music)) {
@@ -1444,7 +1459,9 @@ function genPlanLast() {
   lastFinalPrompt = null;
   setBusy(true);
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  const tag = $("#refmode").checked ? "🔗 参照モードで生成する: " : "✅ この企画で生成する: ";
+  // キー画像（curImageFilename）がある場合は checkbox に関係なく参照モード
+  const useRef = $("#refmode").checked || !!curImageFilename;
+  const tag = useRef ? "🔗 参照モードで生成する: " : "✅ この企画で生成する: ";
   addMsg("user", tag + finalPrompt);
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   doGenerate(mode, finalPrompt, bot);
@@ -1458,7 +1475,9 @@ async function doGenerate(mode, text, bot) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        ref: $("#refmode").checked, image: curImageFilename,
+        // 選んだ画像は常に参照される（参照モード checkbox が OFF でも自動有効）。
+        // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
+        ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
         audio: audioSpec(), length: lenValue()
       })
     });
@@ -1545,26 +1564,16 @@ async function cancelCurrent() {
 }
 
 function startShutdown(seconds) {
-  shutdownLeft = seconds || 90;
+  // 生成完了後の停止は「選択式」: 自動カウントダウンで勝手に落とさない。
+  // 続きの動画や別の参照画像で連続制作したいケースが多いため、ユーザーが
+  // ボタンを選ぶまで ComfyUI / 企画 LLM は生かしたままにする。
   const box = $("#shutdown-box");
   box.style.display = "block";
   box.innerHTML =
-    '<div class="meta">生成完了 ✅ 自動停止まで <b id="countdown">' + shutdownLeft + "</b> 秒（GPU・メモリを解放します）</div>" +
-    '<button class="warn" onclick="stopAll()">🛑 今すぐすべて終了</button>' +
-    '<button onclick="stopComfy()">ComfyUI だけ停止</button>' +
-    '<button class="small" onclick="cancelStop()">キャンセル</button>';
-  clearInterval(shutdownTimer);
-  shutdownTimer = setInterval(() => {
-    shutdownLeft--;
-    if (shutdownLeft <= 0) {
-      clearInterval(shutdownTimer);
-      shutdownTimer = null;
-      stopAll();
-      return;
-    }
-    const c = $("#countdown");
-    if (c) c.textContent = shutdownLeft;
-  }, 1000);
+    '<div class="meta">生成完了 ✅ このまま続けて生成できます（ComfyUI は起動中）。</div>' +
+    '<button onclick="hideShutdown()">▶ 続けて使う</button>' +
+    '<button class="warn" onclick="stopAll()">🛑 すべて終了</button>' +
+    '<button onclick="stopComfy()">ComfyUI だけ停止</button>';
 }
 
 function cancelStop() {
@@ -1818,6 +1827,13 @@ class ChatHandler(BaseHTTPRequestHandler):
         text = (req.get("text") or "").strip()
         ref = req.get("ref") is True
         image_fn = req.get("image") or None
+        # 画像が選択されているのに参照モード OFF のままでは、その画像は完全に
+        # 無視され、テキストだけの無関係な動画が生成されていた（「女の子の
+        # 参照画像を入れたのに車の動画になった」の根本原因）。ここで明示的に
+        # 弾いて、ユーザーに選択を促す。
+        if image_fn and not ref:
+            self._json(400, {"error": "画像が選択されていますが「参照モード」が OFF です。選んだ画像を使うには ☑ 参照モード を ON にしてください（OFF のままでは画像は無視されます）。"})
+            return
         audio = req.get("audio") or {}
         if mode not in WORKFLOWS or eff_mode not in WORKFLOWS:
             self._json(400, {"error": "unknown mode: " + mode})
@@ -2410,7 +2426,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         except Exception:
             entry = None
         if not entry:
-            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": eta})
+            # 残り時間は「モード別目安 - 経過秒」を毎ポールで再計算して返す
+            # （固定値を返すと UI の表示が永遠に「残り 約3分」のままだった）
+            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": max(0, eta - elapsed)})
             return
         st = entry.get("status", {})
         if st.get("status_str") == "error":
@@ -2421,7 +2439,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"status": "error", "error": msg or "生成に失敗しました"})
             return
         if not st.get("completed"):
-            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": eta})
+            self._json(200, {"status": "running", "extra": "", "pending": n_pending, "elapsed_sec": elapsed, "eta_sec": max(0, eta - elapsed)})
             return
         videos = []
         comfy_root = os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
