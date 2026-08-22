@@ -320,3 +320,11 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - **btn-reset 表示バグ**: CSS `#btn-reset{display:none}` に対し JS が `style.display=""` で表示しようとして CSS が勝り永遠に出ない → `"inline-block"` に修正
 - **デザイン刷新（シネマスタジオ調）**: シアン〜ブルーのグラデーションアクセント、発光ステータスドット、グラデーション生成ボタン、回転マーカー付き折り畳みパネル、ガラス風ヘッダー/フッター
 - 検証: HTML タグバランス（Python HTMLParser で BALANCED）・ブラウザ DOM 実測で pill 横並び/パネル開閉/企画モードトグルを確認済み
+
+
+## Vulkan Engine Support
+- OfficialVulkan: C:\llama.cpp-vulkan\llama-server.exe
+- GDN layers are GPU-accelerated (unlike AtomicBot/ROCm where they fall back to CPU)
+- Recommended for Qwen3.5/3.8 models
+- select-model.ps1 now shows engine selection prompt for regular GGUF models
+- llamadock.bat accepts -EngineMode parameter (e.g., llamadock.bat -EngineMode OfficialVulkan)

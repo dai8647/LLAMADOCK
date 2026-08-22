@@ -43,7 +43,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "PrismBonsai", "ExpertsLaguna", "LongCat", "DFlash2")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "ExpertsLaguna", "LongCat", "DFlash2")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -107,18 +107,6 @@ elseif (Test-Path "C:\llama.cpp-cpu\llama-server.exe") {
 else {
     "C:\Users\dai86\Downloads\llama.cpp-cpu\llama-server.exe"
 }
-# PrismML-Eng llama.cpp fork for Ternary/Bonsai Q2_0 (group 128) GGUF models.
-# HIP build first (RX 7800 XT gfx1101), Vulkan/CPU fallback comme pour OfficialVulkan/OfficialCPU.
-$PrismBonsaiServerPath = if ($env:LLAMA_TQ3_PRISM_BONSAI_SERVER) {
-    $env:LLAMA_TQ3_PRISM_BONSAI_SERVER
-}
-elseif (Test-Path "C:\Users\dai86\Downloads\prism-llama.cpp\build-rocm71\bin\llama-server.exe") {
-    "C:\Users\dai86\Downloads\prism-llama.cpp\build-rocm71\bin\llama-server.exe"
-}
-elseif (Test-Path "C:\Users\dai86\Downloads\prism-llama.cpp\build-win-vulkan\bin\llama-server.exe") {
-    "C:\Users\dai86\Downloads\prism-llama.cpp\build-win-vulkan\bin\llama-server.exe"
-}
-else {
     "C:\Users\dai86\Downloads\prism-llama.cpp\build\bin\llama-server.exe"
 }
 $ExpertsLagunaServerPath = if ($env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER) {
@@ -621,12 +609,6 @@ function Get-RequiredEngine {
     param([object]$Model)
 
     $modelText = "$($Model.Name) $($Model.FullName)"
-    # Ternary/Bonsai Q2_0 (group 128) GGUF: needs PrismML-Eng/llama.cpp fork.
-    # Mainline llama.cpp cannot load these. Match before DeepSeek/TQ3.
-    if ($modelText -match "(?i)Ternary|Bonsai") {
-        return "PrismBonsai"
-    }
-
     # DeepSeek-family GGUFs use the native experts-laguna fork. This includes
     # REAP and MXFP4 variants; do not let a TQ3 marker route them to TurboTan.
     if ($modelText -match "(?i)DeepSeek|ds4-compact|REAP[-_ ]?K128|Laguna") {
@@ -1961,7 +1943,6 @@ $hardware = Get-HardwareEstimate
 $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "AtomicBot"; Path = $AtomicBotServerPath }
     [PSCustomObject]@{ Name = "TurboTan"; Path = $TurboTanServerPath },
-    [PSCustomObject]@{ Name = "PrismBonsai"; Path = $PrismBonsaiServerPath },
     [PSCustomObject]@{ Name = "ExpertsLaguna"; Path = $ExpertsLagunaServerPath },
     [PSCustomObject]@{ Name = "LongCat"; Path = $LongCatServerPath },
     [PSCustomObject]@{ Name = "DFlash2"; Path = $DFlash2ServerPath },
@@ -2092,11 +2073,47 @@ if ($EngineMode -ne "Auto") {
     $requiredEngine = $EngineMode
 }
 
+# Engine selection prompt (skip for special engines and non-interactive mode)
+$specialEngines = @('TurboTan', 'ExpertsLaguna', 'LongCat', 'DFlash2')
+if ($EngineMode -eq 'Auto' -and $PresetMode -eq 'Prompt' -and $specialEngines -notcontains $requiredEngine -and -not $isQuickLaunch) {
+    # Check which engines are actually available
+    $availableEngines = @()
+    if (Test-Path $AtomicBotServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'AtomicBot (ROCm)'; Value = 'AtomicBot'; Note = 'GDN layers may fall back to CPU' } }
+    if (Test-Path $OfficialVulkanServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'Vulkan'; Value = 'OfficialVulkan'; Note = 'GDN layers GPU-accelerated' } }
+    if (Test-Path $OfficialCPUServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'CPU'; Value = 'OfficialCPU'; Note = 'Small models, no GPU needed' } }
+
+    if ($availableEngines.Count -gt 1) {
+        Write-Host ''
+        Write-Host 'Runtime engine:' -ForegroundColor Green
+        for ($i = 0; $i -lt $availableEngines.Count; $i++) {
+            $eng = $availableEngines[$i]
+            Write-Host " [$(($i+1))] $($eng.Label) - $($eng.Note)"
+        }
+        Write-Host ''
+        $defaultEngineIdx = 0
+        for ($i = 0; $i -lt $availableEngines.Count; $i++) {
+            if ($availableEngines[$i].Value -eq 'OfficialVulkan') { $defaultEngineIdx = $i; break }
+        }
+        do {
+            $engineInput = Read-Host "Select engine (1-$($availableEngines.Count)), or press Enter for $($availableEngines[$defaultEngineIdx].Label)"
+            if ([string]::IsNullOrWhiteSpace($engineInput)) {
+                $engineSelection = $defaultEngineIdx
+                $engineValid = $true
+            }
+            else {
+                $engineValid = [int]::TryParse($engineInput, [ref]$engineSelection)
+                $engineSelection--
+            }
+        } while (-not $engineValid -or $engineSelection -lt 0 -or $engineSelection -ge $availableEngines.Count)
+
+        $requiredEngine = $availableEngines[$engineSelection].Value
+        Write-Host "Engine: $($availableEngines[$engineSelection].Label)" -ForegroundColor Green
+        Write-Host ''
+    }
+}
+
 if ($requiredEngine -eq "TurboTan") {
     $ServerPath = $TurboTanServerPath
-}
-elseif ($requiredEngine -eq "PrismBonsai") {
-    $ServerPath = $PrismBonsaiServerPath
 }
 elseif ($requiredEngine -eq "ExpertsLaguna") {
     $ServerPath = $ExpertsLagunaServerPath
@@ -2428,7 +2445,7 @@ if ($requiredEngine -eq "TurboTan") {
         }
     }
 }
-elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "PrismBonsai" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
+elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
     $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
     if (-not $isQuickLaunch) {
         Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
