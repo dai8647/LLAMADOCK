@@ -1478,25 +1478,17 @@ function Select-ComfyUITuning {
 
 function Get-PlanModelCandidates {
     # .lmstudio\models を再帰スキャンして、企画 LLM として使えそうな GGUF を
-    # 自動検出する。固定の2モデル（Qwen3.5-4B / Qwen3.8-27B）はメニューに常時
-    # 表示されるため除外。mmproj（視覚プロジェクタ）と分割ファイル（-of-）は
+    # 自動検出する。mmproj（視覚プロジェクタ）と分割ファイル（-of-）は
     # 本体モデルではないので除外。ファイル名のパラメータ数（13B 以上）または
     # サイズ（6GB 超）で GPU 候補と判定し、同ディレクトリの mmproj を自動ペアリング。
     $scanRoot = "C:\Users\dai86\.lmstudio\models"
     if (-not (Test-Path -LiteralPath $scanRoot)) { return @() }
-    $pinned = @(
-        "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf",
-        "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf",
-        "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf",
-        "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
-    )
     $files = Get-ChildItem -Path $scanRoot -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Name -notmatch "(?i)mmproj" -and
             $_.Name -notmatch "-of-" -and
             $_.Name -notmatch "(?i)DSpark" -and
-            $_.Name -notmatch "(?i)DFlash2" -and
-            $pinned -notcontains $_.FullName
+            $_.Name -notmatch "(?i)DFlash2"
         }
     $list = @()
     foreach ($f in $files) {
@@ -1520,57 +1512,125 @@ function Get-PlanModelCandidates {
             Label  = $label
         }
     }
-    # CPU 候補（小さい順）→ GPU 候補（小さい順）、メニューが見やすいよう最大8件
+    # CPU 候補（小さい順）→ GPU 候補（小さい順）、自動検出は最大8件
     return @($list | Sort-Object { $_.Gpu }, { $_.SizeGB } | Select-Object -First 8)
+}
+
+function Get-PlanModelMenu {
+    # Planning LLM メニューの実エントリ一覧。既知モデル（特別な起動キーを持つ
+    # もの）はファイルが実在するときだけ先頭に並べ、削除済みモデルがメニューに
+    # 残り続けることがないようにする。残りはディスク走査（Get-PlanModelCandidates）
+    # からの自動検出分。返却トークン契約:
+    #   Qwen3.5 / Qwen3.8-27B-GPU / Qwen3.8-27B-GPU-Vision /
+    #   Qwen3.8-27B-Heretic-Vision / Custom (+ $script:PlanModelCustom)
+    $known = @(
+        @{
+            Key  = "Qwen3.5"
+            Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
+            Gpu  = $false
+        },
+        @{
+            Key  = "Qwen3.8-27B-GPU"
+            Path = "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+            Gpu  = $true
+        },
+        @{
+            Key  = "Qwen3.8-27B-GPU-Vision"
+            Path = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
+            Gpu  = $true
+        },
+        @{
+            Key  = "Qwen3.8-27B-Heretic-Vision"
+            Path = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
+            Gpu  = $true
+        }
+    )
+    $descByKey = @{
+        "Qwen3.5"                    = "Qwen3.5-4B - CPU・常駐・視覚対応（既定）"
+        "Qwen3.8-27B-GPU"            = "Qwen3.8-27B - GPU・企画フェーズのみ・高品質（視覚なし）"
+        "Qwen3.8-27B-GPU-Vision"     = "Qwen3.8-27B Vision - GPU・企画フェーズのみ・視覚 + KV q8/q4"
+        "Qwen3.8-27B-Heretic-Vision" = "Qwen3.8-27B heretic-ara - GPU・企画フェーズのみ・視覚あり"
+    }
+
+    $menu = @()
+    foreach ($k in $known) {
+        if (-not (Test-Path -LiteralPath $k.Path)) { continue } # deleted models vanish
+        $mmproj = Get-ChildItem -LiteralPath (Split-Path -Parent $k.Path) -Filter "mmproj*.gguf" -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $menu += [PSCustomObject]@{
+            Key    = $k.Key
+            Path   = $k.Path
+            Mmproj = if ($mmproj) { $mmproj.FullName } else { $null }
+            Gpu    = $k.Gpu
+            SizeGB = [math]::Round((Get-Item -LiteralPath $k.Path).Length / 1GB, 1)
+            Label  = $descByKey[$k.Key]
+        }
+    }
+    $knownPaths = @($menu | ForEach-Object { $_.Path.ToLowerInvariant() })
+    foreach ($c in Get-PlanModelCandidates) {
+        if ($knownPaths -contains $c.Path.ToLowerInvariant()) { continue }
+        $menu += [PSCustomObject]@{
+            Key    = $null
+            Path   = $c.Path
+            Mmproj = $c.Mmproj
+            Gpu    = $c.Gpu
+            SizeGB = $c.SizeGB
+            Label  = $c.Label
+        }
+    }
+    return ,$menu
 }
 
 function Select-PlanModel {
     # Pick the planning LLM for plan mode. Qwen3.5-4B runs on CPU and stays
-    # resident (VRAM stays free, has vision). Qwen3.8-27B runs on the GPU
-    # during the planning phase only (higher quality, ~13.5 t/s) and is killed
-    # before every generation so the video model gets the VRAM back.
-    # [3..] は .lmstudio\models から自動検出したモデル（Get-PlanModelCandidates）。
+    # resident (VRAM stays free, has vision). GPU models run during the
+    # planning phase only and are killed before every generation so the video
+    # model gets the VRAM back. The menu lists only files that actually exist:
+    # known models with dedicated launch keys first, then auto-detected GGUFs
+    # from .lmstudio\models (Get-PlanModelMenu).
+    $menu = Get-PlanModelMenu
     Write-Host ""
     Write-Host "Planning LLM:" -ForegroundColor Green
-    Write-Host " [1] Qwen3.5-4B  - CPU・常駐・視覚対応（既定）"
-    Write-Host " [2] Qwen3.8-27B - GPU・企画フェーズのみ・高品質（視覚なし）"
-    Write-Host " [3] Qwen3.8-27B Vision - GPU・企画フェーズのみ・視覚 + KV q8/q4（lemonyins）"
-    Write-Host " [4] Qwen3.8-27B heretic-ara - GPU・企画フェーズのみ・視覚あり（mradermacher i1-Q4_K_S）"
-    $candidates = Get-PlanModelCandidates
-    $idx = 5
-    foreach ($c in $candidates) {
-        $tag = if ($c.Gpu) { "GPU" } else { "CPU" }
-        $vis = if ($c.Mmproj) { "視覚あり" } else { "視覚なし" }
-        Write-Host (" [{0}] {1} ({2}・{3}・{4}GB)" -f $idx, $c.Label, $tag, $vis, $c.SizeGB)
+    if ($menu.Count -eq 0) {
+        Write-Host " (GGUF モデルが見つかりません。既定の Qwen3.5 を使用します)" -ForegroundColor Yellow
+        return "Qwen3.5"
+    }
+    $idx = 1
+    $defaultIdx = 1
+    foreach ($e in $menu) {
+        if ($e.Key) {
+            Write-Host (" [{0}] {1}" -f $idx, $e.Label)
+            if ($e.Key -eq "Qwen3.5") { $defaultIdx = $idx }
+        }
+        else {
+            $tag = if ($e.Gpu) { "GPU" } else { "CPU" }
+            $vis = if ($e.Mmproj) { "視覚あり" } else { "視覚なし" }
+            Write-Host (" [{0}] {1} ({2}・{3}・{4}GB)" -f $idx, $e.Label, $tag, $vis, $e.SizeGB)
+        }
         $idx++
     }
     Write-Host ""
-    $max = 4 + $candidates.Count
+    $max = $menu.Count
     do {
-        $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for Qwen3.5-4B"
-        if ([string]::IsNullOrWhiteSpace($planInput) -or $planInput -eq "1") {
-            return "Qwen3.5"
-        }
-        if ($planInput -eq "2") {
-            return "Qwen3.8-27B-GPU"
-        }
-        if ($planInput -eq "3") {
-            return "Qwen3.8-27B-GPU-Vision"
-        }
-        if ($planInput -eq "4") {
-            return "Qwen3.8-27B-Heretic-Vision"
-        }
+        $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for the default"
         $n = 0
-        if ([int]::TryParse($planInput, [ref]$n) -and $n -ge 5 -and $n -le $max) {
-            $chosen = $candidates[$n - 5]
-            $script:PlanModelCustom = @{
-                Path   = $chosen.Path
-                Mmproj = $chosen.Mmproj
-                Gpu    = $chosen.Gpu
-                Label  = $chosen.Label
-            }
-            return "Custom"
+        if ([string]::IsNullOrWhiteSpace($planInput)) {
+            $n = $defaultIdx
         }
+        elseif (-not [int]::TryParse($planInput, [ref]$n) -or $n -lt 1 -or $n -gt $max) {
+            continue
+        }
+        $chosen = $menu[$n - 1]
+        if ($chosen.Key) {
+            return $chosen.Key
+        }
+        $script:PlanModelCustom = @{
+            Path   = $chosen.Path
+            Mmproj = $chosen.Mmproj
+            Gpu    = $chosen.Gpu
+            Label  = $chosen.Label
+        }
+        return "Custom"
     } while ($true)
 }
 
