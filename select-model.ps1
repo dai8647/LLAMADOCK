@@ -32,6 +32,13 @@ param(
     # PR ggml-org/llama.cpp#26622; probed at launch and refused otherwise.
     # Measured 2026-08-22: TG -65..-91% — for long-context VRAM freeing only.
     [string]$CpuFfnLayers = "",
+    # Force an explicit GPU layer count instead of "auto" fitting. 0 = auto.
+    # Auto places layers from FREE VRAM at launch time; a crowded desktop or
+    # a just-stopped previous instance can silently degrade to CPU-heavy
+    # placement (observed 2026-08-22: 132 s per Cline request).
+    [int]$NglLayers = 0,
+    # Skip the post-launch GPU offload speed probe.
+    [switch]$SkipGpuProbe,
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
@@ -2619,6 +2626,10 @@ if ($selectedOffload -eq "custom") {
 }
 
 $serverOffload = if ($selectedOffload -eq "auto") { "auto" } elseif ($selectedOffload -eq "all") { "all" } else { $selectedOffload }
+if ($NglLayers -gt 0) {
+    $serverOffload = [string]$NglLayers
+    Write-Host "GPU layers override: -ngl $NglLayers (-NglLayers)" -ForegroundColor Yellow
+}
 if (-not $isQuickLaunch) {
     Write-Host "GPU offload: $selectedOffload" -ForegroundColor Green
     Write-Host "GPU offload estimate: $(Get-VramRiskLabel -ModelSizeGB $selectedModelSizeGB -VramGB $primaryVramGB -OffloadMode $selectedOffload)" -ForegroundColor Yellow
@@ -3446,6 +3457,43 @@ if ($selectedMcp -eq "Light") {
     Write-Host ""
 }
 
+function Wait-VramRelease {
+    # After stopping a previous llama-server, give Windows/ROCm a moment to
+    # release dedicated VRAM. The next launch's -ngl auto fit reads live free
+    # VRAM, so starting too early can silently degrade placement to
+    # CPU-heavy inference (observed 2026-08-22: 132 s per Cline request).
+    param([int]$TimeoutSec = 20)
+    for ($i = 0; $i -lt $TimeoutSec; $i++) {
+        $llama = Get-Process llama-server -ErrorAction SilentlyContinue
+        if (-not $llama) { return }
+        Start-Sleep -Seconds 1
+    }
+}
+
+function Test-GpuOffloadProbe {
+    # Quick sanity check after the server is ready: generate a few tokens and
+    # estimate decode speed. A full-GPU dense-27B class model answers far
+    # faster than the CPU-fallback placement that -ngl auto can quietly pick
+    # when free VRAM was low at launch.
+    param([int]$MaxTokens = 24)
+    try {
+        $prompt = '{"messages":[{"role":"user","content":"hi"}],"max_tokens":' + $MaxTokens + ',"temperature":0}'
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($prompt)
+        $t0 = Get-Date
+        $resp = Invoke-RestMethod "$ServerBaseUrl/v1/chat/completions" -Method Post `
+            -ContentType "application/json; charset=utf-8" -Body $bytes -TimeoutSec 120
+        $wall = ((Get-Date) - $t0).TotalSeconds
+        $toks = $resp.usage.completion_tokens
+        if ($toks -gt 0) {
+            return @{ tps = [math]::Round($toks / $wall, 1); wall = [math]::Round($wall, 1); tokens = $toks }
+        }
+    }
+    catch {}
+    return $null
+}
+
+Wait-VramRelease -TimeoutSec 20
+
 Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
 if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
     $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $effectiveChatTemplateKwargs
@@ -3517,6 +3565,24 @@ else {
         Set-ClineLocalModel -ModelName $modelShort
     }
     Save-RunResult -Model $selected -Engine $requiredEngine -Preset $PresetMode -Client $ClientMode -ContextTokens $selectedContext.Tokens -KCache $effectiveKCacheType -VCache $effectiveVCacheType -Offload $selectedOffload -FlashAttention $flashAttention -CacheRamMiB $effectiveCacheRamMiB -Status "success" -Message "Server became ready"
+}
+
+if (-not $SkipGpuProbe) {
+    Write-Host "GPU offload check..." -NoNewline -ForegroundColor Yellow
+    $gpuProbe = Test-GpuOffloadProbe
+    if ($null -eq $gpuProbe) {
+        Write-Host " skipped (probe failed)" -ForegroundColor DarkGray
+    }
+    elseif ($gpuProbe.tps -lt 8) {
+        Write-Host ""
+        Write-Host "WARNING: decode speed is only $($gpuProbe.tps) t/s — GPU offload looks INEFFECTIVE." -ForegroundColor Red
+        Write-Host "  '-ngl auto' placed layers from FREE VRAM at launch time. Close VRAM-heavy apps," -ForegroundColor Yellow
+        Write-Host "  or relaunch with an explicit layer count: llamadock.bat ... -NglLayers <n>" -ForegroundColor Yellow
+        Write-Host "  (e.g. -NglLayers 64 for a 64-layer model forces full-GPU placement)." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host " ok ($($gpuProbe.tps) t/s)" -ForegroundColor Green
+    }
 }
 
 Write-Host ""
