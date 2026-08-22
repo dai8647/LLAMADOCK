@@ -63,6 +63,27 @@ export function clientById(id) {
   return CLIENTS.find((c) => c.id === id) || null;
 }
 
+// Mirror select-model.ps1's Get-ComfyUILaunchArgs default profile so GUI- and
+// CLI-launched ComfyUI instances are identical: --reserve-vram keeps 1 GB of
+// VRAM for the desktop/OS (the H3 DiT otherwise fills the whole 16 GB card).
+// The interactive ck/super/triton profiles stay a CLI-side feature; the
+// LLAMADOCK_COMFY_FLAGS override works in both launchers.
+export function comfyLaunchArgs(spec) {
+  const base = ["main.py", "--port", String(clientPort(spec)), "--listen", "127.0.0.1"];
+  const flagsOverride = String(process.env.LLAMADOCK_COMFY_FLAGS || "").trim();
+  const extras = flagsOverride ? flagsOverride.split(/\s+/).filter(Boolean) : ["--reserve-vram", "1.0"];
+  return [...base, ...extras];
+}
+
+// VRAM contention warning: the coder engine holds most of the 16 GB card while
+// running; H3 DiT video generation alongside it OOMs on this hardware. The CLI
+// front door is mutually exclusive ([1] LLM / [2] ComfyUI) while the GUI
+// allows both, so warn instead of silently letting generation fail.
+export function vramGuardNote(clientId, runtime) {
+  if (clientId !== "ComfyUI" || !runtime || runtime.status !== "running") return "";
+  return `⚠ 注意: llama-server（${runtime.model || "?"}）が同時稼働中です。VRAM 競合で ComfyUI の生成が失敗する可能性があります。`;
+}
+
 function q(value) {
   return `"${String(value ?? "").replaceAll('"', '\\"')}"`;
 }
@@ -119,8 +140,9 @@ function windowsPlan(spec, { model, workspace, prompt }) {
       const comfyRoot = process.env.LLAMADOCK_COMFYUI_ROOT || "C:\\Users\\dai86\\Documents\\ComfyUI";
       const python = join(comfyRoot, ".venv", "Scripts", "python.exe");
       // Same effective port as the health probe — LLAMADOCK_COMFYUI_PORT
-      // overrides both, so launch and monitor can never diverge.
-      const args = ["main.py", "--port", String(clientPort(spec)), "--listen", "127.0.0.1"];
+      // overrides both, so launch and monitor can never diverge. Args mirror
+      // the CLI launcher via comfyLaunchArgs (reserve-vram / FLAGS override).
+      const args = comfyLaunchArgs(spec);
       return { exe: python, args, cwd: comfyRoot, display: `${q(python)} ${args.join(" ")}  (cwd: ${q(comfyRoot)})` };
     }
     case "DeepSeekHarness": {
@@ -194,6 +216,7 @@ export function createClientManager({ upstream = () => null } = {}) {
     if (!plan) {
       return { ok: false, error: "no_launcher", message: `「${spec.label}」の起動方法が未定義です。`, client: spec.id };
     }
+    const guardNote = vramGuardNote(spec.id, runtime);
 
     if (process.platform === "win32") {
       try {
@@ -211,7 +234,7 @@ export function createClientManager({ upstream = () => null } = {}) {
           client: spec.id,
           pid: child.pid,
           command: plan.display,
-          message: `「${spec.label}」を起動しました（pid ${child.pid}）。接続先: ${CLIENT_BASE_URL}`,
+          message: `${guardNote ? guardNote + "\n" : ""}「${spec.label}」を起動しました（pid ${child.pid}）。接続先: ${CLIENT_BASE_URL}`,
         };
       } catch (error) {
         mark(spec.id, { state: "error", pid: null, message: errorMessage(error) });
@@ -227,6 +250,7 @@ export function createClientManager({ upstream = () => null } = {}) {
       client: spec.id,
       command: plan.display,
       message:
+        `${guardNote ? guardNote + "\n" : ""}` +
         `（シミュレーション）Windows ランタイムでは「${spec.label}」を次で起動します: ${plan.display}。` +
         `このプレビューではクライアント本体は起動しません。`,
     };
