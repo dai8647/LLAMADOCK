@@ -118,8 +118,6 @@ elseif (Test-Path "C:\llama.cpp-cpu\llama-server.exe") {
 else {
     "C:\Users\dai86\Downloads\llama.cpp-cpu\llama-server.exe"
 }
-    "C:\Users\dai86\Downloads\prism-llama.cpp\build\bin\llama-server.exe"
-}
 $ExpertsLagunaServerPath = if ($env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER) {
     $env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER
 }
@@ -2290,6 +2288,38 @@ if (-not (Test-Path $ServerPath)) {
     exit 1
 }
 
+# --- Vision adapter (mmproj) opt-in --------------------------------------
+# A mmproj GGUF sitting next to the selected model enables image input via
+# --mmproj. Off by default: the vision encoder costs VRAM that a coding
+# session may prefer to spend on KV cache. LLAMADOCK_VISION=on|off skips
+# the prompt (quick-launch presets and DryRun honor it without asking).
+$visionMmprojPath = Get-ChildItem -LiteralPath (Split-Path -Parent $selected.FullName) -Filter "mmproj*.gguf" -File -ErrorAction SilentlyContinue |
+    Sort-Object Length -Descending | Select-Object -First 1
+$visionEnabled = $false
+if ($visionMmprojPath) {
+    $mmprojSizeGB = [math]::Round($visionMmprojPath.Length / 1GB, 2)
+    $envVision = $env:LLAMADOCK_VISION
+    if ($envVision -eq "on") {
+        $visionEnabled = $true
+        Write-Host "Vision: on (LLAMADOCK_VISION=on, $($visionMmprojPath.Name) $mmprojSizeGB GB)" -ForegroundColor Green
+    }
+    elseif ($envVision -eq "off") {
+        Write-Host "Vision: off (adapter found, disabled via LLAMADOCK_VISION=off)" -ForegroundColor DarkGray
+    }
+    elseif (-not $DryRun -and -not $isQuickLaunch) {
+        Write-Host ""
+        Write-Host "Vision adapter found: $($visionMmprojPath.Name) ($mmprojSizeGB GB)" -ForegroundColor Green
+        Write-Host " [1] Text-only (default - saves VRAM for context)"
+        Write-Host " [2] Enable image input (--mmproj, uses extra VRAM)"
+        do {
+            $visionInput = Read-Host "Enable vision? (1-2), or press Enter for 1"
+            if ([string]::IsNullOrWhiteSpace($visionInput)) { $visionInput = "1" }
+            $visionValid = $visionInput -in @("1", "2")
+        } while (-not $visionValid)
+        $visionEnabled = ($visionInput -eq "2")
+    }
+}
+
 # Prompt context size selection
 $systemRamGB = $hardware.RamGB
 $primaryVramGB = if ($hardware.PrimaryGpu) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
@@ -2988,6 +3018,8 @@ if ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek) {
 
 if (-not $isQuickLaunch) {
     Write-Host "Flash Attention: $flashAttention" -ForegroundColor Green
+    $visionSummary = if ($visionMmprojPath) { if ($visionEnabled) { "on ($($visionMmprojPath.Name))" } else { "off (adapter found)" } } else { "n/a (no mmproj next to model)" }
+    Write-Host "Vision: $visionSummary" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -3214,6 +3246,11 @@ $args = @(
 # The LongCat fork's server does not accept --no-ui.
 if ($requiredEngine -ne "LongCat") {
     $args += "--no-ui"
+}
+
+# Opt-in vision: image input via the mmproj adapter picked during setup.
+if ($visionEnabled -and $visionMmprojPath) {
+    $args += @("--mmproj", $visionMmprojPath.FullName)
 }
 
 if ($effectiveReasoningMode) {
