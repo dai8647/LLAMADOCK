@@ -69,17 +69,18 @@ if (Test-Path -LiteralPath $utf8Helper) {
 $AtomicBotServerPath = if ($env:LLAMA_TQ3_ATOMICBOT_SERVER) {
     $env:LLAMA_TQ3_ATOMICBOT_SERVER
 }
-# FA-fixed rebuild preferred when present: ROCWMMA_FATTN=ON + FA_ALL_QUANTS=ON
-# (2026-08-24). Cuts unsupported-op probes from 7831/22454 to 5234/22454 and
-# restores quantized-KV FlashAttention (q4_1/q5_0/q5_1); see HANDOFF.md.
+# FA-fixed rebuild is the only supported on-disk candidate (2026-08-24).
+# The old build-rocm71 was renamed to build-rocm71-deprecated: it shipped
+# with FLASH_ATTN_EXT mostly unsupported (7831/22454 probes NOT SUPPORTED)
+# and must not be silently picked up as a fallback. If this path is missing,
+# rebuild with tools/build-atomicbot-rocm71-fa.ps1.
 elseif (Test-Path "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe") {
     "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
 }
-elseif (Test-Path "C:\llama-tq3\build-rocm71\bin\llama-server.exe") {
-    "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
-}
 else {
-    "C:\llama-tq3\build\bin\llama-server.exe"
+    # Report the expected FA-fixed path so the generic missing-engine check
+    # below can print a useful message instead of failing on $null.
+    "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
 }
 
 $TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
@@ -2280,6 +2281,9 @@ if (-not (Test-Path $ServerPath)) {
     if ($requiredEngine -eq "TurboTan") {
         Write-Host "Build TurboTan first, or set LLAMA_TQ3_TURBOTAN_SERVER to its llama-server.exe." -ForegroundColor Red
     }
+    elseif ($requiredEngine -eq "AtomicBot") {
+        Write-Host "Rebuild with: tools\build-atomicbot-rocm71-fa.ps1 (see HANDOFF.md), or set LLAMA_TQ3_ATOMICBOT_SERVER." -ForegroundColor Red
+    }
     elseif ($requiredEngine -eq "OfficialVulkan") {
         Write-Host "Install an official llama.cpp Vulkan Windows build, or set LLAMADOCK_OFFICIAL_VULKAN_SERVER." -ForegroundColor Red
     }
@@ -3113,6 +3117,13 @@ if ($SpecMode -eq "Prompt") {
 
 if (-not $isQuickLaunch) {
     Write-Host "Speculative decoding mode: $SpecMode" -ForegroundColor Green
+    if ($SpecMode -eq "MtpNextN") {
+        # Measured 2026-08-22: draft-mtp is O(n^2) in prompt length. Fast for
+        # short prompts (<300 tok: ~16-29 t/s) but degrades hard on long ones
+        # (>5K tok: ~3-6 t/s). Acceptance also swings daily (0.36-0.78).
+        Write-Host "  note: MTP helps short prompts; for >5K-token contexts turn it Off" -ForegroundColor Yellow
+        Write-Host "  (long-prompt decode drops to ~3-6 t/s). Coding with big files: use Off." -ForegroundColor Yellow
+    }
     Write-Host ""
 }
 

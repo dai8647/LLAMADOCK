@@ -60,7 +60,7 @@ const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
 // Same candidate lists and env overrides as the PowerShell core so the GUI
 // launcher picks the exact same binary the CLI flow would pick.
 const ENGINE_CANDIDATES = [
-  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71-fa\\bin\\llama-server.exe", "C:\\llama-tq3\\build-rocm71\\bin\\llama-server.exe", "C:\\llama-tq3\\build\\bin\\llama-server.exe"] },
+  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71-fa\\bin\\llama-server.exe"] },
   { name: "TurboTan", env: "LLAMA_TQ3_TURBOTAN_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-b10536-rocm\\llama-server.exe", "C:\\llama-tq3-turbotan\\build\\bin\\llama-server.exe"] },
   { name: "OfficialVulkan", env: "LLAMADOCK_OFFICIAL_VULKAN_SERVER", paths: ["C:\\llama.cpp-vulkan\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-vulkan\\llama-server.exe"] },
   { name: "OfficialHIP", env: "LLAMADOCK_OFFICIAL_HIP_SERVER", paths: ["C:\\llama.cpp-hip\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-hip\\llama-server.exe"] },
