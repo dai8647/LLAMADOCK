@@ -44,6 +44,10 @@ param(
     # supervisor then closes the gateway and exits cleanly instead of
     # backoff-respawning it up to the circuit-breaker limit.
     [switch]$AutoRestart,
+    # Physical micro-batch for prompt processing (-ub). 1024/2048 can raise
+    # prefill throughput on GPU-bound workloads at the cost of bigger compute
+    # buffers (VRAM). 0 = llama.cpp default (512).
+    [int]$Ubatch = 0,
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
@@ -3251,6 +3255,14 @@ if ($requiredEngine -ne "LongCat") {
 # Opt-in vision: image input via the mmproj adapter picked during setup.
 if ($visionEnabled -and $visionMmprojPath) {
     $args += @("--mmproj", $visionMmprojPath.FullName)
+}
+
+# Prefill micro-batch override (see param comment). VRAM headroom is tight on
+# 16 GB cards, so this stays opt-in; verify placement with the GPU probe.
+$envUbatch = if ($env:LLAMADOCK_UBATCH -match "^\d+$") { [int]$Matches[0] } else { 0 }
+$effectiveUbatch = if ($Ubatch -gt 0) { $Ubatch } elseif ($envUbatch -gt 0) { $envUbatch } else { 0 }
+if ($effectiveUbatch -gt 0) {
+    $args += @("-ub", "$effectiveUbatch")
 }
 
 if ($effectiveReasoningMode) {
