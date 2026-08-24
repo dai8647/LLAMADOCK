@@ -60,12 +60,11 @@ const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
 // Same candidate lists and env overrides as the PowerShell core so the GUI
 // launcher picks the exact same binary the CLI flow would pick.
 const ENGINE_CANDIDATES = [
-  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71\\bin\\llama-server.exe", "C:\\llama-tq3\\build\\bin\\llama-server.exe"] },
+  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71-fa\\bin\\llama-server.exe", "C:\\llama-tq3\\build-rocm71\\bin\\llama-server.exe", "C:\\llama-tq3\\build\\bin\\llama-server.exe"] },
   { name: "TurboTan", env: "LLAMA_TQ3_TURBOTAN_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-b10536-rocm\\llama-server.exe", "C:\\llama-tq3-turbotan\\build\\bin\\llama-server.exe"] },
   { name: "OfficialVulkan", env: "LLAMADOCK_OFFICIAL_VULKAN_SERVER", paths: ["C:\\llama.cpp-vulkan\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-vulkan\\llama-server.exe"] },
   { name: "OfficialHIP", env: "LLAMADOCK_OFFICIAL_HIP_SERVER", paths: ["C:\\llama.cpp-hip\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-hip\\llama-server.exe"] },
   { name: "OfficialCPU", env: "LLAMADOCK_OFFICIAL_CPU_SERVER", paths: ["C:\\llama.cpp-cpu\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-cpu\\llama-server.exe"] },
-  { name: "PrismBonsai", env: "LLAMA_TQ3_PRISM_BONSAI_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build-rocm71\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build-win-vulkan\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\prism-llama.cpp\\build\\bin\\llama-server.exe"] },
   { name: "ExpertsLaguna", env: "LLAMA_TQ3_EXPERTS_LAGUNA_SERVER", paths: ["C:\\Users\\dai86\\llama-cpp-turboquant-experts-laguna\\build-hip\\bin\\llama-server.exe", "C:\\Users\\dai86\\llama-cpp-turboquant\\build-hip\\bin\\llama-server.exe"] },
   { name: "LongCat", env: "LLAMA_TQ3_LONGCAT_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build-rocm71\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build\\bin\\llama-server.exe"] },
   { name: "DFlash2", env: "LLAMA_TQ3_DFLASH2_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-dflash2\\build-rocm71\\bin\\llama-server.exe"] },
@@ -92,7 +91,6 @@ function engineHint(cand) {
 // Get-RequiredEngine (Ternary before DeepSeek so REAP/TQ3 mixes route right).
 function requiredEngineForModel(modelName) {
   const m = String(modelName || "");
-  if (/ternary|bonsai/i.test(m)) return "PrismBonsai";
   if (/deepseek|ds4-compact|reap[-_ ]?k128|laguna/i.test(m)) return "ExpertsLaguna";
   if (/tq3_4s|tq3/i.test(m)) return "TurboTan";
   if (/longcat/i.test(m)) return "LongCat";
