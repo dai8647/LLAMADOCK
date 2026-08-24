@@ -3,7 +3,7 @@
     "1": {
       "class_type": "UNETLoader",
       "inputs": {
-        "unet_name": "alpha-0.5-testing\\PinkCherry_h3_fl2va_pruned_int8_v0.5-alpha.safetensors",
+        "unet_name": "10Eros-Max\\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4.safetensors",
         "weight_dtype": "default"
       }
     },

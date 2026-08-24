@@ -332,3 +332,44 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - Recommended for Qwen3.5/3.8 models
 - select-model.ps1 now shows engine selection prompt for regular GGUF models
 - llamadock.bat accepts -EngineMode parameter (e.g., llamadock.bat -EngineMode OfficialVulkan)
+
+## 静的監査 + モデル更新調査（2026-08-24・GPU稼働中のため動的検証は保留）
+
+### ComfyUI ワークフロー静的監査（完了）
+- 全ワークフローの DiT↔CLIP エンコーダ型ペアリング整合確認: **不一致ゼロ**
+  （4B=krea2 / 32B NVFP4=minimax、shift_audio=6 統一、参照モデルファイル全て実在）
+- テンプレート DiT を旧 `alpha-0.5-testing\PinkCherry int8 v0.5-alpha`(21GB) →
+  `10Eros-Max\10Eros_Max_h3_fl2va_beta2_pruned_nvfp4`(11.7GB) に全23ファイル更新。
+  h3-chat の DITS 既定と一致。PinkCherry は dit=pinkcherry キーで選択可能のまま
+- `h3_workflow_super_audio.json` の shift_audio 6.0(float)→6(int) 表記統一
+- H3-Multishot カスタムノードは不要確定: README / model-notes.json / docs/PARAMETER-CATALOG.md の
+  記述を「コア同梱 `nodes_minimax_h3.py` で代替」に修正済み（R2V 含め動作確認済み）
+- 企画 LLM メニュー実機確認: 既知エントリの削除済みモデル(finex666/lemonyins/mradermacher パス)は
+  自動で非表示になり、ディスキャン分(Ornith APEX lite / HauhauCS IQ3_M・IQ4_XS / Qwen3.5-4B /
+  Huihui TQ3_4S)が全件表示されることを確認。knownPaths 重複排除も正常。
+  注意: Huihui TQ3_4S を企画 LLM に選ぶと AtomicBot では読めない(TQ3 量子化は専用エンジン必要)
+
+### モデル更新調査（HuggingFace、2026-08-24 時点）— 要 GPU 検証
+- [要検証] **TenStrip/10Eros-Max 推奨サンプラー設定**: turbo モデルで er_sde/simple 6step +
+  カスタムシグマ `[1.00, 0.94, 0.83, 0.72, 0.55, 0.30, 0.10, 0.00]` にするとモーションノイズが
+  消えるとのこと。現行 Euler/Beta から GPU 空き後に A/B 比較推奨
+- [要検証] **drbaph/MiniMax-H3-Turbo-Lora-ComfyUI**（約4日前更新）: lightx2v 公式 Turbo の
+  FL2V/**Ref2V** ダイナミックランク LoRA(BF16) を新収録。Ref2V 版は現行
+  `turbo_4step_ckpt600_ema_V4 + ref_lora_rank_256_bf16(Kijai)` のスタックを単体置換できる可能性。
+  ガイド: 6step=速度品質両立 / 8step=品質(Euler/Beta, video shift 12, audio shift 4-6)、Spectrum 併用可
+- [情報] PinkCherry 系最新は **beta-0.6**（int8_convrot、8/12 変更ログ「t2v 修正・fluids 改善」）。
+  ローカル v0.5-alpha より新しいが 10Eros beta2 との優劣は未検証（dit=pinkcherry 差し替えで A/B 可）
+- [情報] 10Eros 本体(TenStrip) は6日前に更新があるが派生量子化は Beta2 表記のまま
+  （Abiray ref2va-Beta2-GGUF は1日前更新）→ **beta2 が現行最新**と判断。追加ダウンロード不要
+- [情報] Ornith 公式 GGUF(ornith-ai) が約19時間前にリフレッシュ（Q4_K_M〜Q8_0 標準クォンタのみ、
+  MTP/APEX なし）。ローカルの gbuzhf APEX I-Mini-v2D-lite は別系統。代替として
+  huihui-ai/Huihui-Ornith-1.5-35B-A3B-abliterated（約5時間前更新）あり
+- [見送り] AIconjured Qwen3.8-27B-HauhauCS-Aggressive Q8-NVFP4（約15時間前）— llama.cpp 系は
+  NVFP4 非読み込みのため不採用
+- [注意] ComfyUI コア 5ab2f7a(8/19) → eb8cad7 更新あり。ComfyUI-GGUF ノードが 2026-01-12 で止まって
+  いるため **コア + GGUF ノードをセットで更新**すること（コア単独更新は非整合リスク）
+
+### GPU 空き後の動的検証チェックリスト
+1. er_sde + 7step シグマ vs 現行 Euler/Beta の A/B（turbo_short_audio で同一シード比較）
+2. lightx2v Ref2V dynamic-rank LoRA 単体 vs V4+Kijai ref スタック比較（r2v_short）
+3. ComfyUI コア更新後、主要ワークフローの API プロンプト投入検証
