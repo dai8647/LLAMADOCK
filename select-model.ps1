@@ -39,6 +39,11 @@ param(
     [int]$NglLayers = 0,
     # Skip the post-launch GPU offload speed probe.
     [switch]$SkipGpuProbe,
+    # Opt-in: make the supervisor respawn llama-server after an unexpected
+    # exit. Default OFF so a manually killed server stays stopped; the
+    # supervisor then closes the gateway and exits cleanly instead of
+    # backoff-respawning it up to the circuit-breaker limit.
+    [switch]$AutoRestart,
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
@@ -59,6 +64,12 @@ if (Test-Path -LiteralPath $utf8Helper) {
 
 $AtomicBotServerPath = if ($env:LLAMA_TQ3_ATOMICBOT_SERVER) {
     $env:LLAMA_TQ3_ATOMICBOT_SERVER
+}
+# FA-fixed rebuild preferred when present: ROCWMMA_FATTN=ON + FA_ALL_QUANTS=ON
+# (2026-08-24). Cuts unsupported-op probes from 7831/22454 to 5234/22454 and
+# restores quantized-KV FlashAttention (q4_1/q5_0/q5_1); see HANDOFF.md.
+elseif (Test-Path "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe") {
+    "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
 }
 elseif (Test-Path "C:\llama-tq3\build-rocm71\bin\llama-server.exe") {
     "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
@@ -2287,17 +2298,16 @@ $recommendedDefaultTokens = if ($isDeepSeek) {
     # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
     16384
 }
-elseif ($selectedModelSizeGB -ge 40) {
-    16384
-}
-elseif ($selectedModelSizeGB -ge 24) {
-    32768
-}
-elseif ($selectedModelSizeGB -ge 12) {
-    65536
-}
 else {
-    131072
+    # 32K flat default (2026-08-24): coder agents run auto-compaction, so a
+    # larger default only risks KV spilling out of VRAM. The old model-size
+    # ladder went up to 128K for small models, which on a 16 GB card meant
+    # KV silently living in system RAM.
+    $tokens = 32768
+    if ($maxContextTokensForRam -gt 0 -and $tokens -gt $maxContextTokensForRam) {
+        $tokens = $maxContextTokensForRam
+    }
+    $tokens
 }
 
 $contextOptions = @(
@@ -3539,9 +3549,13 @@ $supervisorArgs = @(
     "-Root", $PSScriptRoot,
     "-GatewayPort", $GatewayPort,
     "-UpstreamPort", 8080,
-    "-LogDir", (Join-Path $PSScriptRoot "logs"),
-    "-AutoRestartServer"
+    "-LogDir", (Join-Path $PSScriptRoot "logs")
 )
+# Opt-in resilience: without -AutoRestart a manually killed llama-server
+# stays down and the supervisor shuts the gateway and itself cleanly.
+if ($AutoRestart) {
+    $supervisorArgs += "-AutoRestartServer"
+}
 # Keep the supervisor in a normal console so the user can see and control
 # the server session. Ctrl+C in that console reaches the supervisor's
 # finally block, which stops llama-server and the gateway cleanly.
