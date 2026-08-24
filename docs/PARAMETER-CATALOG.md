@@ -155,7 +155,8 @@ GUIは上部バーでプリセットを1クリック適用できるようにす�
   「ComfyUI runs its own server on :8188 and does not depend on the llama-server」と同じ契約）。
   `CLIENTS` の `standalone: true` で判定し、`/api/status` の `clients[*].standalone` と UI に反映。
 - **MiniMax H3 対応（ComfyUI 専用モデル）**: `model-notes.json` に `MiniMax.?H3|minimax_h3|fl2va|ref2va` の
-  エントリを追加（llama-server 非対応・ComfyUI 0.30.0+ / ComfyUI-GGUF / ComfyUI-H3-Multishot v1.5.2+ が前提、
+  エントリを追加（llama-server 非対応・ComfyUI 0.30.0+ / ComfyUI-GGUF が前提 — 当初 ComfyUI-H3-Multishot v1.5.2+
+  を必須としていたが、後に H3 ノードのコア同梱（nodes_minimax_h3.py）を確認し Multishot は不要に訂正、
   エンコーダ GGUF + VAE 必須、K 量子化不可）。UI のエンジン推定は `ComfyUI (DiT)` と表示し、
   llama.cpp エンジンへの誤推定を防止。
 - **クライアント稼働モニタ（`GET /api/clients/health`）を実装**: 独自 HTTP サーバーを持つクライアント

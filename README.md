@@ -247,9 +247,11 @@ Llama Agent / DeepSeek Harness / ComfyUI を接続します（右カラムの「
 33B の動画・音声生成 DiT（拡散モデル）で、ComfyUI 内で GGUF として読み込みます（`model-notes.json` に警告あり）。
 
 - GGUF: `joeygambino/MiniMax-H3-GGUF`（fl2va / ref2va、Q8_0・Q5_1・Q5_0・Q4_0 のみ。K 量子化は hidden width 2688 のため不可）
-- 前提: **ComfyUI 0.30.0+** + **ComfyUI-GGUF** + **ComfyUI-H3-Multishot v1.5.2+**（GGUF 版）
-  （ネイティブ版は `MiniMaxAI/MiniMax-H3` のノード。`Open-ComfyUIClient` は起動時に
-  `MiniMaxH3ImageToVideo` / `MiniMaxH3SigmaShift` などのネイティブノードを検出し、無ければ警告します）
+- 前提: **ComfyUI 0.30.0+** + **ComfyUI-GGUF**。H3 ノード（`MiniMaxH3ImageToVideo` /
+  `MiniMaxH3ReferenceToVideo` / `MiniMaxH3SigmaShift` 等）は **ComfyUI コア同梱**
+  （`comfy_extras/nodes_minimax_h3.py`、ローカル 5ab2f7a 2026-08-19 で存在確認済み）のため、
+  旧 **ComfyUI-H3-Multishot カスタムノードは不要**（本環境に未インストールでも R2V 含め動作するのを確認）。
+  `Open-ComfyUIClient` は起動時にネイティブノードを検出し、無ければ警告します。
 - 必須の付属ファイル: テキストエンコーダ GGUF（`joeygambino/MiniMax-H3-encoder-GGUF` = Qwen3-VL-32B + mmproj）と VAE（`Comfy-Org/MiniMax-H3`）。エンコーダなしでは生成できません。
 - 配置例: ComfyUI の `extra_model_paths.yaml` で `.lmstudio\models\MiniMax-H3` を参照し、DiT・エンコーダ・mmproj・VAE を置きます。
 - VRAM 目安: Q5_1 ≈ 25.9 GB（24–32 GB カード）、Q4_0 ≈ 19.9 GB（16 GB カードはストリーミング）。
