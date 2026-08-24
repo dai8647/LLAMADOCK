@@ -109,6 +109,54 @@ async function waitForHealth(port, { tries = Math.max(4, Math.ceil(READY_TIMEOUT
   return null;
 }
 
+// Mirror of select-model.ps1's Wait-VramRelease: a llama-server that was just
+// stopped keeps the upstream port open for a moment. Spawning a replacement
+// too early either fails to bind or (worse) lets "-ngl auto" fit layers from
+// depleted free VRAM and silently degrade to CPU-heavy placement.
+async function waitForPortClosed(port, { timeoutMs = 20000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await jsonRequest(port, "GET", "/health", undefined, { timeoutMs: 800 });
+      /* still answering — keep waiting */
+    } catch {
+      return true; // nothing listening
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+// Post-launch decode-speed sanity check, mirroring Test-GpuOffloadProbe in
+// select-model.ps1: a GPU-ineffective placement shows up as very low tok/s.
+async function probeGpuOffload(port, model, { maxTokens = 24 } = {}) {
+  const started = Date.now();
+  try {
+    const res = await jsonRequest(
+      port,
+      "POST",
+      "/v1/chat/completions",
+      {
+        model,
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: maxTokens,
+        temperature: 0,
+        stream: false,
+      },
+      { timeoutMs: 120000 },
+    );
+    const wallMs = Date.now() - started;
+    const usage = res.body?.usage || {};
+    const tokens = usage.completion_tokens ?? 0;
+    if (res.status === 200 && tokens > 0) {
+      return { ok: true, tokensPerSec: tokens / (wallMs / 1000), wallMs, tokens };
+    }
+    return { ok: false, error: `status=${res.status}` };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
 export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {}) {
   let child = null;
   let stopping = false;
@@ -127,6 +175,7 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
     resolvedParams: null,
     health: null,
     metrics: { toks: null, vramGb: null, ramGb: null },
+    gpuProbe: null,
     log: [],
   };
 
@@ -199,6 +248,7 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
       simulated: process.platform !== "win32",
       health: null,
       metrics: { toks: null, vramGb: null, ramGb: null },
+      gpuProbe: null,
       log: [],
     });
     log(`launch requested: model=${model} engine=${engine || "auto"} port=${port}`);
@@ -206,6 +256,14 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
     let childExited = false;
     try {
       if (process.platform === "win32") {
+        // Wait for a just-stopped previous instance to release the upstream
+        // port (and its VRAM) before spawning — see waitForPortClosed above.
+        const portFree = await waitForPortClosed(port);
+        if (!portFree) {
+          throw new Error(
+            `ポート ${port} が使用中です。前のインスタンスが 20 秒以内に解放しませんでした。先に停止するか、LLAMADOCK_UPSTREAM_PORT を変更してください。`,
+          );
+        }
         // Engine binary is resolved by server.js from the select-model.ps1
         // candidate table; LLAMADOCK_ENGINE_BIN still wins when set.
         const bin = process.env.LLAMADOCK_ENGINE_BIN || engineBin;
@@ -292,6 +350,23 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
       setState({ status: STATES.RUNNING, health, metrics: metricsFromHealth(health) });
       log(`ready: ${health.model || model} on http://127.0.0.1:${port}${state.simulated ? " (simulation)" : ""}`);
       startHealthPolling();
+      if (!state.simulated) {
+        // Fire-and-forget GPU offload probe (mirrors the CLI guard): never
+        // blocks the launch response, result lands in state.gpuProbe + log.
+        void probeGpuOffload(port, model).then((probe) => {
+          setState({ gpuProbe: probe });
+          if (!probe.ok) {
+            log(`GPU probe failed/skipped: ${probe.error}`);
+          } else if (probe.tokensPerSec < 8) {
+            log(
+              `WARNING: decode speed is only ${probe.tokensPerSec.toFixed(1)} tok/s — GPU offload looks INEFFECTIVE. ` +
+                "Close VRAM-heavy apps or relaunch with an explicit -ngl layer count.",
+            );
+          } else {
+            log(`GPU probe ok (${probe.tokensPerSec.toFixed(1)} tok/s in ${probe.wallMs} ms)`);
+          }
+        });
+      }
       return {
         ok: true,
         message: `「${model}」を起動しました（${state.simulated ? "シミュレーション" : "実ランタイム"}）`,
@@ -442,6 +517,7 @@ export function createLaunchManager({ upstreamPort = DEFAULT_UPSTREAM_PORT } = {
       args: state.args,
       resolvedParams: state.resolvedParams || null,
       metrics: state.metrics || { toks: null, vramGb: null, ramGb: null },
+      gpuProbe: state.gpuProbe || null,
       health: state.health || null,
       logTail: state.log.slice(-80),
     };
