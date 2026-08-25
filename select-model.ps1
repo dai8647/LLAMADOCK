@@ -1525,7 +1525,7 @@ function Get-PlanModelMenu {
     # 残り続けることがないようにする。残りはディスク走査（Get-PlanModelCandidates）
     # からの自動検出分。返却トークン契約:
     #   Qwen3.5 / Qwen3.8-27B-GPU / Qwen3.8-27B-GPU-Vision /
-    #   Qwen3.8-27B-Heretic-Vision / Custom (+ $script:PlanModelCustom)
+    #   Qwen3.5-A35B-GPU-Vision / Custom (+ $script:PlanModelCustom)
     $known = @(
         @{
             Key  = "Qwen3.5"
@@ -1534,25 +1534,25 @@ function Get-PlanModelMenu {
         },
         @{
             Key  = "Qwen3.8-27B-GPU"
-            Path = "C:\Users\dai86\.lmstudio\models\finex666\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP-GGUF\Qwen3.8-27B-Abliterated-IQ4-MIX-MTP.gguf"
+            Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
             Gpu  = $true
         },
         @{
             Key  = "Qwen3.8-27B-GPU-Vision"
-            Path = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
+            Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf"
             Gpu  = $true
         },
         @{
-            Key  = "Qwen3.8-27B-Heretic-Vision"
-            Path = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
+            Key  = "Qwen3.5-A35B-GPU-Vision"
+            Path = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S.gguf"
             Gpu  = $true
         }
     )
     $descByKey = @{
         "Qwen3.5"                    = "Qwen3.5-4B - CPU・常駐・視覚対応（既定）"
-        "Qwen3.8-27B-GPU"            = "Qwen3.8-27B - GPU・企画フェーズのみ・高品質（視覚なし）"
-        "Qwen3.8-27B-GPU-Vision"     = "Qwen3.8-27B Vision - GPU・企画フェーズのみ・視覚 + KV q8/q4"
-        "Qwen3.8-27B-Heretic-Vision" = "Qwen3.8-27B heretic-ara - GPU・企画フェーズのみ・視覚あり"
+        "Qwen3.8-27B-GPU"            = "Qwen3.8-27B HauhauCS IQ3_M - GPU・企画フェーズのみ・視覚あり（11.9GB）"
+        "Qwen3.8-27B-GPU-Vision"     = "Qwen3.8-27B HauhauCS IQ4_XS - GPU・企画フェーズのみ・視覚あり（14.6GB・高品質）"
+        "Qwen3.5-A35B-GPU-Vision"    = "Huihui-Qwen3.5-A35B TQ3_4S - GPU・企画フェーズのみ・視覚あり（12.4GB・MoE）"
     }
 
     $menu = @()
@@ -1664,7 +1664,7 @@ function Start-H3Chat {
             catch { }
             if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or
                 $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or
-                $script:PlanModelChoice -eq "Qwen3.8-27B-Heretic-Vision" -or
+                $script:PlanModelChoice -eq "Qwen3.5-A35B-GPU-Vision" -or
                 ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) {
                 $planUpNow = $true
             }
@@ -1678,7 +1678,7 @@ function Start-H3Chat {
             if (-not ($chatUpNow -and $planUpNow)) {
                 # 企画 LLM のエンジン: GPU プランナーは AtomicBot（h3-chat.py が PLAN_SERVER_BIN で起動）、
                 # CPU プランナーは openPangu ネイティブ CPU ビルド（h3-chat.ps1 が選択）。
-                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or $script:PlanModelChoice -eq "Qwen3.8-27B-Heretic-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
+                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or $script:PlanModelChoice -eq "Qwen3.5-A35B-GPU-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。

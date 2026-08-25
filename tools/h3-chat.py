@@ -140,44 +140,178 @@ R2V_TAG_NOTE = (
 #   cpu4b  (default): Qwen3.5-4B on CPU (-ngl 0), port 8190, pre-started and
 #                     always-on; has an mmproj so it can see the confirmed key
 #                     image.
-#   gpu27b (LLAMADOCK_PLAN_GPU=1): Qwen3.8-27B-Abliterated on GPU (-ngl all),
-#                     port 8191. Started on demand for the planning phase only
-#                     and killed before every ComfyUI generation, so the 12GB
-#                     planner and the video model never fight over VRAM. Ships
-#                     its own mmproj, so it can see the confirmed key image.
+#   gpu    (LLAMADOCK_PLAN_GPU=1): a large GGUF on GPU (-ngl all), port 8191.
+#                     Started on demand for the planning phase only and killed
+#                     before every ComfyUI generation, so the planner and the
+#                     video model never fight over VRAM.
+#
+# The GPU planner model is NOT hardcoded: it is auto-selected from the GGUFs
+# installed under .lmstudio\models (scan_plan_models) and can be switched at
+# runtime from the UI dropdown (GET/POST /api/plan-models). Env vars
+# LLAMADOCK_PLAN_MODEL / LLAMADOCK_PLAN_MMPROJ still win when set.
 PLAN_GPU = os.environ.get("LLAMADOCK_PLAN_GPU", "") == "1"
 PLAN_PORT = 8191 if PLAN_GPU else 8190
 PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
 
+# ---- planning LLM model discovery ------------------------------------
+# .lmstudio\models をスキャンして企画 LLM 候補を列挙する
+# （select-model.ps1 の Get-PlanModelCandidates と同じ規則）。
+MODEL_SCAN_ROOT = r"C:\Users\dai86\.lmstudio\models"
+# The GPU planner must share the 16GB card with KV cache + mmproj, so the
+# auto-pick stays under this size (larger ones remain selectable in the UI).
+GPU_AUTO_MAX_GB = 15.5
+
+
+def _find_mmproj(dirpath):
+    """First mmproj*.gguf next to a model file, or None."""
+    try:
+        for fn in sorted(os.listdir(dirpath)):
+            if fn.lower().startswith("mmproj") and fn.lower().endswith(".gguf"):
+                return os.path.join(dirpath, fn)
+    except OSError:
+        pass
+    return None
+
+
+def scan_plan_models():
+    """Scan MODEL_SCAN_ROOT for planning-LLM candidates.
+
+    Excludes mmproj projectors, split parts (-of-) and speculative draft
+    models (DSpark/DFlash2); pairs each model with an mmproj in the same
+    directory. GPU heuristic mirrors select-model.ps1: a parameter count
+    >= 13B in the filename, or a file size over 6GB.
+    Returns a list of dicts sorted CPU-first, then by size.
+    """
+    out = []
+    if not os.path.isdir(MODEL_SCAN_ROOT):
+        return out
+    for org in sorted(os.listdir(MODEL_SCAN_ROOT)):
+        org_dir = os.path.join(MODEL_SCAN_ROOT, org)
+        if not os.path.isdir(org_dir) or org in ("blobs", "manifests"):
+            continue
+        for root, _dirs, files in os.walk(org_dir):
+            for fn in sorted(files):
+                low = fn.lower()
+                if not low.endswith(".gguf"):
+                    continue
+                if "mmproj" in low or "-of-" in low or "dspark" in low or "dflash2" in low:
+                    continue
+                path = os.path.join(root, fn)
+                try:
+                    size_gb = round(os.path.getsize(path) / (1024 ** 3), 1)
+                except OSError:
+                    continue
+                gpu = size_gb > 6.0
+                m = re.search(r"(\d+)\s*b", fn, re.IGNORECASE)
+                if m and int(m.group(1)) >= 13:
+                    gpu = True
+                label = os.path.basename(root)
+                parent = os.path.basename(os.path.dirname(root))
+                if parent and parent.lower() != "models":
+                    label = parent + "/" + label
+                if len(label) > 44:
+                    label = label[:44] + "…"
+                mmproj = _find_mmproj(root)
+                out.append({
+                    "path": path, "mmproj": mmproj, "gpu": gpu,
+                    "size_gb": size_gb, "label": label,
+                    "vision": bool(mmproj),
+                })
+    out.sort(key=lambda m: (m["gpu"], m["size_gb"]))
+    return out
+
+
+def _auto_plan_model(for_gpu):
+    """Pick the default planning model from the installed GGUFs.
+
+    GPU: vision-capable models that fit the card first (smallest first, so
+    the cold load stays fast and the KV cache keeps headroom). CPU: the
+    dedicated Qwen3.5-4B if installed, else the smallest candidate.
+    Returns (path, mmproj); both None when nothing usable is installed.
+    """
+    models = scan_plan_models()
+    if for_gpu:
+        cands = [m for m in models if m["gpu"] and m["size_gb"] <= GPU_AUTO_MAX_GB]
+        cands.sort(key=lambda m: (not m["vision"], m["size_gb"]))
+        if not cands:
+            cands = [m for m in models if m["gpu"]]
+        if cands:
+            return cands[0]["path"], cands[0]["mmproj"]
+        return None, None
+    known_cpu = r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
+    for m in models:
+        if m["path"].lower() == known_cpu.lower():
+            return m["path"], m["mmproj"]
+    if models:
+        return models[0]["path"], models[0]["mmproj"]
+    return None, None
+
+
+def _resolve_plan_model(for_gpu):
+    """Resolve the planning model: env vars first, else the auto-pick."""
+    env_model = os.environ.get("LLAMADOCK_PLAN_MODEL")
+    env_mmproj = os.environ.get("LLAMADOCK_PLAN_MMPROJ")
+    if env_model and os.path.isfile(env_model):
+        if env_mmproj and os.path.isfile(env_mmproj):
+            return env_model, env_mmproj
+        return env_model, _find_mmproj(os.path.dirname(env_model))
+    return _auto_plan_model(for_gpu)
+
+
+# GPU planner: TurboTan first — measured ~5x faster than the AtomicBot FA
+# build on the 27B MTP planner quants (1.9 t/s there vs a finished plan in
+# 2m16s here), and it is the only build with draft-dspark. AtomicBot FA as
+# fallback; the plain build-rocm71 tree was deprecated as broken.
+# CPU planner keeps the TurboTan build it has always used.
+# LLAMADOCK_PLAN_BIN overrides either chain.
+_GPU_BIN_CANDIDATES = (
+    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
+    r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
+    r"C:\llama-tq3\build-rocm71\bin\llama-server.exe",
+)
+_CPU_BIN_CANDIDATES = (
+    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
+    r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
+)
+
+
+def _resolve_plan_bin(for_gpu):
+    env = os.environ.get("LLAMADOCK_PLAN_BIN")
+    if env and os.path.isfile(env):
+        return env
+    chain = _GPU_BIN_CANDIDATES if for_gpu else _CPU_BIN_CANDIDATES
+    for c in chain:
+        if os.path.isfile(c):
+            return c
+    return chain[0]
+
+
 # ---- planning LLM auto-start -----------------------------------------
 # Mirrors the llama-server launch in tools\h3-chat.ps1 so plan mode works
 # even when h3-chat.py is started directly (without h3-chat.ps1 / llamadock).
-_DEFAULT_PLAN_MODEL = (
-    r"C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf"
-    if PLAN_GPU
-    else r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
-)
-PLAN_MODEL_PATH = os.environ.get("LLAMADOCK_PLAN_MODEL", _DEFAULT_PLAN_MODEL)
-PLAN_MMPROJ_PATH = os.environ.get(
-    "LLAMADOCK_PLAN_MMPROJ",
-    r"C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\mmproj-Q8_0.gguf"
-    if PLAN_GPU else
-    r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf",
-)
-PLAN_SERVER_BIN = os.environ.get(
-    "LLAMADOCK_PLAN_BIN",
-    r"C:\llama-tq3\build-rocm71\bin\llama-server.exe"
-    if PLAN_GPU else
-    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
-)
+PLAN_MODEL_PATH, PLAN_MMPROJ_PATH = _resolve_plan_model(PLAN_GPU)
+PLAN_MODEL_PATH = PLAN_MODEL_PATH or ""
+PLAN_MMPROJ_PATH = PLAN_MMPROJ_PATH or ""
+PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
 # 企画 LLM のエンジン名（コーダー側のエンジン表記と揃えた表示用ラベル）。
-# DSpark を有効にすると TurboTan ビルドに切り替わるので、その場合のラベルも用意。
-PLAN_ENGINE = "AtomicBot (ROCm 7.1 HIP)" if PLAN_GPU else (
-    "openPangu (native CPU)" if "llama.cpp-openPangu" in PLAN_SERVER_BIN else
-    "AtomicBot (ROCm 7.1 HIP)" if "build-rocm71" in PLAN_SERVER_BIN else "Unknown"
-)
+# モデル切替で GPU/CPU が変わり得るので、起動時のスナップショット
+# (PLAN_ENGINE) と現在値 (_plan_engine_label) を分けて持つ。
 PLAN_ENGINE_DSPARK = "TurboTan (draft-dspark)"
 PLAN_ENGINE_DFLASH2 = "DFlash2 (ROCm 7.1 HIP, draft-dflash)"
+
+
+def _plan_engine_label():
+    if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
+        return PLAN_ENGINE_DFLASH2
+    if PLAN_GPU and PLAN_SETTINGS.get("dspark"):
+        return PLAN_ENGINE_DSPARK
+    if "llama.cpp-openPangu" in PLAN_SERVER_BIN:
+        return "openPangu (native CPU)"
+    if "build-rocm71" in PLAN_SERVER_BIN:
+        return "AtomicBot (ROCm 7.1 HIP)"
+    if "llama-b10536" in PLAN_SERVER_BIN:
+        return "TurboTan (ROCm HIP)"
+    return "Unknown"
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
@@ -195,6 +329,7 @@ PLAN_SETTINGS = {
     "dspark": False,      # DSpark speculative decoding (experimental)
     "dflash2": False,     # DFlash2 speculative decoding (experimental)
 }
+PLAN_ENGINE = _plan_engine_label()
 # DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
 DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
 # DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
@@ -269,8 +404,8 @@ def _spawn_plan_llm():
         if PLAN_SETTINGS["ctv"] and PLAN_SETTINGS["ctv"] != "none":
             args += ["-ctv", PLAN_SETTINGS["ctv"]]
         if PLAN_MMPROJ_PATH and os.path.isfile(PLAN_MMPROJ_PATH):
-            # Vision-capable 27B (lemonyins ULTIMATE-UNCENSORED ships its own
-            # mmproj). Attach it so the planner can see the confirmed key image.
+            # Vision-capable planner: attach the mmproj shipped next to the
+            # model so the planner can see the confirmed key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
         # DSpark speculative decoding: separate 1B dflash draft model predicts
         # up to 7 tokens ahead; main model verifies. Experimental — requires
@@ -383,12 +518,7 @@ def ensure_plan_llm(wait_seconds=120):
     with PLAN_START_LOCK:
         dead = PLAN_PROC is None or PLAN_PROC.poll() is not None
         if dead and time.time() - PLAN_LAST_TRY > 30:
-            if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
-                engine_label = PLAN_ENGINE_DFLASH2
-            elif PLAN_GPU and PLAN_SETTINGS["dspark"]:
-                engine_label = PLAN_ENGINE_DSPARK
-            else:
-                engine_label = PLAN_ENGINE
+            engine_label = _plan_engine_label()
             print(f"h3-chat: auto-starting planning LLM (port {PLAN_PORT}, engine: {engine_label})")
             PLAN_PROC = _spawn_plan_llm()
             PLAN_LAST_TRY = time.time()
@@ -400,6 +530,57 @@ def ensure_plan_llm(wait_seconds=120):
             return True
         time.sleep(2)
     return False
+
+
+def switch_plan_model(path, mmproj=None, gpu=None):
+    """Switch the planning LLM model at runtime (UI dropdown).
+
+    Stops any running planner (the resident CPU 4B or an on-demand GPU
+    planner) and re-points the launch config; the next plan message
+    auto-starts the new model on the right port. Returns (ok, error).
+    """
+    global PLAN_MODEL_PATH, PLAN_MMPROJ_PATH, PLAN_GPU, PLAN_PORT
+    global PLAN_URL_DEFAULT, PLAN_HAS_VISION, PLAN_PROC, PLAN_LAST_TRY
+    global PLAN_SERVER_BIN, PLAN_ENGINE
+    if not path or not os.path.isfile(path):
+        return False, "モデルファイルが見つかりません"
+    if mmproj and not os.path.isfile(mmproj):
+        mmproj = None
+    if not mmproj:
+        mmproj = _find_mmproj(os.path.dirname(path))
+    if gpu is None:
+        try:
+            gpu = os.path.getsize(path) > 6 * 1024 ** 3
+        except OSError:
+            gpu = False
+    with PLAN_START_LOCK:
+        if PLAN_PROC is not None and PLAN_PROC.poll() is None:
+            try:
+                PLAN_PROC.terminate()
+                PLAN_PROC.wait(timeout=10)
+            except Exception:
+                try:
+                    PLAN_PROC.kill()
+                except Exception:
+                    pass
+        PLAN_PROC = None
+        ChatHandler._kill_port(PLAN_PORT)
+        PLAN_MODEL_PATH = path
+        PLAN_MMPROJ_PATH = mmproj or ""
+        PLAN_GPU = bool(gpu)
+        PLAN_PORT = 8191 if PLAN_GPU else 8190
+        PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
+        ChatHandler._kill_port(PLAN_PORT)   # stale leftover on the new port
+        PLAN_HAS_VISION = bool(PLAN_MMPROJ_PATH)
+        # CPU<->GPU の切替で適切な llama-server も選び直す（env 指定が優先）。
+        # 例: CPU 起動後に GPU モデルへ切替 → TurboTan から AtomicBot FA へ。
+        if not os.environ.get("LLAMADOCK_PLAN_BIN"):
+            PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
+        PLAN_ENGINE = _plan_engine_label()
+        PLAN_LAST_TRY = 0.0
+    print(f"h3-chat: planning LLM switched to {os.path.basename(path)} "
+          f"({'GPU' if PLAN_GPU else 'CPU'}, port {PLAN_PORT}, bin: {PLAN_SERVER_BIN})")
+    return True, None
 
 # ComfyUI node ids in the super workflows
 NODE_PROMPT = "6"     # MiniMaxH3ImageToVideo: user prompt
@@ -1042,6 +1223,11 @@ HTML = """<!doctype html>
         <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
         <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
       </div>
+      <div class="advgroup" id="planmodelset">
+        <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
+        <label>モデル:<select id="p-model" onchange="selectPlanModel()" style="max-width:420px"></select></label>
+        <span id="p-model-status" class="hint"></span>
+      </div>
       <div class="advgroup" id="planparams">
         <span class="hint">企画 LLM パラメータ:</span>
         <label>KV キー:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
@@ -1118,6 +1304,7 @@ async function checkServer() {
 }
 setInterval(checkServer, 5000);
 checkServer();
+loadPlanModels();
 
 function ditValue() {
   const el = document.querySelector('input[name="dit"]:checked');
@@ -1164,6 +1351,54 @@ function sendPlanSettings() {
       dflash2: dflash2 ? dflash2.checked : false
     })
   }).catch(() => {});
+}
+
+// 企画 LLM モデル: 導入済み GGUF をサーバーから取得してドロップダウン表示。
+// 選ぶと実行中の企画 LLM が停止し、次のメッセージから新モデルで起動する。
+async function loadPlanModels() {
+  const sel = $("#p-model");
+  if (!sel) return;
+  try {
+    const r = await fetch("/api/plan-models");
+    const j = await r.json();
+    if (!r.ok) return;
+    sel.innerHTML = "";
+    (j.models || []).forEach(m => {
+      const o = document.createElement("option");
+      o.value = m.path;
+      o.dataset.mmproj = m.mmproj || "";
+      o.dataset.gpu = m.gpu ? "1" : "0";
+      o.textContent = m.label + "（" + m.size_gb + "GB・" + (m.gpu ? "GPU" : "CPU") + (m.vision ? "・視覚" : "") + "）";
+      if (j.current && m.path === j.current.path) o.selected = true;
+      sel.appendChild(o);
+    });
+    const st = $("#p-model-status");
+    if (st) {
+      if (j.external) st.textContent = "外部エンドポイント（--plan-url）が設定されています。";
+      else if (!j.current || !j.current.path) st.textContent = "⚠ 企画 LLM のモデルが見つかりません（LM Studio に GGUF を追加してください）";
+      else st.textContent = j.running ? "稼働中。切り替えると次回メッセージから反映。" : "停止中。次のメッセージで自動起動。";
+    }
+  } catch (e) {}
+}
+
+async function selectPlanModel() {
+  const sel = $("#p-model");
+  const o = sel.options[sel.selectedIndex];
+  if (!o) return;
+  const st = $("#p-model-status");
+  if (st) st.textContent = "切り替え中（稼働中の企画 LLM を停止します）…";
+  try {
+    const r = await fetch("/api/plan-model", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({path: o.value, mmproj: o.dataset.mmproj || null, gpu: o.dataset.gpu === "1"})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    if (st) st.textContent = j.note || "切り替えました。";
+  } catch (e) {
+    if (st) st.textContent = "切替エラー: " + e.message;
+  }
 }
 
 
@@ -1724,6 +1959,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"images": self._ref_images()})
         elif parsed.path == "/api/refimg":
             self._refimg(parsed.query)
+        elif parsed.path == "/api/plan-models":
+            self._plan_models()
         else:
             self._json(404, {"error": "not found"})
 
@@ -1741,6 +1978,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._cancel(parsed)
         elif parsed.path == "/api/plan-settings":
             self._plan_settings(parsed)
+        elif parsed.path == "/api/plan-model":
+            self._plan_model_select(parsed)
         elif parsed.path == "/api/shutdown":
             self._shutdown(parsed)
         else:
@@ -1813,6 +2052,44 @@ class ChatHandler(BaseHTTPRequestHandler):
             if PLAN_SETTINGS["dflash2"]:
                 PLAN_SETTINGS["dspark"] = False
         self._json(200, PLAN_SETTINGS)
+
+    def _plan_models(self):
+        """List installed planning-LLM candidates + the current selection."""
+        self._json(200, {
+            "current": {
+                "path": PLAN_MODEL_PATH, "mmproj": PLAN_MMPROJ_PATH,
+                "gpu": PLAN_GPU, "vision": PLAN_HAS_VISION, "port": PLAN_PORT,
+                "bin": PLAN_SERVER_BIN,
+            },
+            "running": _plan_alive(),
+            "external": bool(self.server.plan_url),
+            "models": scan_plan_models(),
+        })
+
+    def _plan_model_select(self, parsed):
+        """Switch the planning LLM model at runtime (UI dropdown)."""
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        ok, err = switch_plan_model(req.get("path"), req.get("mmproj"), req.get("gpu"))
+        if not ok:
+            self._json(400, {"error": err})
+            return
+        resp = {
+            "ok": True,
+            "current": {
+                "path": PLAN_MODEL_PATH, "mmproj": PLAN_MMPROJ_PATH,
+                "gpu": PLAN_GPU, "vision": PLAN_HAS_VISION, "port": PLAN_PORT,
+                "bin": PLAN_SERVER_BIN,
+            },
+            "note": "切り替えました。次のメッセージから新しいモデルで起動します。",
+        }
+        if self.server.plan_url:
+            resp["note"] = ("--plan-url の外部エンドポイントが優先されるため、"
+                            "この切替は h3-chat が企画 LLM を自前起動するときのみ有効です。")
+        self._json(200, resp)
 
     def _generate(self, parsed):
         try:

@@ -18,7 +18,7 @@
 # で渡される（select-model.ps1 の Start-H3Chat が設定）。
 
 param(
-    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Qwen3.8-27B-Heretic-Vision", "Custom", "Off")]
+    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Qwen3.5-A35B-GPU-Vision", "Custom", "Off")]
     [string]$PlanModel = "Qwen3.5",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -37,22 +37,25 @@ $planModels = @{
         Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
         Mmproj = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf"
     }
+    # GPU エントリは「今インストール済みのモデル」を指す。モデルを入れ替えた
+    # ときはここを更新するか、UI の企画 LLM モデル選択（/api/plan-models）か
+    # select-model.ps1 の自動検出（Custom）を使う。
     "Qwen3.8-27B-GPU" = @{
-        Label = "Qwen3.8-27B Abliterated 12GB-MTP (GPU・企画フェーズのみ・視覚あり・mmproj同梱)"
-        Path = "C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\soyaakinohara\qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf\mmproj-Q8_0.gguf"
+        Label = "Qwen3.8-27B Uncensored HauhauCS IQ3_M (GPU・企画フェーズのみ・視覚あり・11.9GB)"
+        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
         Gpu = $true
     }
     "Qwen3.8-27B-GPU-Vision" = @{
-        Label = "Qwen3.8-27B ULTIMATE-UNCENSORED (GPU・企画フェーズのみ・視覚あり・KV q8/q4)"
-        Path = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-16GB.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\lemonyins\Qwen3.8-27B-ULTIMATE-UNCENSORED-MTP-IQ4-GGUF-16GB\mmproj-BF16.gguf"
+        Label = "Qwen3.8-27B Uncensored HauhauCS IQ4_XS (GPU・企画フェーズのみ・視覚あり・14.6GB・高品質)"
+        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
         Gpu = $true
     }
-    "Qwen3.8-27B-Heretic-Vision" = @{
-        Label = "Qwen3.8-27B heretic-ara (GPU・企画フェーズのみ・視覚あり・i1-Q4_K_S)"
-        Path = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\Qwen3.8-27B-heretic-ara.i1-Q4_K_S.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\mradermacher\Qwen3.8-27B-heretic-ara-i1-GGUF\mmproj-Q8_0.gguf"
+    "Qwen3.5-A35B-GPU-Vision" = @{
+        Label = "Huihui-Qwen3.5-A35B-Ablit-Small TQ3_4S (GPU・企画フェーズのみ・視覚あり・12.4GB・MoE)"
+        Path = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\mmproj-Qwen35-A35B-f16.gguf"
         Gpu = $true
     }
 }
@@ -78,14 +81,17 @@ if ($PlanModel -eq "Custom") {
     }
 }
 
-# GPU planner（27B / Custom GPU）は 8191、CPU planner は 8190。
-if ($PlanModel -eq "Qwen3.8-27B-GPU" -or $PlanModel -eq "Qwen3.8-27B-GPU-Vision" -or $PlanModel -eq "Qwen3.8-27B-Heretic-Vision" -or ($PlanModel -eq "Custom" -and $planModels["Custom"] -and $planModels["Custom"].Gpu)) {
+# GPU planner（.Gpu フラグ付きエントリ / Custom GPU）は 8191、CPU planner は 8190。
+if ($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu) {
     $planPort = 8191
 }
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
 $planServer = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
+if (-not (Test-Path -LiteralPath $planServer)) {
+    $planServer = "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
+}
 if (-not (Test-Path -LiteralPath $planServer)) {
     $planServer = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
 }
@@ -202,7 +208,8 @@ if ($planGpu) {
         Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort, engine: $planGpuEngine)." -ForegroundColor Cyan
         $env:LLAMADOCK_PLAN_GPU = "1"
         # Pass the chosen model + mmproj to h3-chat.py so it launches THIS
-        # model (its hardcoded default is the soyaakinohara 12GB-MTP 27B).
+        # model (without the env vars h3-chat.py auto-selects from the
+        # installed GGUFs, but an explicit choice wins).
         $env:LLAMADOCK_PLAN_MODEL = $model.Path
         if ($model.Mmproj) { $env:LLAMADOCK_PLAN_MMPROJ = $model.Mmproj } else { $env:LLAMADOCK_PLAN_MMPROJ = "" }
         $skipPlanStart = $true

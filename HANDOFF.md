@@ -381,3 +381,31 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - select-model.ps1: LLAMADOCK_VISION=on でも mmproj がモデル横に無い場合は Yellow 警告を出して続行(サイレント無効化の解消)/ -Ubatch に 4096 上限クランプ+env 値 Trim(異常値で起動ごと落ちるのを防止)
 - tools/build-atomicbot-rocm71-fa.ps1: 冒頭コメントのファイル名を現名称に修正
 - 検証: npm test 15/15、node --check (app/launch-manager/server) OK、PS Parser 全ファイル OK
+
+### 2026-08-25 企画 LLM モデル選択式化（GPU 固定パスの解消）
+- 症状: 「企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）」
+- 根因: GPU プランナー既定が実在しないパス（C:\llama-tq3uild-rocm71in\llama-server.exe +
+  soyaakinohara 12GB gguf。モデル整理で .lmstudio\models から削除済み、build-rocm71 ツリー自体も
+  壊れビルドとして非推奨化済み）。h3-chat.ps1 / select-model.ps1 の known エントリも同様に消滅
+- tools/h3-chat.py:
+  - scan_plan_models() 追加: .lmstudio\models を走査して企画 LLM 候補を列挙
+    （select-model.ps1 の Get-PlanModelCandidates 同等規則: mmproj/-of-/DSpark/DFlash2 除外、
+    同ディレクトリ mmproj を自動ペアリング、13B 以上 or 6GB 超を GPU 判定）
+  - 既定モデルのハードコード廃止 → スキャンから自動選択（GPU: 視覚あり・15.5GB 以下・小さい順。
+    CPU: Qwen3.5-4B を優先、無ければ最小候補）。LLAMADOCK_PLAN_MODEL/MMPROJ env があれば優先
+    （mmproj 未指定ならモデル横から自動ペア）
+  - llama-server バイナリをフォールバックチェーン化: GPU = TurboTan(b10536) → AtomicBot FA →
+    旧 build-rocm71 / CPU = TurboTan → AtomicBot FA。TurboTan 先頭は実測根拠あり
+    （AtomicBot FA は 27B MTP モデルで 1.9 t/s しか出ず plan が 300s タイムアウト、
+    TurboTan は同一条件で 1m15s 完走 → GPU プランナー用途では FA ビルドを使わないこと）
+  - 新 API: GET /api/plan-models（候補一覧+現在选择+稼働状況）、POST /api/plan-model
+    （実行中 planner を停止してモデル/GPU・CPU/ポート/バイナリを実行時切替。
+    次メッセージから新モデルで自動起動。--plan-url 指定時は外部エンドポイント優先の注意書き付き）
+  - UI: 詳細設定パネルに「企画 LLM モデル」ドロップダウン追加（導入済み GGUF 一覧・
+    サイズ/GPU・CPU/視覚表示、切替状態表示）
+- h3-chat.ps1 / select-model.ps1: 消滅済み GPU エントリ（soyaakinohara/lemonyins/mradermacher/
+  finex666）を現行インストールへ更新。キー対応: Qwen3.8-27B-GPU=HauhauCS IQ3_M(11.9GB)、
+  Qwen3.8-27B-GPU-Vision=HauhauCS IQ4_XS(14.6GB)、新キー Qwen3.5-A35B-GPU-Vision=
+  YTan2000 Huihui-Qwen3.5-A35B TQ3_4S(12.4GB)。GPU 判定は名前列挙から .Gpu フラグ参照へ簡素化
+- 検証: py_compile OK / PS Parser OK / GET・POST API 実機テスト OK / GPU planner 実起動確認
+  （HauhauCS IQ3_M + TurboTan、port 8191、企画応答 1m15s）/ CPU へ戻す切替も確認済み
