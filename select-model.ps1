@@ -2304,9 +2304,9 @@ if (-not (Test-Path $ServerPath)) {
 $visionMmprojPath = Get-ChildItem -LiteralPath (Split-Path -Parent $selected.FullName) -Filter "mmproj*.gguf" -File -ErrorAction SilentlyContinue |
     Sort-Object Length -Descending | Select-Object -First 1
 $visionEnabled = $false
+$envVision = $env:LLAMADOCK_VISION
 if ($visionMmprojPath) {
     $mmprojSizeGB = [math]::Round($visionMmprojPath.Length / 1GB, 2)
-    $envVision = $env:LLAMADOCK_VISION
     if ($envVision -eq "on") {
         $visionEnabled = $true
         Write-Host "Vision: on (LLAMADOCK_VISION=on, $($visionMmprojPath.Name) $mmprojSizeGB GB)" -ForegroundColor Green
@@ -2326,6 +2326,11 @@ if ($visionMmprojPath) {
         } while (-not $visionValid)
         $visionEnabled = ($visionInput -eq "2")
     }
+}
+elseif ($envVision -eq "on") {
+    # LLAMADOCK_VISION=on was requested but this model ships no adapter next
+    # to it — say so instead of silently continuing text-only.
+    Write-Host "Vision: LLAMADOCK_VISION=on requested, but no mmproj*.gguf found next to '$($selected.Name)' — continuing text-only." -ForegroundColor Yellow
 }
 
 # Prompt context size selection
@@ -3270,8 +3275,15 @@ if ($visionEnabled -and $visionMmprojPath) {
 
 # Prefill micro-batch override (see param comment). VRAM headroom is tight on
 # 16 GB cards, so this stays opt-in; verify placement with the GPU probe.
-$envUbatch = if ($env:LLAMADOCK_UBATCH -match "^\d+$") { [int]$Matches[0] } else { 0 }
+$ubatchRaw = "$env:LLAMADOCK_UBATCH".Trim()
+$envUbatch = if ($ubatchRaw -match "^\d+$") { [int]$Matches[0] } else { 0 }
 $effectiveUbatch = if ($Ubatch -gt 0) { $Ubatch } elseif ($envUbatch -gt 0) { $envUbatch } else { 0 }
+if ($effectiveUbatch -gt 4096) {
+    # llama-server rejects absurd micro-batch values; clamp so an env/param
+    # typo cannot abort the whole launch.
+    Write-Host "Ubatch: clamping $effectiveUbatch -> 4096" -ForegroundColor Yellow
+    $effectiveUbatch = 4096
+}
 if ($effectiveUbatch -gt 0) {
     $args += @("-ub", "$effectiveUbatch")
 }

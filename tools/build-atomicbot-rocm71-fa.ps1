@@ -1,4 +1,4 @@
-# build-atomicbot-rocm71.ps1
+# build-atomicbot-rocm71-fa.ps1
 # Rebuilds the AtomicBot llama.cpp (C:\llama-tq3) HIP backend with FULL
 # FlashAttention support for RX 7800 XT (gfx1101 / RDNA3):
 #   - GGML_HIP_ROCWMMA_FATTN=ON  -> rocWMMA WMMA FA kernel (fixes f16/f16

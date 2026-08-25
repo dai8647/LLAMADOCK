@@ -117,7 +117,10 @@ async function waitForPortClosed(port, { timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      await jsonRequest(port, "GET", "/health", undefined, { timeoutMs: 800 });
+      // 2500ms per probe: an instance that is shutting down can still answer,
+      // just slowly. A short timeout mistook that slow reply for a free port,
+      // and the replacement spawn then raced the dying process for the bind.
+      await jsonRequest(port, "GET", "/health", undefined, { timeoutMs: 2500 });
       /* still answering — keep waiting */
     } catch {
       return true; // nothing listening

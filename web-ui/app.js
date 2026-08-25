@@ -547,6 +547,21 @@
     $("#m-toks").textContent = rt.metrics && rt.metrics.toks != null ? rt.metrics.toks.toFixed(1) : "—";
     $("#m-vram").textContent = rt.metrics && rt.metrics.vramGb != null ? `${rt.metrics.vramGb.toFixed(1)} GB` : "—";
     $("#m-ram").textContent = rt.metrics && rt.metrics.ramGb != null ? `${rt.metrics.ramGb.toFixed(1)} GB` : "—";
+    // GPU probe chip (post-launch offload sanity check): measured tok/s when
+    // the probe succeeded, 失敗 when it errored, — before it has run.
+    const gpuChip = $("#m-gpu");
+    if (gpuChip) {
+      gpuChip.textContent = !rt.gpuProbe
+        ? "—"
+        : rt.gpuProbe.ok
+          ? `${rt.gpuProbe.tokensPerSec.toFixed(1)} t/s`
+          : "失敗";
+      gpuChip.title = !rt.gpuProbe
+        ? "起動後のGPUオフロードプローブは未実行"
+        : rt.gpuProbe.ok
+          ? `プロープ ${rt.gpuProbe.tokens} tok / ${rt.gpuProbe.wallMs}ms — 8 t/s 未満はCPUフォールバック疑い`
+          : `プローブ失敗: ${rt.gpuProbe.error || "不明"}`;
+    }
 
     const logView = $("#log-view");
     if (rt.logTail && rt.logTail.length) {
