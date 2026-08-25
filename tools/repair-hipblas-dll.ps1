@@ -26,12 +26,17 @@ if ($Target) {
     $roots += $Target
 }
 else {
-    # Same candidate roots select-model.ps1 resolves engines from.
+    # Same candidate roots select-model.ps1 resolves engines from, including
+    # the home-dir HIP builds behind ExpertsLaguna/TurboTan (L126-137 there).
+    # (llama.cpp-vulkan is intentionally absent: Vulkan builds never load
+    # hipblas.dll. build-rocm71-deprecated is skipped on purpose too.)
     $roots = @(
         "C:\llama-tq3\build-rocm71-fa\bin",
+        "C:\llama-tq3\build-rocm71-ffn\bin",
+        "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-hip\bin",
+        "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin",
         "C:\Users\dai86\Downloads\llama-b10536-rocm",
-        "C:\llama-tq3-turbotan\build\bin",
-        "C:\llama.cpp-vulkan",
+        "C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin",
         "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin",
         "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin"
     ) | Where-Object { Test-Path $_ }

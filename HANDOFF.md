@@ -373,3 +373,11 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 1. er_sde + 7step シグマ vs 現行 Euler/Beta の A/B（turbo_short_audio で同一シード比較）
 2. lightx2v Ref2V dynamic-rank LoRA 単体 vs V4+Kijai ref スタック比較（r2v_short）
 3. ComfyUI コア更新後、主要ワークフローの API プロンプト投入検証
+
+### 2026-08-24 レビュー指摘修正
+- repair-hipblas-dll.ps1: ルート刷新 — ExpertsLaguna/TurboQuant HIP ビルド(C:\Users\dai86\llama-cpp-turboquant[-experts-laguna]\build-hip\bin)を追加。実体のない C:\llama-tq3-turbotan と hipblas 不要の C:\llama.cpp-vulkan を削除、C:\llama-tq3\build-rocm71-ffn\bin を追加(vulkan/deprecated は意図的除外をコメント明記)
+- launch-manager.js: waitForPortClosed の個別ヘルスプローブタイムアウト 800ms→2500ms。終了処理中で応答が遅い旧インスタンスを「ポート解放済み」と誤判定して新spawnがバインド競合するレースを防止
+- web-ui: GPU オフロードプロープ結果をメトリクスチップ m-gpu で常時表示(index.html 4つ目の metric / style.css repeat(4,1fr) / app.js 描画+ツールチップ、ok=false は「失敗」表示)
+- select-model.ps1: LLAMADOCK_VISION=on でも mmproj がモデル横に無い場合は Yellow 警告を出して続行(サイレント無効化の解消)/ -Ubatch に 4096 上限クランプ+env 値 Trim(異常値で起動ごと落ちるのを防止)
+- tools/build-atomicbot-rocm71-fa.ps1: 冒頭コメントのファイル名を現名称に修正
+- 検証: npm test 15/15、node --check (app/launch-manager/server) OK、PS Parser 全ファイル OK
