@@ -807,6 +807,9 @@ PLAN_SYSTEM = (
     "後半の overall_soundscape / non_diegetic_music が途切れないようにする。"
     "例: [FINAL_PROMPT]integrated_multimodal_description: [Shot 1] Live-action, cinematic, a young woman with a soft, low voice (S1) lies on the bed, the camera slowly dollies in, she whispers: <d>[Japanese] もう少しだけ、そばにいて。</d>\noverall_soundscape: Faint night rain against the window, the rustle of sheets, quiet breathing.\nnon_diegetic_music: Soft piano at a slow tempo, fading in and out.[/FINAL_PROMPT]\n"
     "[AUDIO_SET] voice: 20代女性、柔らかく低い声、ゆっくり / dialogue: (S1) もう少しだけ、そばにいて。 / sfx: 窓を打つ小雨、シーツの擦れる音、静かな呼吸 / music: ゆったりしたピアノ [/AUDIO_SET]"
+    "【日本語説明・必須】[FINAL_PROMPT] を出したら、必ずその直後に [FINAL_PROMPT_JA] と [/FINAL_PROMPT_JA] で、"
+    "そのプロンプトから実際に生成される映像の内容を日本語でわかりやすく説明する（被写体・動き・カメラワーク・雰囲気・セリフの要旨を2〜4文で）。"
+    "英語プロンプトの直訳ではなく、ユーザーがどんな映像になるか一目でイメージできる説明にすること。[FINAL_PROMPT_JA] は [FINAL_PROMPT] と必ず対で出す。"
     "セリフ表記: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、発話は <d>[Japanese] 原文</d> に入れる"
     "（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
     "タグは必ず1組だけ。開いたら必ず閉じタグ（[/IMG_PROMPT] / [/FINAL_PROMPT]）まで書き切る。タグ以外の補足説明は不要。"
@@ -946,6 +949,10 @@ def _looks_like_final(text):
     return any(k in low for k in VIDEO_KEYWORDS)
 
 FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)(?:\[/FINAL_PROMPT\]|</FINAL_PROMPT>)", re.S)
+
+# ユーザーが「どんな動画になるか」を日本語で確認できるように、[FINAL_PROMPT] と
+# 対で出力させる日本語説明ブロック（直訳でなく映像の内容説明）。
+FINAL_JA_RE = re.compile(r"\[FINAL_PROMPT_JA\](.*?)(?:\[/FINAL_PROMPT_JA\]|</FINAL_PROMPT_JA>)", re.S)
 
 # Structured audio/dialogue proposal the planning LLM may append outside the
 # [FINAL_PROMPT] block (voice / dialogue / sfx / music), so the UI can
@@ -1130,6 +1137,12 @@ HTML = """<!doctype html>
   button.warn { background:var(--err); }
   .genplan { display:block; margin-top:10px; background:var(--ok); color:#0b2b1c; }
   .hint { color:var(--muted); font-size:11px; }
+
+  /* 動画プロンプトの日本語説明（何が生成されるか一目でわかるように） */
+  .promptja { margin:8px 0; border:1px solid var(--accent); border-radius:8px;
+          padding:8px 10px; background:rgba(56,189,248,0.06); }
+  .promptja .meta { margin-bottom:4px; }
+  .promptja .ja-body { white-space:pre-wrap; word-break:break-word; font-size:13px; line-height:1.6; }
 
   /* thinking trace */
   details.thinkbox { margin:6px 0; border:1px solid var(--line); border-radius:8px;
@@ -1582,10 +1595,12 @@ async function plan(text, refStart) {
       // characters that would break the inline-JSON escaping.
       lastFinalPrompt = j.final_prompt;
       planStage = "video";
-      // 生成される内容をユーザーが事前に確認できるよう、最終プロンプトを
-      // 折りたたみで必ず提示する（「LLMが考えるのはいいが何が出るか
-      // わからない」問題の対策）。
-      html += '<details class="thinkbox"><summary>📝 LLMが考えた動画プロンプト（クリックで確認）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.final_prompt) + '</pre></details>';
+      // どんな映像になるか日本語で必ず示す（英語プロンプトだけだと内容が分からない
+      // 問題の対策）。日本語説明を主表示し、英語原文は折りたたみに格納する。
+      if (j.final_prompt_ja) {
+        html += '<div class="promptja"><div class="meta">🎬 こんな映像になります</div><div class="ja-body">' + esc(j.final_prompt_ja) + "</div></div>";
+      }
+      html += '<details class="thinkbox"><summary>📝 英語プロンプト（原文・クリックで表示）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.final_prompt) + '</pre></details>';
       html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
     } else if (planStage === "video") {
       // 動画内容の相談中（参照モード開始直後など）。進め方を案内する。
@@ -1671,6 +1686,7 @@ async function pollImage(id, bot) {
         grid +
         '<div class="row">' +
         '<button class="ok" onclick="confirmImage()">✅ この画像で確定 → 動画を相談</button>' +
+        '<button class="rev" onclick="genImage()">🎲 同じプロンプトで引き直す</button>' +
         '<button class="rev" onclick="reviseImage()">🔁 修正する</button>' +
         "</div>";
       planStage = "image";
@@ -1730,6 +1746,10 @@ function confirmImage() {
       if (j.final_prompt) {
         lastFinalPrompt = j.final_prompt;
         planStage = "video";
+        if (j.final_prompt_ja) {
+          html += '<div class="promptja"><div class="meta">🎬 こんな映像になります</div><div class="ja-body">' + esc(j.final_prompt_ja) + "</div></div>";
+        }
+        html += '<details class="thinkbox"><summary>📝 英語プロンプト（原文・クリックで表示）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.final_prompt) + '</pre></details>';
         html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
       } else {
         planStage = "video";
@@ -2375,15 +2395,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
-            reply, img_prompt, final_prompt, audio, thinking = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
+            reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
         if final_prompt and not reply:
-            reply = "動画プロンプトがまとまりました。下のボタンで生成できます。\n\n" + final_prompt
+            reply = "動画プロンプトがまとまりました。下のボタンで生成できます。"
         if img_prompt and not reply:
             reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
-        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "audio": audio, "thinking": thinking})
+        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "final_prompt_ja": final_prompt_ja, "audio": audio, "thinking": thinking})
 
     def _plan_reset(self):
         global PLAN_HISTORY
@@ -2602,6 +2622,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
             img_prompt = None
             final_prompt = None
+            final_prompt_ja = None
             if stage == "video":
                 final_prompt = _best_tag_match(FINAL_RE, reply)
                 if not final_prompt:
@@ -2631,6 +2652,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                 img_prompt = _strip_gen_params(img_prompt)
             if final_prompt:
                 final_prompt = _strip_gen_params(final_prompt)
+            # 動画プロンプトの日本語説明（[FINAL_PROMPT_JA]、[FINAL_PROMPT] と対）を
+            # 取り出し、英語ブロックごと reply から除く（チャット泡に生のタグ・英語を
+            # 残さず、UI 側で「こんな映像になります」+ 折りたたみ英語原文として表示）。
+            if stage == "video" and final_prompt:
+                final_prompt_ja = _best_tag_match(FINAL_JA_RE, reply)
+                if final_prompt_ja:
+                    reply = FINAL_JA_RE.sub("", reply)
+                reply = FINAL_RE.sub("", reply)
+                reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
             if img_prompt:
                 with SESSION_LOCK:
                     SESSION["image_prompt"] = img_prompt
@@ -2641,7 +2671,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             # messages have context (a tool-call reply becomes its prompt text)
             history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
-            return reply, img_prompt, final_prompt, audio, thinking
+            return reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja
 
     # ---- R2V reference image ----------------------------------------
 
