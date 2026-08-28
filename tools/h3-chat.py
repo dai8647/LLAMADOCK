@@ -93,7 +93,6 @@ ZIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_zimage.json")
 NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
 NODE_ZIMG_SEED = "8"     # KSampler: seed
-NODE_ZIMG_SAVE = "10"    # SaveImage: output filename
 
 # Qwen-Image 2512 (key-image, high quality): GGUF Q4_K_S + Lightning 4step +
 # tumblrasia NSFW LoRA. batch_size=4 so the UI can pick the best candidate.
@@ -122,19 +121,26 @@ IMG_ENGINES = {
 
 # R2V (reference-to-video) workflows: 確定したキー画像を参照画像にして同一キャラを維持する。
 # MiniMaxH3ReferenceToVideo ノード + 参照 LoRA（minimax_h3_ref_lora_rank_256_bf16）を
-# fl2va モデルに重ねる構成（ref2va モデル不要）。lite は 32B エンコーダ版にフォールバック。
+# fl2va モデルに重ねる構成（ref2va モデル不要）。
 # quicklite は 4B エンコーダ + ClipProj 射影（mmh3-4b-ClipProj-celeb-mlp）で 32B を代替し、約 1/3 の時間に。
 # 4B を生で渡すと次元不一致（30720 vs 5120）で失敗するため ClipProjApply が必須。
+# lite も r2v_4b（4B エンコーダ + ClipProj のフル尺版）を使う。以前は high と
+# 同一ファイル（32B エンコーダ版）を指していて、「軽量」なのに VRAM も所要時間も
+# high と全く同じという偽の選択肢になっていた。
 R2V_WORKFLOWS = {
     "high": os.path.join(REPO, "h3_workflow_r2v.json"),
     "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
-    "lite": os.path.join(REPO, "h3_workflow_r2v.json"),
+    "lite": os.path.join(REPO, "h3_workflow_r2v_4b.json"),
     "quicklite": os.path.join(REPO, "h3_workflow_r2v_short_4b.json"),
     "fast": os.path.join(REPO, "h3_workflow_r2v_fast.json"),
     "fast_quick": os.path.join(REPO, "h3_workflow_r2v_fast_short.json"),
 }
 NODE_R2V_IMAGE = "16"    # LoadImage: 参照画像（ComfyUI input/ にコピーしたファイル名を設定）
 NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
+# I2V（first/last フレーム固定）: 通常ワークフローの MiniMaxH3ImageToVideo
+# （ノード "6"）に LoadImage を追加で配線する。ノード ID "20" は全動画
+# ワークフローの既存 ID（最大 17）と衝突しない専用 ID。
+NODE_I2V_FRAME_IMAGE = "20"
 # R2V はプロンプト内の <Picture N> タグで参照画像を指定する。企画 LLM が
 # タグを知らないので、生成時にタグの意味を追記して確実に同一キャラ指定にする。
 R2V_TAG_NOTE = (
@@ -612,7 +618,6 @@ def switch_plan_model(path, mmproj=None, gpu=None):
 # ComfyUI node ids in the super workflows
 NODE_PROMPT = "6"     # MiniMaxH3ImageToVideo: user prompt
 NODE_SEED = "7"       # KSampler: seed
-NODE_SAVE = "10"      # SaveVideo: output filename
 
 # Per-session plan state (single-user local UI): image -> video pipeline.
 SESSION = {
@@ -1243,7 +1248,14 @@ HTML = """<!doctype html>
   </div>
   <div class="ft-toggles">
     <label class="plan"><input type="checkbox" id="planmode"> ✎ 企画モード</label>
-    <label class="plan"><input type="checkbox" id="refmode"> 🔗 参照モード（R2V）</label>
+    <label class="plan" title="ON のとき、確定したキー画像／選んだ参照画像を使って生成します（使い方は右で選択）"><input type="checkbox" id="refmode"> 🖼 画像モード</label>
+    <label class="plan" title="📌 先頭フレーム固定 (I2V): 動画がこの画像から始まる／🏁 最終フレーム固定: 動画がこの画像で終わる／🎭 参照 (R2V): フレームは固定せず同一キャラだけ維持"><span class="hint">画像の使い方:</span>
+      <select id="imguse">
+        <option value="first" selected>📌 先頭フレーム固定（I2V）</option>
+        <option value="last">🏁 最終フレーム固定</option>
+        <option value="ref">🎭 参照・キャラ維持（R2V）</option>
+      </select>
+    </label>
     <div id="refpick">
       <button type="button" onclick="pickRefImage()">🗂 参照画像を選ぶ</button>
       <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
@@ -1498,6 +1510,9 @@ async function pickRefImage() {
         curImageFilename = img.path;
         // 新しい参照画像を選んだ＝新しい企画の始まりなので、相談フラグをリセット
         refConsultActive = false;
+        // 🗂 からの選択は「このキャラを使って動画を作りたい」意味なので、
+        // 既定の使い方は参照（R2V）。先頭フレーム固定にしたければ UI で切替可。
+        $("#imguse").value = "ref";
         $("#ref-sel").textContent = img.name + "（" + img.dir + "）";
         const clr = $("#ref-clear");
         if (clr) clr.style.display = "inline-block";
@@ -1549,8 +1564,8 @@ async function send() {
     return;
   }
   if ($("#refmode").checked) {
-    // 参照モードは「どんな動画にするか」を決めずに長時間の生成を始めない。
-    // 企画 LLM に参照画像を見せながら内容を相談し、[FINAL_PROMPT] を
+    // 画像モードは「どんな動画にするか」を決めずに長時間の生成を始めない。
+    // 企画 LLM に画像を見せながら内容を相談し、[FINAL_PROMPT] を
     // ユーザーが確認してから生成する（企画モードと同じ確認フロー）。
     planStage = "video";
     const first = !refConsultActive;
@@ -1567,9 +1582,10 @@ async function send() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        // 選んだ画像は常に参照される（参照モード checkbox が OFF でも自動有効）。
+        // 選んだ画像は常に参照される（画像モード checkbox が OFF でも自動有効）。
         // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
         ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
+        image_use: $("#imguse").value,
         audio: audioSpec(), length: lenValue()
       })
     });
@@ -1749,6 +1765,9 @@ function confirmImage() {
     addMsg("bot", '<div class="meta">⚠ 確定する画像がありません。画像を生成してから選んでください。</div>');
     return;
   }
+  // 企画モードで確定したキー画像は「動画の1フレーム目」約束なので、
+  // 既定の使い方を先頭フレーム固定 (I2V) にする（参照にしたければ UI で切替可）。
+  $("#imguse").value = "first";
   setBusy(true);
   const bot = addMsg("bot", '<div class="meta">企画 LLM と動画の内容を相談中…（Z-Image はアンロード済み）</div>');
   (async () => {
@@ -1819,6 +1838,15 @@ function useManualPrompt(btn) {
   genPlanLast();
 }
 
+function imageUseTag() {
+  // 生成開始メッセージに「画像がどう使われるか」を明示する。
+  // 「いつの間にか別の使い方で生成されていた」を防ぐための表示。
+  const use = $("#imguse").value;
+  if (use === "first") return "📌 先頭フレーム固定で生成する: ";
+  if (use === "last") return "🏁 最終フレーム固定で生成する: ";
+  return "🎭 参照モード（R2V）で生成する: ";
+}
+
 function genPlanLast() {
   // 無言で return すると「ボタンが動かない」ように見える。必ず理由を表示する。
   if (busy) {
@@ -1830,12 +1858,15 @@ function genPlanLast() {
     return;
   }
   const finalPrompt = lastFinalPrompt;
-  lastFinalPrompt = null;
+  // lastFinalPrompt は消さない: 生成が失敗・キャンセルされたとき、同じボタンで
+  // そのままやり直せる必要がある（以前はここで null にしていて、失敗すると
+  // 「プロンプトがありません」になり企画の再相談を強要していた。genImage が
+  // lastImgPrompt を保持するのと同じ挙動に揃える）。
   setBusy(true);
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  // キー画像（curImageFilename）がある場合は checkbox に関係なく参照モード
+  // キー画像（curImageFilename）がある場合は checkbox に関係なく画像モード
   const useRef = $("#refmode").checked || !!curImageFilename;
-  const tag = useRef ? "🔗 参照モードで生成する: " : "✅ この企画で生成する: ";
+  const tag = useRef ? imageUseTag() : "✅ この企画で生成する: ";
   addMsg("user", tag + finalPrompt);
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   doGenerate(mode, finalPrompt, bot);
@@ -1849,9 +1880,10 @@ async function doGenerate(mode, text, bot) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         mode: mode, text: text, dit: ditValue(),
-        // 選んだ画像は常に参照される（参照モード checkbox が OFF でも自動有効）。
+        // 選んだ画像は常に参照される（画像モード checkbox が OFF でも自動有効）。
         // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
         ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
+        image_use: $("#imguse").value,
         audio: audioSpec(), length: lenValue()
       })
     });
@@ -1885,7 +1917,7 @@ async function poll(id, bot) {
         '<div class="path">' + esc(v.path) + "</div>";
       curJobId = null;
       setBusy(false);
-      startShutdown(90);
+      startShutdown();
       return;
     }
     if (j.status === "error") {
@@ -1950,7 +1982,7 @@ async function cancelCurrent() {
   addMsg("bot", '<div class="meta">キャンセルしました。</div>');
 }
 
-function startShutdown(seconds) {
+function startShutdown() {
   // 生成完了後の停止は「選択式」: 自動カウントダウンで勝手に落とさない。
   // 続きの動画や別の参照画像で連続制作したいケースが多いため、ユーザーが
   // ボタンを選ぶまで ComfyUI / 企画 LLM は生かしたままにする。
@@ -2023,11 +2055,20 @@ async function resetPlan() {
   // 自動停止カウントダウンが残っていれば解除する
   if (shutdownTimer) { clearInterval(shutdownTimer); shutdownTimer = null; }
   $("#shutdown-box").style.display = "none";
-  fetch("/api/plan", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({text: "__RESET__"})
-  });
+  // サーバー側のリセット（PLAN_HISTORY・上書き状態の消去）を待ってから画面を
+  // 切り替える。以前は fire-and-forget で、リクエストが失敗しても気づかず
+  // サーバーに古い企画状態が残ったまま次の企画が始まっていた。
+  try {
+    const r = await fetch("/api/plan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text: "__RESET__"})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  } catch (e) {
+    addMsg("bot", '<div class="meta">⚠ サーバー側のリセットに失敗しました（' + esc(String(e.message || e)) + '）。企画 LLM に古い会話が残っている可能性があります。もう一度「🔄 新しい企画」を押してください。</div>');
+  }
   lastImgPrompt = null;
   lastFinalPrompt = null;
   planStage = "chat";
@@ -2260,12 +2301,19 @@ class ChatHandler(BaseHTTPRequestHandler):
         text = (req.get("text") or "").strip()
         ref = req.get("ref") is True
         image_fn = req.get("image") or None
+        # 画像の使い方: "first" = 先頭フレーム固定 (I2V)、"last" = 最終フレーム固定、
+        # "ref" = 参照画像（R2V・同一キャラ維持）。旧クライアントは送らないので
+        # その場合は従来どおり R2V になる。
+        image_use = req.get("image_use") or "ref"
+        if image_use not in ("first", "last", "ref"):
+            self._json(400, {"error": "unknown image_use: " + str(image_use)})
+            return
         # 画像が選択されているのに参照モード OFF のままでは、その画像は完全に
         # 無視され、テキストだけの無関係な動画が生成されていた（「女の子の
         # 参照画像を入れたのに車の動画になった」の根本原因）。ここで明示的に
         # 弾いて、ユーザーに選択を促す。
         if image_fn and not ref:
-            self._json(400, {"error": "画像が選択されていますが「参照モード」が OFF です。選んだ画像を使うには ☑ 参照モード を ON にしてください（OFF のままでは画像は無視されます）。"})
+            self._json(400, {"error": "画像が選択されていますが「画像モード」が OFF です。選んだ画像を使うには ☑ 画像モード を ON にしてください（OFF のままでは画像は無視されます）。"})
             return
         audio = req.get("audio") or {}
         if mode not in WORKFLOWS or eff_mode not in WORKFLOWS:
@@ -2280,23 +2328,51 @@ class ChatHandler(BaseHTTPRequestHandler):
         # UI の音声・セリフ設定をプロンプトにマージ
         text += _audio_block(audio)
         if ref:
-            # 参照モード: 確定したキー画像を参照画像（<Picture 1>）として使う R2V 生成
+            # 画像を使った生成。image_use で 2 系統に分かれる:
+            #  - first/last (I2V): 通常ワークフローの MiniMaxH3ImageToVideo に
+            #    LoadImage を配線し、画像を動画の先頭/最終フレームとして固定する。
+            #    「キー画像が動画の1フレーム目になる」という UI の約束はこちらで
+            #    初めて実際に果たされる（R2V は同一キャラ参照だけでフレームは
+            #    固定されない）。
+            #  - ref (R2V): 確定したキー画像を参照画像（<Picture 1>）として使い、
+            #    同一キャラを保つ。構図は自由。
             if not image_fn:
                 self._json(400, {"error": "参照画像がありません（先に企画モードでキー画像を確定してください）"})
                 return
-            try:
-                with open(R2V_WORKFLOWS[eff_mode], encoding="utf-8") as f:
-                    wf = json.load(f)["prompt"]
-            except Exception as e:
-                self._json(500, {"error": f"R2V ワークフロー読み込み失敗: {e}"})
-                return
-            try:
-                ref_name = self._stage_ref_image(image_fn)
-            except Exception as e:
-                self._json(400, {"error": str(e)})
-                return
-            wf[NODE_R2V_IMAGE]["inputs"]["image"] = ref_name
-            wf[NODE_R2V_PROMPT]["inputs"]["prompt"] = text + R2V_TAG_NOTE
+            if image_use in ("first", "last"):
+                try:
+                    with open(WORKFLOWS[eff_mode], encoding="utf-8") as f:
+                        wf = json.load(f)["prompt"]
+                except Exception as e:
+                    self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
+                    return
+                try:
+                    ref_name = self._stage_ref_image(image_fn)
+                except Exception as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                wf[NODE_I2V_FRAME_IMAGE] = {
+                    "class_type": "LoadImage",
+                    "inputs": {"image": ref_name},
+                    "_meta": {"title": "Load Key Frame"},
+                }
+                wf[NODE_PROMPT]["inputs"]["prompt"] = text
+                frame_in = "first_frame" if image_use == "first" else "last_frame"
+                wf[NODE_PROMPT]["inputs"][frame_in] = [NODE_I2V_FRAME_IMAGE, 0]
+            else:
+                try:
+                    with open(R2V_WORKFLOWS[eff_mode], encoding="utf-8") as f:
+                        wf = json.load(f)["prompt"]
+                except Exception as e:
+                    self._json(500, {"error": f"R2V ワークフロー読み込み失敗: {e}"})
+                    return
+                try:
+                    ref_name = self._stage_ref_image(image_fn)
+                except Exception as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                wf[NODE_R2V_IMAGE]["inputs"]["image"] = ref_name
+                wf[NODE_R2V_PROMPT]["inputs"]["prompt"] = text + R2V_TAG_NOTE
         else:
             try:
                 with open(WORKFLOWS[eff_mode], encoding="utf-8") as f:
@@ -2366,7 +2442,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             pid = json.loads(raw)["prompt_id"]
-            self.server.job_meta[pid] = {"mode": eff_mode, "start": time.time(), "kind": "video"}
+            self.server.job_meta[pid] = {
+                "mode": eff_mode, "start": time.time(), "kind": "video",
+                "image_use": image_use if ref else "",
+            }
             self._json(200, {"prompt_id": pid, "eff_mode": eff_mode, "override_label": override_label})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
@@ -2544,7 +2623,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             with SESSION_LOCK:
                 ip = SESSION.get("image_prompt") or ""
             user_text = (
-                "キー画像を確定しました。添付した画像（または以下の画像プロンプト）が動画の1フレーム目になります。\n"
+                "キー画像を確定しました。添付した画像（または以下の画像プロンプト）は"
+                "動画の1フレーム目として固定されて生成されます（先頭フレーム固定モード）。\n"
                 "ここからは【第2段階: 動画の相談】です。いきなり [FINAL_PROMPT] は作らず、"
                 "まずこの画像をどんな動画にするか（動き・カメラワーク・長さ・セリフ・音楽など）を"
                 "1〜2個の質問でユーザーと相談してください。\n"
@@ -2939,7 +3019,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                                 "filename": fn,
                                 "type": item.get("type", "output"),
                                 "subfolder": item.get("subfolder", ""),
-                                "kind": "image" if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) else "video",
+                                "kind": "image" if fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")) else "video",
                                 "path": abspath,
                             })
         # 実測時間を記録して次回の残り時間表示（ETA）に使う
@@ -2979,6 +3059,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             ctype = "image/jpeg"
         elif low.endswith(".webp"):
             ctype = "image/webp"
+        elif low.endswith(".gif"):
+            ctype = "image/gif"
         else:
             ctype = "application/octet-stream"
         url = self.server.comfy_base + "/view?" + urllib.parse.urlencode({
