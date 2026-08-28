@@ -102,12 +102,14 @@ IMG_ENGINES = {
         "prompt": NODE_ZIMG_PROMPT, "latent": NODE_ZIMG_LATENT, "seed": NODE_ZIMG_SEED,
         "default_size": (512, 320),
         "label": "Z-Image Turbo",
+        "batch_size": 1,
     },
     "qimg": {
         "workflow": QIMG_WORKFLOW,
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
         "label": "Qwen-Image 2512",
+        "batch_size": 4,
     },
 }
 
@@ -1926,6 +1928,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         data = text.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        # UI はサーバー内蔵の生 JS なので、ブラウザに古い版をキャッシュさせない
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -2598,6 +2602,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[eng["prompt"]]["inputs"]["text"] = text
         wf[eng["latent"]]["inputs"]["width"] = width
         wf[eng["latent"]]["inputs"]["height"] = height
+        wf[eng["latent"]]["inputs"]["batch_size"] = eng.get("batch_size", 1)
         wf[eng["seed"]]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
         # gpu27b planner: free its VRAM before the image model loads.
