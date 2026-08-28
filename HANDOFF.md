@@ -767,3 +767,64 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   ポインタ）。
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
 
+
+## 2026-08-28 動画の続きもの・アップスケール・結合（Phase 3）
+
+「一度作った動画の続き」と「アップスケーリング」を実装。システム ffmpeg は
+不要（h3-chat の python に入った PyAV 17.0.0 が FFmpeg ライブラリを内蔵）。
+
+- 続きを作る（動画完成メッセージの「▶ この動画の続きを作る」ボタン）:
+  - POST /api/extend {filename} → 完成動画の最後の1フレームを PNG で
+    ComfyUI input/ に抜き出し（_extract_last_frame / PyAV）、ファイル名を返す。
+    抜き出し画像は local_files に登録されるため、後続の /api/plan（企画 LLM の
+    視覚入力）と /api/generate（_stage_ref_image）が裸のファイル名で解決できる。
+  - クライアントは抜き出し画像を参照画像（先頭フレーム固定 I2V）としてセットし、
+    企画モード ON・planStage="video" にして「続きの内容」を企画 LLM と相談 →
+    [FINAL_PROMPT] → 生成。前作の最終フレームが新作の1フレーム目になるので
+    絵が自然につながる。
+  - セグメント連鎖: extendFrom（生成中の続きの元動画）と segmentChain
+    （順序付きファイル名リスト）をクライアントが保持。続きセグメントが完成
+    するたびに連鎖が伸び、2本以上で「🔗 N本の動画を1本に結合」ボタンが出る。
+    連鎖は uiSnapshot/セッション保存に含まれ、復元時も維持される。
+- 結合: POST /api/concat {files:[2..20]} → _concat_videos が PyAV でデコード →
+  h264 24fps・音声 aac で1本の mp4 に再エンコード（ComfyUI output/ に保存、
+  local_files 登録済みなので /api/view で即再生可）。解像度が混在する場合は
+  400（「同じモードで生成した動画を結合してください」）。
+- アップスケール（「🔍 アップスケール（2倍）」ボタン）:
+  - POST /api/upscale {filename, scale:2|4} → 動画を ComfyUI input/ に
+    ステージング（LoadVideo は input/ しか読めない）→ h3_workflow_upscale.json
+    （LoadVideo→GetVideoComponents→UpscaleModelLoader(RealESRGAN_x4plus)→
+    ImageUpscaleWithModel(タイル式で16GB安全)→ImageScale(目標サイズ=元×scale)→
+    CreateVideo(元音声を再mux)→SaveVideo(h264 crf18)）を ComfyUI に投入。
+    job_meta mode="upscale"（ETA 目安 180 秒）。
+  - 完成時は「アップスケール完了 ✅」表示。続き/アップスケールボタンは出さず、
+    停止ボックスも出さない（連続作業の邪魔をしない）。
+  - モデル: RealESRGAN_x4plus.pth (64MB) を ComfyUI models/upscale_models/ に
+    ダウンロード済み（リポジトリ外）。無い場合は 503 で案内。
+- セキュリティ: /api/extend・/api/concat・/api/upscale は全て
+  _resolve_output_file 経由（ComfyUI output/ 内の実在ファイルだけ許可、
+  パス区切り・..・先頭ドット・null バイト・200字超・非文字列を拒否）。
+- 検証: py_compile / node --check（Python 文字列パース後の JS を抽出して検査。
+  テンプレートは通常文字列なので onclick の引用符は &quot; エンティティ方式）/
+  クライアントハーネス [20]-[24] 追加で 97/97 PASS / サーバー単体テスト 18/18
+  （最終フレーム抜き出しの色検証・結合のフレーム数合計・解像度混在拒否・
+  パストラバーサル防御 8 パターン）。
+- 反映には h3-chat 再起動が必要（ユーザーが GPU 使用中のため再起動せず）。
+
+### 同日の緊急対応（再起動が必須な理由）
+
+- 未成年コンテンツのジョブ停止: 実行中だったジョブ（参照画像 = 小学生の
+  性的コンテンツ）を ComfyUI POST /interrupt で強制停止し、関連するキー画像・
+  ステージング画像を削除した（出力動画は生成されていなかった）。
+  ※ /queue の delete は実行中ジョブを止めない。止めるのは /interrupt。
+  確定判定の未成年ガード（befcfb9）はコミット済みだが、再起動するまで
+  稼働プロセスには反映されない。
+- 「軽量モード5秒でも1時間以上かかって25%」の診断:
+  - 稼働中の h3-chat は古いプロセスで、「軽量R2V = 32B ファイル」だった
+    フェイク選択肢バグ（fbc4618 で修正済み・未デプロイ）を抱えていたため、
+    実際には最重量設定（32B CLIP + 1344x768 + 124フレーム）で走っていた。
+  - 124フレーム（5秒）は48フレーム（2秒）に対して注意機構が超線形に重い。
+  - LM Studio が同時刻に GPU を占有しており VRAM/計算の奪い合い。
+  - 対策: h3-chat を再起動すれば真の軽量R2V(4B)が効く。長い動画は「2秒
+    セグメント + 今回の続きもの機能」で繋ぐ方が速い。LM Studio 稼働中の
+    生成は避ける。
