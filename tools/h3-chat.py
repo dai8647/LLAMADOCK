@@ -66,7 +66,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -170,6 +170,114 @@ def _r2v_tag_note(n_pictures):
         "appearing subject's face, hairstyle, outfit and appearance "
         "consistent with the corresponding picture in every frame."
     )
+
+# ---- 動画の続き（延長）/ アップスケール / 結合 -------------------------
+# 続きもの: 完成動画の最後の1フレームを PyAV で抜き出し、次の生成の
+# first_frame（I2V）にすることで前作から自然に続く動画を作る。
+# アップスケール: ComfyUI の LoadVideo→GetVideoComponents→RealESRGAN x4→
+# ImageScale（2x/4x 目標サイズ）→CreateVideo（元音声を再mux）→SaveVideo。
+# 結合: 複数セグメントを PyAV でデコード→1本の mp4 に再エンコード。
+# いずれもシステム ffmpeg 不要（PyAV が FFmpeg ライブラリを内蔵）。
+UPSCALE_WORKFLOW = os.path.join(REPO, "h3_workflow_upscale.json")
+UPSCALE_MODEL_NAME = "RealESRGAN_x4plus.pth"
+NODE_UP_LOADVIDEO = "1"    # LoadVideo: file（ComfyUI input/ 内の動画）
+NODE_UP_SCALE = "5"        # ImageScale: 目標サイズ（2x/4x）
+
+
+def _comfy_root():
+    return os.environ.get("LLAMADOCK_COMFY_ROOT", r"C:\Users\dai86\Documents\ComfyUI")
+
+
+def _extract_last_frame(video_path):
+    """動画の最後の1フレームを PNG で ComfyUI input/ に保存し、そのファイル名を返す。"""
+    import av
+    in_dir = os.path.join(_comfy_root(), "input")
+    os.makedirs(in_dir, exist_ok=True)
+    container = av.open(video_path)
+    try:
+        stream = container.streams.video[0]
+        last = None
+        for frame in container.decode(stream):
+            last = frame
+        if last is None:
+            raise ValueError("動画にフレームがありません")
+        img = last.to_image()
+        name = "h3_ext_{}.png".format(int(time.time() * 1000) % 10**13)
+        img.save(os.path.join(in_dir, name))
+        return name
+    finally:
+        container.close()
+
+
+def _video_size(video_path):
+    """(width, height) of the first video stream."""
+    import av
+    container = av.open(video_path)
+    try:
+        s = container.streams.video[0]
+        return s.codec_context.width, s.codec_context.height
+    finally:
+        container.close()
+
+
+def _concat_videos(paths):
+    """動画ファイルを順に結合して ComfyUI output/ に mp4 で保存し、ファイル名を返す。
+
+    全セグメント同一解像度が前提（異なれば ValueError）。映像は 24fps・
+    h264 再エンコード、音声は aac でつなぐ（H3 の動画は全て 24fps・音声付き）。
+    """
+    import av
+    from fractions import Fraction
+    dims = [_video_size(p) for p in paths]
+    if len(set(dims)) > 1:
+        raise ValueError("解像度が異なる動画は結合できません（同じモードで生成した動画を結合してください）")
+    w, h = dims[0]
+    out_dir = os.path.join(_comfy_root(), "output")
+    os.makedirs(out_dir, exist_ok=True)
+    name = "h3_joined_{}.mp4".format(int(time.time() * 1000) % 10**13)
+    out_path = os.path.join(out_dir, name)
+    out = av.open(out_path, mode="w")
+    try:
+        vs = out.add_stream("h264", rate=24)
+        vs.width = w
+        vs.height = h
+        vs.pix_fmt = "yuv420p"
+        vs.bit_rate = 8_000_000
+        vs.time_base = Fraction(1, 24)
+        audio_stream = None
+        vi = 0
+        ai = 0
+        for p in paths:
+            c = av.open(p)
+            try:
+                vstream = c.streams.video[0]
+                astream = c.streams.audio[0] if c.streams.audio else None
+                if audio_stream is None and astream is not None:
+                    audio_stream = out.add_stream("aac", rate=astream.rate or 44100)
+                    audio_stream.time_base = Fraction(1, astream.rate or 44100)
+                for frame in c.decode(vstream):
+                    frame = frame.reformat(format="yuv420p")
+                    frame.pts = vi
+                    vi += 1
+                    for pkt in vs.encode(frame):
+                        out.mux(pkt)
+                if astream is not None and audio_stream is not None:
+                    for frame in c.decode(astream):
+                        frame.pts = ai
+                        ai += frame.samples
+                        for pkt in audio_stream.encode(frame):
+                            out.mux(pkt)
+            finally:
+                c.close()
+        for pkt in vs.encode(None):
+            out.mux(pkt)
+        if audio_stream is not None:
+            for pkt in audio_stream.encode(None):
+                out.mux(pkt)
+    finally:
+        out.close()
+    return name
+
 
 # Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
 #
@@ -1585,7 +1693,11 @@ let shutdownLeft = 0;
 // （null = まだ一度も保存されていない新しい企画）
 let activeSessionId = null;
 let lastSavedJson = "";   // 自動保存の重複排除（中身 unchanged なら送らない）
-let curJobKind = null;    // "video" | "image" — セッション復元時のジョブ再開用
+let curJobKind = null;    // "video" | "image" | "upscale" — セッション復元時のジョブ再開用
+// 動画の続きもの（セグメント連鎖）: extendVideo で始まり、続きセグメントが
+// 完成するたびに伸びる。2 本以上で「結合」ボタンが出る。
+let segmentChain = [];    // 順序付きファイル名リスト
+let extendFrom = null;    // 今生成中の続きセグメントの「元の動画」
 
 function addMsg(kind, html) {
   const el = document.createElement("div");
@@ -2271,9 +2383,10 @@ async function doGenerate(mode, text, bot) {
   }
 }
 
-async function poll(id, bot) {
+async function poll(id, bot, kind) {
   curJobId = id;
-  curJobKind = "video";
+  const k = kind || "video";
+  curJobKind = k;
   try {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
@@ -2287,14 +2400,21 @@ async function poll(id, bot) {
         return;
       }
       const v = vids[0];
-      bot.innerHTML = '<div class="meta">完成 ✅</div>' +
+      // 続きセグメントが完成したら連鎖を伸ばす（結合ボタン用）
+      if (curJobKind === "video" && extendFrom) {
+        segmentChain.push(v.filename);
+        extendFrom = null;
+      }
+      const isUpscale = curJobKind === "upscale";
+      bot.innerHTML = '<div class="meta">' + (isUpscale ? "アップスケール完了 ✅" : "完成 ✅") + "</div>" +
         '<video controls autoplay loop muted src="/api/view?filename=' + encodeURIComponent(v.filename) +
         '&type=' + encodeURIComponent(v.type || "output") + '"></video>' +
-        '<div class="path">' + esc(v.path) + "</div>";
+        '<div class="path">' + esc(v.path) + "</div>" +
+        (isUpscale ? "" : videoActionsHtml(v.filename));
       curJobId = null;
       curJobKind = null;
       setBusy(false);
-      startShutdown();
+      if (!isUpscale) startShutdown();
       return;
     }
     if (j.status === "error") {
@@ -2323,9 +2443,9 @@ async function poll(id, bot) {
       b.onclick = () => cancelJob(id, bot);
       bot.appendChild(b);
     }
-    setTimeout(() => poll(id, bot), 3000);
+    setTimeout(() => poll(id, bot, k), 3000);
   } catch (e) {
-    setTimeout(() => poll(id, bot), 3000);
+    setTimeout(() => poll(id, bot, k), 3000);
   }
 }
 
@@ -2361,6 +2481,114 @@ async function cancelCurrent() {
   const id = curJobId;
   await cancelJob(id, null);
   addMsg("bot", '<div class="meta">キャンセルしました。</div>');
+}
+
+// ---- 動画の続き / アップスケール / 結合 ---------------------------------
+
+function encArg(s) {
+  // onclick 属性内の JS 文字列に安全に埋め込むためのエンコード。
+  // encodeURIComponent は ' を残すので %27 に畳む（属性の引用符は &quot;
+  // 経由で二重引用符になるが、' も畳んでおく方が安全）。
+  return encodeURIComponent(s).replace(/'/g, "%27");
+}
+
+function videoActionsHtml(fn) {
+  // 動画完成メッセージに出すボタン群。ファイル名はエンコードして inline の
+  // onclick に載せる（セッション復元 = innerHTML シリアライズ後も動くように）。
+  // 属性内の JS 文字列引用符は &quot;（HTML エンティティ）で渡す — このテン
+  // プレートは Python の通常文字列なのでバックスラッシュは使えない。
+  let html = '<div class="row">' +
+    '<button class="ok" onclick="extendVideo(decodeURIComponent(&quot;' + encArg(fn) + '&quot;))">▶ この動画の続きを作る</button>' +
+    '<button class="rev" onclick="upscaleVideo(decodeURIComponent(&quot;' + encArg(fn) + '&quot;))">🔍 アップスケール（2倍）</button>' +
+    "</div>";
+  if (segmentChain.length >= 2 && segmentChain[segmentChain.length - 1] === fn) {
+    html += '<div class="row"><button class="ok" onclick="concatVideos(decodeURIComponent(&quot;' +
+      encArg(JSON.stringify(segmentChain)) + '&quot;))">🔗 ' + segmentChain.length + "本の動画を1本に結合</button></div>";
+  }
+  return html;
+}
+
+async function extendVideo(fn) {
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから続けてください。</div>');
+    return;
+  }
+  const bot = addMsg("bot", '<div class="meta">動画の続きを準備中…（最後の1コマを抜き出しています）</div>');
+  try {
+    const r = await fetch("/api/extend", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({filename: fn})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    // 最後の1コマを「次の動画の1フレーム目」(I2V) としてセットし、
+    // 続きの内容を企画 LLM と相談する（企画モード ON・画像の使い方=先頭固定）。
+    refImages = [j.image];
+    updateRefSel();
+    $("#imguse").value = "first";
+    $("#planmode").checked = true;
+    $("#btn-reset").style.display = "inline-block";
+    planStage = "video";
+    extendFrom = fn;
+    if (!segmentChain.length || segmentChain[segmentChain.length - 1] !== fn) segmentChain = [fn];
+    bot.innerHTML = '<div class="meta">続きの準備 ✅ 最後の1コマをセットしました</div>' +
+      "この動画の最後の1コマが「次の動画の1フレーム目」に固定されます。<br>" +
+      "次に何が起きますか？（例：「そのままカメラが引いて、彼女が振り返る」）<br>" +
+      "内容を話すと企画 LLM がまとめます。OK なら「まとめて」→ 生成で、前作から自然に続く動画になります。";
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+  }
+}
+
+async function upscaleVideo(fn) {
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから実行してください。</div>');
+    return;
+  }
+  const bot = addMsg("bot", '<div class="meta">アップスケール中…（解像度2倍・数分かかります）</div>');
+  try {
+    const r = await fetch("/api/upscale", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({filename: fn, scale: 2})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    jobCancelled = false;
+    setBusy(true);
+    poll(j.prompt_id, bot, "upscale");
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+  }
+}
+
+async function concatVideos(encodedJson) {
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから実行してください。</div>');
+    return;
+  }
+  let files = [];
+  try { files = JSON.parse(encodedJson); } catch (e) {}
+  if (!Array.isArray(files) || files.length < 2) {
+    addMsg("bot", '<div class="meta">⚠ 結合する動画が不足しています。</div>');
+    return;
+  }
+  const bot = addMsg("bot", '<div class="meta">動画を結合中…（' + files.length + "本 → 1本）</div>");
+  try {
+    const r = await fetch("/api/concat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({files: files})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    bot.innerHTML = '<div class="meta">結合完了 ✅（' + files.length + "本 → 1本）</div>" +
+      '<video controls autoplay loop muted src="/api/view?filename=' + encodeURIComponent(j.filename) + '&type=output"></video>' +
+      '<div class="path">' + esc(j.path) + "</div>";
+  } catch (e) {
+    bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
+  }
 }
 
 function startShutdown() {
@@ -2436,7 +2664,8 @@ function uiSnapshot() {
     planStage, lastFinalPrompt, lastImgPrompt,
     refImages, refConsultActive,
     imguse: $("#imguse").value,
-    curJobId: curJobId, curJobKind: curJobKind
+    curJobId: curJobId, curJobKind: curJobKind,
+    segmentChain: segmentChain, extendFrom: extendFrom
   };
 }
 
@@ -2550,6 +2779,8 @@ function renderSession(doc) {
   refConsultActive = false;
   refImages = [];
   refPickerSelection = [];
+  segmentChain = [];
+  extendFrom = null;
   if (shutdownTimer) { clearInterval(shutdownTimer); shutdownTimer = null; }
   hideShutdown();
   $("#msgs").innerHTML = "";
@@ -2567,6 +2798,8 @@ function renderSession(doc) {
   lastImgPrompt = ui.lastImgPrompt || null;
   refImages = Array.isArray(ui.refImages) ? ui.refImages : [];
   refConsultActive = !!ui.refConsultActive;
+  segmentChain = Array.isArray(ui.segmentChain) ? ui.segmentChain.filter(x => typeof x === "string") : [];
+  extendFrom = typeof ui.extendFrom === "string" ? ui.extendFrom : null;
   if (ui.imguse === "first" || ui.imguse === "last" || ui.imguse === "ref") $("#imguse").value = ui.imguse;
   updateRefSel();
   const clr = $("#ref-clear");
@@ -2582,10 +2815,10 @@ function renderSession(doc) {
     }
     if (lastBot) {
       curJobId = ui.curJobId;
-      curJobKind = ui.curJobKind === "image" ? "image" : "video";
+      curJobKind = (ui.curJobKind === "image" || ui.curJobKind === "upscale") ? ui.curJobKind : "video";
       setBusy(true);
       if (curJobKind === "image") pollImage(ui.curJobId, lastBot);
-      else poll(ui.curJobId, lastBot);
+      else poll(ui.curJobId, lastBot, curJobKind);
     }
   }
   refreshSidebar();
@@ -2788,6 +3021,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._sessions_switch(parsed)
         elif parsed.path == "/api/sessions/delete":
             self._sessions_delete(parsed)
+        elif parsed.path == "/api/extend":
+            self._extend(parsed)
+        elif parsed.path == "/api/concat":
+            self._concat(parsed)
+        elif parsed.path == "/api/upscale":
+            self._upscale(parsed)
         elif parsed.path == "/api/shutdown":
             self._shutdown(parsed)
         else:
@@ -3643,6 +3882,136 @@ class ChatHandler(BaseHTTPRequestHandler):
         name = "h3_ref_{}_{}".format(int(time.time()), os.path.basename(image_fn))
         shutil.copy2(src, os.path.join(in_dir, name))
         return name
+
+    def _resolve_output_file(self, fn):
+        """Resolve a video filename from ComfyUI output/ to an absolute path.
+
+        Returns None for anything that is not a plain filename inside output/
+        (path traversal defense) or does not exist.
+        """
+        if not fn or not isinstance(fn, str) or len(fn) > 200:
+            return None
+        if os.sep in fn or "/" in fn or fn.startswith(".") or "\x00" in fn:
+            return None
+        allowed = os.path.realpath(os.path.join(_comfy_root(), "output"))
+        cand = self.server.local_files.get(fn) or os.path.join(_comfy_root(), "output", fn)
+        real = os.path.realpath(cand)
+        if not real.startswith(allowed + os.sep):
+            return None
+        return real if os.path.isfile(real) else None
+
+    # ---- 動画の続き / 結合 / アップスケール ------------------------------
+
+    def _extend(self, parsed):
+        """完成動画の最後の1フレームを抜き出して次の生成の first_frame にする。
+
+        クライアントは返された画像を参照画像（先頭フレーム固定）としてセットし、
+        企画 LLM と「続きの内容」を相談してから生成する。
+        """
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        src = self._resolve_output_file((req or {}).get("filename"))
+        if not src:
+            self._json(404, {"error": "動画が見つかりません（すでに削除された可能性があります）"})
+            return
+        try:
+            name = _extract_last_frame(src)
+        except Exception as e:
+            self._json(500, {"error": f"最後のフレームの抜き出しに失敗しました: {e}"})
+            return
+        # 抜き出し画像は input/ に置かれる。後続の /api/plan（企画 LLM の視覚
+        # 入力）と /api/generate（_stage_ref_image）は裸のファイル名を
+        # local_files 経由で解決するため、ここに絶対パスを登録しておく。
+        self.server.local_files[name] = os.path.join(_comfy_root(), "input", name)
+        self._json(200, {"image": name})
+
+    def _concat(self, parsed):
+        """複数セグメントを 1 本の mp4 に結合する（PyAV・24fps・h264 再エンコード）。"""
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        files = (req or {}).get("files")
+        if not isinstance(files, list) or not (2 <= len(files) <= 20):
+            self._json(400, {"error": "files は 2〜20 本の動画リストで指定してください"})
+            return
+        paths = []
+        for fn in files:
+            p = self._resolve_output_file(fn)
+            if not p:
+                self._json(404, {"error": "動画が見つかりません: " + str(fn)})
+                return
+            paths.append(p)
+        try:
+            name = _concat_videos(paths)
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        except Exception as e:
+            self._json(500, {"error": f"結合に失敗しました: {e}"})
+            return
+        abspath = os.path.join(_comfy_root(), "output", name)
+        self.server.local_files[name] = abspath
+        self._json(200, {"filename": name, "path": abspath})
+
+    def _upscale(self, parsed):
+        """完成動画を RealESRGAN x4 で高解像度化（2x/4x）して保存する。"""
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        scale = (req or {}).get("scale") or 2
+        if scale not in (2, 4):
+            self._json(400, {"error": "scale は 2 か 4 で指定してください"})
+            return
+        src = self._resolve_output_file((req or {}).get("filename"))
+        if not src:
+            self._json(404, {"error": "動画が見つかりません（すでに削除された可能性があります）"})
+            return
+        model_path = os.path.join(_comfy_root(), "models", "upscale_models", UPSCALE_MODEL_NAME)
+        if not os.path.isfile(model_path):
+            self._json(503, {"error": f"アップスケーラーモデルがありません: models/upscale_models/{UPSCALE_MODEL_NAME}"})
+            return
+        # LoadVideo は input/ からしか読めないのでステージングする
+        in_dir = os.path.join(_comfy_root(), "input")
+        os.makedirs(in_dir, exist_ok=True)
+        staged = "h3_up_{}_{}".format(int(time.time()), os.path.basename(src))
+        try:
+            shutil.copy2(src, os.path.join(in_dir, staged))
+            w, h = _video_size(src)
+        except Exception as e:
+            self._json(500, {"error": f"動画の読み取りに失敗しました: {e}"})
+            return
+        try:
+            with open(UPSCALE_WORKFLOW, encoding="utf-8") as f:
+                wf = json.load(f)["prompt"]
+        except Exception as e:
+            self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
+            return
+        wf[NODE_UP_LOADVIDEO]["inputs"]["file"] = staged
+        wf[NODE_UP_SCALE]["inputs"]["width"] = w * scale
+        wf[NODE_UP_SCALE]["inputs"]["height"] = h * scale
+        self.server.autostop.poke()
+        stop_plan_llm()
+        try:
+            _, raw, _ = self._comfy("GET", "/queue", timeout=10)
+            q = json.loads(raw)
+            if not q.get("queue_running") and not q.get("queue_pending"):
+                self._free_comfy()
+        except Exception:
+            pass
+        try:
+            _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
+            pid = json.loads(raw)["prompt_id"]
+            self.server.job_meta[pid] = {"mode": "upscale", "start": time.time(), "kind": "upscale"}
+            self._json(200, {"prompt_id": pid, "scale": scale})
+        except Exception as e:
+            self._json(502, {"error": self._proxy_error(e)})
 
     REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
