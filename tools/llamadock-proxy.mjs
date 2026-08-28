@@ -28,6 +28,14 @@ const LOOP_WINDOW_MS = 60_000;     // 60-second window for loop detection
 const FINGERPRINT_MAX_ENTRIES = 500; // bound the map to prevent unbounded growth
 let lastRestartRequest = null;     // last restart request written to CONTROL_FILE
 let possibleRetryLoops = [];       // { fingerprint, count, detectedAt }
+// Throttle upstream_unreachable restart requests. llama-server needs minutes
+// to load a 35B MTP model with a 64K context; during that window every client
+// request fails with "fetch failed" and the old code asked the supervisor to
+// recycle the server each time, killing the freshly-started load and looping
+// forever. One request per 60s caps the damage; the supervisor also ignores
+// restart flags while the server is still loading.
+let lastUpstreamRestartRequestAt = 0;
+const UPSTREAM_RESTART_MIN_INTERVAL_MS = 60_000;
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -397,7 +405,11 @@ const server = http.createServer(async (request, response) => {
         error?.cause?.code === "ECONNREFUSED" ||
         error?.cause?.code === "ECONNRESET";
       if (looksUnreachable) {
-        void requestRestart("upstream_unreachable");
+        const now = Date.now();
+        if (now - lastUpstreamRestartRequestAt >= UPSTREAM_RESTART_MIN_INTERVAL_MS) {
+          lastUpstreamRestartRequestAt = now;
+          void requestRestart("upstream_unreachable");
+        }
       }
     }
     if (!response.headersSent) {

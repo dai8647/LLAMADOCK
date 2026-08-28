@@ -11,7 +11,13 @@ param(
     [switch]$AutoRestartServer,
     # Per-request output token cap applied to Cline requests by the recovery
     # gateway. 0 = leave the gateway's own default/env override untouched.
-    [int]$ClineMaxTokens = 0
+    [int]$ClineMaxTokens = 0,
+    # Seconds after starting llama-server during which restart requests are
+    # ignored while the model is still loading (port not open yet). A 35B MTP
+    # model with a 64K context takes minutes to load; without this grace the
+    # gateway's upstream_unreachable flags kill the loading server and the
+    # stack never comes up.
+    [int]$ServerLoadGraceSeconds = 120
 )
 
 # Resolve Root from PSCommandPath after param binding (same pattern as harness)
@@ -243,11 +249,13 @@ Save-SupervisorStatus -ServerPid "" -GatewayPid "" -State "starting"
 $server = $null
 $gateway = $null
 $stopping = $false
+$serverStartTime = $null
 
 try {
     $gateway = Start-GatewayChild
     Save-SupervisorStatus -ServerPid "" -GatewayPid ([string]$gateway.Id) -State "starting"
     $server = Start-ServerChild
+    $serverStartTime = Get-Date
     Save-SupervisorStatus -ServerPid ([string]$server.Id) -GatewayPid ([string]$gateway.Id) -State "running"
 
     while ($true) {
@@ -261,6 +269,18 @@ try {
                 #      recounting forever.
                 Write-SupervisorLog "Circuit breaker tripped for requested restart. Stopping supervisor." "error"
                 break
+            }
+            # While the model is still loading the port is not open yet, so
+            # the gateway reports every client request as upstream_unreachable.
+            # Killing the server here restarts the load from scratch and the
+            # stack never comes up. Ignore restart requests during the grace
+            # window; the server will be ready shortly.
+            if ($server -and -not $server.HasExited -and $serverStartTime) {
+                $serverAgeSeconds = [math]::Round(((Get-Date) - $serverStartTime).TotalSeconds)
+                if ($serverAgeSeconds -lt $ServerLoadGraceSeconds -and -not (Get-ListenConnection -Port $UpstreamPort)) {
+                    Write-SupervisorLog "Restart request ignored: llama-server started ${serverAgeSeconds}s ago and port $UpstreamPort is not open yet (grace ${ServerLoadGraceSeconds}s)." "warn"
+                    continue
+                }
             }
             $delay = Get-BackoffDelay
             try {
@@ -278,6 +298,7 @@ try {
                 Start-Sleep -Seconds $delay
                 try {
                     $server = Start-ServerChild
+                    $serverStartTime = Get-Date
                     Save-SupervisorStatus -ServerPid ([string]$server.Id) -GatewayPid ([string]$gateway.Id) -State "running"
                 }
                 catch {
@@ -315,6 +336,7 @@ try {
             Start-Sleep -Seconds $delay
             try {
                 $server = Start-ServerChild
+                $serverStartTime = Get-Date
                 Save-SupervisorStatus -ServerPid ([string]$server.Id) -GatewayPid ([string]$gateway.Id) -State "running"
             }
             catch {
