@@ -1269,6 +1269,9 @@ let lastImgPrompt = null;
 let lastFinalPrompt = null;
 let curImageFilename = null;
 let planStage = "chat";   // chat -> image -> video -> done
+// 参照モードで「どんな動画にするか」を相談中かどうか。最初の1ターンだけ
+// 企画 LLM に"いきなり FINAL_PROMPT を作らず相談して"という指示を付ける。
+let refConsultActive = false;
 let shutdownTimer = null;
 let shutdownLeft = 0;
 
@@ -1454,6 +1457,8 @@ async function pickRefImage() {
         '<div class="refdir">' + esc(img.dir) + "</div>";
       c.onclick = () => {
         curImageFilename = img.path;
+        // 新しい参照画像を選んだ＝新しい企画の始まりなので、相談フラグをリセット
+        refConsultActive = false;
         $("#ref-sel").textContent = img.name + "（" + img.dir + "）";
         closeRefModal();
       };
@@ -1481,6 +1486,16 @@ async function send() {
     setBusy(false);
     return;
   }
+  if ($("#refmode").checked) {
+    // 参照モードは「どんな動画にするか」を決めずに長時間の生成を始めない。
+    // 企画 LLM に参照画像を見せながら内容を相談し、[FINAL_PROMPT] を
+    // ユーザーが確認してから生成する（企画モードと同じ確認フロー）。
+    planStage = "video";
+    const first = !refConsultActive;
+    refConsultActive = true;
+    plan(text, first);
+    return;
+  }
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
   const mode = document.querySelector('input[name="mode"]:checked').value;
   try {
@@ -1505,13 +1520,16 @@ async function send() {
   }
 }
 
-async function plan(text) {
-  const bot = addMsg("bot", '<div class="meta">企画 LLM が考え中…</div>');
+async function plan(text, refStart) {
+  const meta = refStart
+    ? "企画 LLM が参照画像を見て、動画の内容を相談しています…"
+    : "企画 LLM が考え中…";
+  const bot = addMsg("bot", '<div class="meta">' + meta + "</div>");
   try {
     const r = await fetch("/api/plan", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: text, stage: planStage, image: curImageFilename})
+      body: JSON.stringify({text: text, stage: planStage, image: curImageFilename, ref_start: !!refStart})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -1537,6 +1555,12 @@ async function plan(text) {
       // わからない」問題の対策）。
       html += '<details class="thinkbox"><summary>📝 LLMが考えた動画プロンプト（クリックで確認）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.final_prompt) + '</pre></details>';
       html += '<button class="genplan" onclick="genPlanLast()">🎬 この企画で生成 ▶</button>';
+    } else if (planStage === "video") {
+      // 動画内容の相談中（参照モード開始直後など）。進め方を案内する。
+      html += '<div class="hint">LLM の質問に答えて動画の内容を固めてください。「まとめて」「プロンプト確定」で [FINAL_PROMPT] を作ります。' +
+        '画質・長さ・向きもチャットで調整できます（例：「もっと高画質で」「長めに」「縦長で」）。' +
+        '自分でプロンプトを書きたい場合は下の「✍ 手動プロンプト」から直接入力できます。</div>';
+      html += '<button class="genplan" style="background:transparent;color:var(--accent);border:1px solid var(--accent)" onclick="showManualPrompt()">✍ 手動プロンプトで生成する</button>';
     }
     if (j.audio && (j.audio.voice || j.audio.dialogue || j.audio.sfx || j.audio.music)) {
       if (j.audio.voice) $("#au-voice").value = j.audio.voice;
@@ -1936,6 +1960,7 @@ async function resetPlan() {
   lastImgPrompt = null;
   lastFinalPrompt = null;
   planStage = "chat";
+  refConsultActive = false;
   if (hadJob) {
     addMsg("bot", '<div class="meta">新しい企画</div>進行中の生成をキャンセルし、新しい企画を始めます。作りたい映像を教えてください。');
   } else {
@@ -2284,6 +2309,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         self.server.autostop.poke()
         image = req.get("image") or None   # 確定したキー画像のファイル名（視覚入力）
+        ref_start = bool(req.get("ref_start"))  # 参照モードからの動画相談開始フラグ
         if stage == "video" and text == "__CONFIRM_IMAGE__":
             # キー画像が確定: Z-Image Turbo をアンロードして VRAM を解放してから
             # 企画 LLM に動画プロンプトを作らせる。
@@ -2302,7 +2328,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
-            reply, img_prompt, final_prompt, audio, thinking = self._plan_llm(text, endpoint, stage, image)
+            reply, img_prompt, final_prompt, audio, thinking = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
@@ -2413,7 +2439,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}},
         ]
 
-    def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300):
+    def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300, ref_start=False):
         """Send the message (plus history) to the planning LLM.
 
         Returns (reply_text, img_prompt, final_prompt, audio, thinking).
@@ -2436,18 +2462,39 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "1〜2個の質問でユーザーと相談してください。\n"
                 f"画像プロンプト: {ip}"
             )
+        if stage == "video" and ref_start and user_text != "__CONFIRM_IMAGE__":
+            # 参照モードからの動画相談開始。キー画像確定(__CONFIRM_IMAGE__)と
+            # 違い、添付画像は「1フレーム目」ではなく「同一キャラを保つ
+            # 参照画像」。内容を決めずに生成へ直行しないよう、まず相談させる。
+            original = user_text
+            user_text = (
+                "ユーザーが参照画像を指定して動画を作りたいと言っています。"
+                "添付の画像がその参照画像です（見える場合は被写体・外見・服装・"
+                "雰囲気を確認してください）。この参照画像の外見を維持した同一キャラで動画を作ります。\n"
+                "ここからは【動画の内容の相談】です。いきなり [FINAL_PROMPT] は作らず、"
+                f"ユーザーの希望「{original}」を踏まえつつ、"
+                "この参照画像をどんな動画にするか（動き・カメラワーク・長さ・セリフ・音楽など）を"
+                "1〜2個の質問でユーザーと相談してください。"
+            )
         # multimodal: attach the image (base64) on every turn where one is
         # available — the confirmed key image, or the reference image the user
         # picked via 🗂 — so the planner can see it while planning/revising,
         # not only after confirmation. Planners without a vision projector
         # (PLAN_HAS_VISION false) get the prompt text only.
         ref_note = None
-        if image_fn and stage in ("chat", "image") and user_text != "__CONFIRM_IMAGE__":
-            ref_note = (
-                "【添付画像】ユーザーが指定した参照画像です。この画像の被写体・外見・"
-                "服装・雰囲気を企画のベースにしてください（同一キャラ・同一ルックを維持）。"
-                "ユーザーの指示と矛盾しない限り、参照画像の内容を [IMG_PROMPT] に反映すること。"
-            )
+        if image_fn and user_text != "__CONFIRM_IMAGE__":
+            if stage in ("chat", "image"):
+                ref_note = (
+                    "【添付画像】ユーザーが指定した参照画像です。この画像の被写体・外見・"
+                    "服装・雰囲気を企画のベースにしてください（同一キャラ・同一ルックを維持）。"
+                    "ユーザーの指示と矛盾しない限り、参照画像の内容を [IMG_PROMPT] に反映すること。"
+                )
+            elif stage == "video" and ref_start:
+                ref_note = (
+                    "【添付画像】ユーザーが指定した参照画像です。この画像の被写体・外見・"
+                    "服装・雰囲気を維持した同一キャラで動画を作ります。"
+                    "相談や [FINAL_PROMPT] 作成時はこの外見を基準にしてください。"
+                )
         content = self._attach_plan_image(user_text, image_fn, note=ref_note)
         with PLAN_LOCK:
             PLAN_HISTORY.append({"role": "user", "content": content})
