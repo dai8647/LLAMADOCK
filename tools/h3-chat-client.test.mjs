@@ -12,9 +12,9 @@ const src = readFileSync(path.join(repo, "tools", "h3-chat.py"), "utf-8");
 const js = src.match(/<script>([\s\S]*)<\/script>/)[1];
 
 function makeEl(id) {
-  return {
+  const e = {
     id, value: "", checked: false, disabled: false, selected: false,
-    style: { display: "" }, className: "", innerHTML: "", textContent: "",
+    style: { display: "" }, className: "", textContent: "",
     dataset: {}, scrollTop: 0, scrollHeight: 0, placeholder: "",
     children: [], options: [], selectedIndex: -1,
     appendChild(c) { this.children.push(c); return c; },
@@ -26,6 +26,14 @@ function makeEl(id) {
     focus() {}, click() {},
     setAttribute() {}, getAttribute() { return null; },
   };
+  // 実 DOM と同じく、innerHTML 代入は子要素を全て消す
+  // （これがないと refgrid の「innerHTML = "" でクリア」が効かずカードが溜まる）。
+  let html = "";
+  Object.defineProperty(e, "innerHTML", {
+    get() { return html; },
+    set(v) { html = String(v); e.children.length = 0; },
+  });
+  return e;
 }
 
 const els = new Map();
@@ -34,9 +42,12 @@ el("mode-radio"); // placeholder, unused
 
 const state = {
   fetches: [],
+  alerts: [],
   modeValue: "quick",
   planReply: { reply: "ok" },
   resetFail: false,
+  refImagesResponse: null,   // null = default single image
+  tuneIgnored: [],
   statusResult: { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] },
 };
 
@@ -45,9 +56,9 @@ async function fakeFetch(url, opts) {
   const j = (obj, ok = true, status = 200) => ({ ok, status, json: async () => obj });
   if (url === "/api/queue") return j({ queue_running: [], queue_pending: [] });
   if (url === "/api/plan-models") return j({ models: [], current: null, running: false });
-  if (url === "/api/generate") return j({ prompt_id: "p1", eff_mode: state.modeValue, override_label: "" });
+  if (url === "/api/generate") return j({ prompt_id: "p1", eff_mode: state.modeValue, override_label: "", tune_ignored: state.tuneIgnored });
   if (url.startsWith("/api/status/")) return j(state.statusResult);
-  if (url === "/api/refimages") return j({ images: [{ path: "C:\\ComfyUI\\output\\x.png", name: "x.png", dir: "output" }] });
+  if (url === "/api/refimages") return j({ images: state.refImagesResponse || [{ path: "C:\\ComfyUI\\output\\x.png", name: "x.png", dir: "output" }] });
   if (url === "/api/plan") {
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
     if (body.text === "__RESET__") {
@@ -77,7 +88,7 @@ const documentStub = {
 const sandbox = {
   document: documentStub,
   fetch: fakeFetch,
-  alert() {},
+  alert(msg) { state.alerts.push(String(msg)); },
   setInterval: () => 0,
   clearInterval() {},
   setTimeout, clearTimeout,
@@ -120,7 +131,7 @@ check("ref tag", run(`$("#imguse").value="ref"; imageUseTag()`) === "🎭 参照
 console.log("[2] genPlanLast keeps prompt + sends image_use (I2V first)");
 run(`
   lastFinalPrompt = "PROMPT_A";
-  curImageFilename = "keyimg.png";
+  refImages = ["keyimg.png"];
   $("#imguse").value = "first";
 `);
 await run(`(async () => { genPlanLast(); })()`);
@@ -157,7 +168,7 @@ await tick();
 
 console.log("[5] confirmImage sets imguse=first");
 run(`
-  curImageFilename = "key2.png";
+  refImages = ["key2.png"];
   $("#imguse").value = "ref";   // 直前が参照でも確定で先頭固定が既定になる
 `);
 state.planReply = { reply: "相談しましょう" };
@@ -170,17 +181,20 @@ check("imguse switched to first", run(`$("#imguse").value`) === "first");
   check("confirm sent __CONFIRM_IMAGE__", b.text === "__CONFIRM_IMAGE__" && b.image === "key2.png");
 }
 
-console.log("[6] pickRefImage selection sets imguse=ref");
-run(`$("#imguse").value = "first";`);
+console.log("[6] pickRefImage single selection + apply sets imguse=ref");
+run(`$("#imguse").value = "first"; refImages = [];`);
 await run(`(async () => { await pickRefImage(); })()`);
 await tick();
 {
   const grid = el("refgrid");
   check("ref grid populated", grid.children.length === 1);
   grid.children[0].onclick();
-  check("imguse switched to ref on pick", run(`$("#imguse").value`) === "ref");
-  check("curImageFilename set to picked path", run(`curImageFilename`) === "C:\\ComfyUI\\output\\x.png");
+  check("selection staged before apply", run(`refPickerSelection.length`) === 1);
+  run(`applyRefPick()`);
+  check("imguse switched to ref on apply", run(`$("#imguse").value`) === "ref");
+  check("refImages set to picked path", run(`refImages[0]`) === "C:\\ComfyUI\\output\\x.png");
   check("ref-clear visible", el("ref-clear").style.display === "inline-block");
+  check("ref-sel shows filename", el("ref-sel").textContent === "x.png");
 }
 
 console.log("[7] resetPlan: server failure is surfaced, not swallowed");
@@ -238,6 +252,98 @@ await tick();
   check("no JA box when tag missing", !last.innerHTML.includes("🖼 こんな画像になります"));
   check("collapsible english + button still there", last.innerHTML.includes("shiba inu") && last.innerHTML.includes("🖼 キー画像を生成 ▶"));
 }
+
+console.log("[10] multi-select picker: toggle, order, apply");
+state.refImagesResponse = [
+  { path: "C:\\ComfyUI\\output\\a.png", name: "a.png", dir: "output" },
+  { path: "C:\\ComfyUI\\output\\b.png", name: "b.png", dir: "output" },
+  { path: "C:\\ComfyUI\\input\\c.png", name: "c.png", dir: "input" },
+];
+run(`$("#imguse").value = "first"; refImages = [];`);
+await run(`(async () => { await pickRefImage(); })()`);
+await tick();
+{
+  const grid = el("refgrid");
+  check("3 cards", grid.children.length === 3);
+  grid.children[0].onclick();
+  grid.children[2].onclick();
+  check("2 selected in click order", run(`refPickerSelection.length`) === 2 && run(`refPickerSelection[1]`).endsWith("c.png"));
+  check("count label updated", el("refpick-count").textContent.includes("2 枚選択中"));
+  grid.children[0].onclick(); // toggle off
+  check("toggle off works", run(`refPickerSelection.length`) === 1);
+  grid.children[0].onclick(); // back on
+  grid.children[1].onclick();
+  run(`applyRefPick()`);
+  check("applied 3 in order", run(`refImages.length`) === 3 && run(`refImages[2]`).endsWith("b.png"));
+  check("ref-sel shows multi count", el("ref-sel").textContent.includes("計 3 枚") && el("ref-sel").textContent.includes("<Picture 1..3>"));
+  check("imguse=ref after apply", run(`$("#imguse").value`) === "ref");
+}
+
+console.log("[11] payload carries images[] + ref_size + tune");
+run(`
+  lastFinalPrompt = "PROMPT_B";
+  $("#imguse").value = "ref";
+  $("#refsize-max").checked = true;
+  $("#tune-easycache").value = "0.25";
+  $("#tune-lora").value = "";
+  $("#tune-crf").value = "19";
+`);
+await run(`(async () => { genPlanLast(); })()`);
+await tick();
+{
+  const b = lastBody();
+  check("images array sent", b && Array.isArray(b.images) && b.images.length === 3);
+  check("image = first of images", b && b.image === b.images[0]);
+  check("ref_size=max sent", b && b.ref_size === "max");
+  check("tune partial (blank lora omitted)", b && b.tune && b.tune.easycache === 0.25 && b.tune.crf === 19 && !("lora" in b.tune));
+}
+run(`$("#refsize-max").checked = false; $("#tune-easycache").value = ""; $("#tune-crf").value = "";`);
+
+console.log("[12] first/last with multiple images warns only 1st is used");
+// 完了ポーリングが来ると bot.innerHTML が完成表示で置き換わり追記が消えるので、
+// status=running のままにして「生成開始直後」の状態を検査する。
+state.statusResult = { status: "running", elapsed_sec: 5, eta_sec: 100, pending: 0 };
+run(`$("#imguse").value = "first"; lastFinalPrompt = "PROMPT_C";`);
+await run(`(async () => { genPlanLast(); })()`);
+await tick();
+{
+  // 警告は新規メッセージではなく生成開始メッセージ（最後の msg）に追記される
+  const msgs = el("msgs").children;
+  const botMsg = msgs[msgs.length - 1];
+  check("warning shown for frame-fix + multi refs",
+    botMsg.children.some(c => (c.textContent || "").includes("1 枚目の参照画像だけ使われます")));
+}
+// status=running のままだと setBusy(false) が呼ばれないので、次のテストのために解除
+run(`setBusy(false);`);
+
+console.log("[13] picker caps selection at 9");
+state.refImagesResponse = Array.from({length: 11}, (_, i) => ({ path: "C:\\img\\p" + i + ".png", name: "p" + i + ".png", dir: "input" }));
+run(`refImages = [];`);
+state.alerts.length = 0;
+await run(`(async () => { await pickRefImage(); })()`);
+await tick();
+{
+  const grid = el("refgrid");
+  for (let i = 0; i < 11; i++) grid.children[i].onclick();
+  check("selection capped at 9", run(`refPickerSelection.length`) === 9);
+  check("cap alert shown", state.alerts.some(a => a.includes("最大 9 枚")));
+}
+state.refImagesResponse = null;
+
+console.log("[14] tune_ignored from server is surfaced");
+// [12] と同じ理由で status=running のまま検査する（statusResult は既に running）
+state.tuneIgnored = ["EasyCache 閾値（このモードは EasyCache 非使用）"];
+run(`lastFinalPrompt = "PROMPT_D"; $("#imguse").value = "ref"; refImages = [];`);
+await run(`(async () => { genPlanLast(); })()`);
+await tick();
+{
+  const msgs = el("msgs").children;
+  const botMsg = msgs[msgs.length - 1];
+  check("tune_ignored hint shown",
+    botMsg.children.some(c => (c.textContent || "").includes("反映されなかった設定")));
+}
+state.tuneIgnored = [];
+state.statusResult = { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] };
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

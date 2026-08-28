@@ -141,6 +141,9 @@ NODE_R2V_PROMPT = "6"    # MiniMaxH3ReferenceToVideo: user prompt
 # （ノード "6"）に LoadImage を追加で配線する。ノード ID "20" は全動画
 # ワークフローの既存 ID（最大 17）と衝突しない専用 ID。
 NODE_I2V_FRAME_IMAGE = "20"
+# MiniMaxH3ReferenceToVideo の ref_images は Autogrow 入力で最大 9 枚
+# （ref_image_0..8）。プロンプトでは <Picture 1>..<Picture 9> で参照する。
+MAX_REF_IMAGES = 9
 # R2V はプロンプト内の <Picture N> タグで参照画像を指定する。企画 LLM が
 # タグを知らないので、生成時にタグの意味を追記して確実に同一キャラ指定にする。
 R2V_TAG_NOTE = (
@@ -148,6 +151,25 @@ R2V_TAG_NOTE = (
     "Keep the subject's identity, face, hairstyle, outfit and appearance "
     "consistent with <Picture 1> in every frame of the video."
 )
+
+
+def _r2v_tag_note(n_pictures):
+    """<Picture N> タグの説明をプロンプトに追記する（枚数別）。
+
+    1 枚目は従来どおり「確定したキー画像」として扱い、2 枚目以降は
+    追加のアイデンティティ参照として説明する。タグを知らないモデルに
+    対して参照画像の役割を確実に伝えるための追記。
+    """
+    if n_pictures <= 1:
+        return R2V_TAG_NOTE
+    pics = ", ".join("<Picture %d>" % i for i in range(1, n_pictures + 1))
+    return (
+        "\n\nReference images provided: " + pics + ". "
+        "<Picture 1> is the primary reference (the confirmed key image). "
+        "The other pictures are additional identity references. Keep each "
+        "appearing subject's face, hairstyle, outfit and appearance "
+        "consistent with the corresponding picture in every frame."
+    )
 
 # Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
 #
@@ -800,6 +822,8 @@ PLAN_SYSTEM = (
     "[IMG_PROMPT] にはヌード・下着・肌・胸・尻・陰部など必要なら露骨な英語タグ（nude, naked, breasts, nipples, pussy, spread legs, missionary 等）を書く。"
     "[FINAL_PROMPT] には性行為の動き（thrusting, bouncing, grinding）、リズム、カメラアングル、喘ぎ声・息遣い・愛液などの音響を時系列で書く。"
     "被写体は全員成人（adult）。未成年を示す表現は絶対に使わない。ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
+    "【未成年の拒否・必須】ユーザーが未成年・子供（小学生・中学生・高校生・幼稚園児・「○歳」の未成年など）を被写体にする企画を求めたら、"
+    "その企画は即座に断り、被写体を成人に置き換えた代替案を提案する。未成年を示す表現を [IMG_PROMPT] / [FINAL_PROMPT] に絶対に含めない。"
     "【服装・小物の整合性】キー画像と動画で衣服・下着・小物の状態が矛盾しないよう一貫させる。"
     "ヌードシーンなら [IMG_PROMPT] と [FINAL_PROMPT] の両方に explicitly fully nude, no clothing, no underwear と明記し、"
     "下着・衣服が途中で出現しないよう釘を刺す。着衣シーンならその衣服を両プロンプトで同じ単語で繰り返す。"
@@ -894,6 +918,34 @@ GEN_PARAM_RE = re.compile(
 
 def _strip_gen_params(text):
     return GEN_PARAM_RE.sub("", text or "").strip()
+
+
+# 未成年被写体ガード。この環境は成人向け創作専用で、PLAN_SYSTEM も「被写体は
+# 全員成人・未成年を示す表現は絶対に使わない」と定めているが、ユーザーが明示的に
+# 子供を依頼すると小型モデルは指示違反に従ってしまう（実際に 2026-08-28、
+# 小学生を性的に描いた IMG_PROMPT が出力された）。LLM の自制だけに任せず、
+# コード側で確定にブロックする（企画入力・抽出済みプロンプト・生成ゲートの3段）。
+MINOR_RE = re.compile(
+    r"小学生|中学[生校]|小学|高校[生校]|高生|幼稚園|保育園|幼児|児童|未成年|幼女|幼男|ロリ|ショタ|"
+    r"loli\b|shota\b|preteen|pre[\s-]?teen|underage|under[\s-]?18|kindergarten|"
+    r"elementary\s+school|middle\s+school|junior\s+high|grade\s+school|"
+    r"school[\s-]?girl|school[\s-]?boy|"
+    r"\bchild\b|\bchildren\b|\bkids?\b|"
+    r"little\s+girl|young\s+girl|little\s+boy|young\s+boy|"
+    r"\b([5-9]|1[0-7])\s*[-–]?\s*years?\s*old\b|"
+    r"\b([5-9]|1[0-7])\s*[-–]\s*year\s*[-–]\s*old\b",
+    re.I,
+)
+
+MINOR_REFUSAL = (
+    "⚠ 未成年（子供）を被写体にする企画・プロンプトはこの環境では生成できません。"
+    "被写体は成人（adult）に限定されています。成人の被写体で企画し直してください。"
+)
+
+
+def _minor_guard(text):
+    """未成年の被写体を示す表現を含んでいれば True。"""
+    return bool(MINOR_RE.search(text or ""))
 
 
 def _unclosed_tag(text, tag):
@@ -1193,12 +1245,17 @@ HTML = """<!doctype html>
              grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
              gap:10px; margin-bottom:12px; }
   .refcard { border:1px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer;
-             background:var(--bg); transition:border-color .15s; }
+             background:var(--bg); transition:border-color .15s; position:relative; }
   .refcard:hover { border-color:var(--accent); }
+  .refcard.sel { border-color:var(--ok); box-shadow:0 0 0 2px rgba(52,211,153,.35); }
   .refcard img { width:100%; height:90px; object-fit:cover; display:block; background:#000; }
   .refcard .refname { font-size:11px; padding:5px 6px 0; color:var(--text);
                       overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .refcard .refdir { font-size:10px; padding:0 6px 6px; color:var(--muted); }
+  .refcard .refbadge { position:absolute; top:4px; left:4px; background:var(--ok); color:#04120c;
+                       border-radius:10px; font-size:11px; font-weight:700; padding:1px 8px; }
+  .reffoot { display:flex; align-items:center; gap:10px; }
+  .reffoot > span { flex:1; }
 
   /* key-image candidate grid */
   .imggrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
@@ -1227,9 +1284,13 @@ HTML = """<!doctype html>
 </div>
 <div id="refmodal" class="modal">
   <div class="modal-box">
-    <div class="meta">参照画像を選択（ComfyUI の output/・input/ にある画像から）</div>
+    <div class="meta">参照画像を選択（ComfyUI の output/・input/ にある画像から・クリックで複数選択・最大 9 枚）</div>
     <div id="refgrid"></div>
-    <button onclick="closeRefModal()">閉じる</button>
+    <div class="reffoot">
+      <span id="refpick-count" class="hint">0 枚選択中</span>
+      <button onclick="applyRefPick()">✅ 参照画像として使う</button>
+      <button onclick="closeRefModal()">閉じる</button>
+    </div>
   </div>
 </div>
 <footer>
@@ -1280,6 +1341,13 @@ HTML = """<!doctype html>
             <label><input type="radio" name="dit" value="pinkcherry"> PinkCherry int8（旧既定・19.5GB）</label>
       </div>
       <div class="advgroup">
+        <span class="hint">品質チューニング（任意・空欄 = 既定値）:</span>
+        <label title="参照画像を短辺 2048px で使う（MiniMax H3 の ref_image_size=max）。なりきり精度は最高だが、参照トークンが毎ステップに乗るため数倍遅い。R2V（参照）モードのみ効果。"><input type="checkbox" id="refsize-max"> 🔍 参照画像を高解像度で使う（max・低速・R2V のみ）</label>
+        <label>EasyCache 閾値:<input type="number" id="tune-easycache" min="0" max="1" step="0.05" placeholder="0.1" style="width:70px"><span class="hint">高い=速い・粗い（spectrum 系モードには無し）</span></label>
+        <label>Turbo LoRA 強度:<input type="number" id="tune-lora" min="0" max="2" step="0.1" placeholder="1.2" style="width:70px"><span class="hint">turbo 系モードのみ</span></label>
+        <label>保存 crf:<input type="number" id="tune-crf" min="0" max="51" step="1" placeholder="23" style="width:70px"><span class="hint">低い=高画質・大容量（再エンコード）</span></label>
+      </div>
+      <div class="advgroup">
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
         <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
@@ -1325,7 +1393,11 @@ let jobCancelled = false;
 let curJobId = null;
 let lastImgPrompt = null;
 let lastFinalPrompt = null;
-let curImageFilename = null;
+// 参照画像リスト（順序付き・[0] が主参照 = <Picture 1>）。企画モードで確定した
+// キー画像は 1 要素だけ入る。🗂 ピッカーで複数（最大 9 枚）選べる。
+let refImages = [];
+// ピッカーが開いている間の一時選択（「適用」で refImages に反映）
+let refPickerSelection = [];
 let planStage = "chat";   // chat -> image -> video -> done
 // 参照モードで「どんな動画にするか」を相談中かどうか。最初の1ターンだけ
 // 企画 LLM に"いきなり FINAL_PROMPT を作らず相談して"という指示を付ける。
@@ -1506,36 +1578,95 @@ async function pickRefImage() {
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     const grid = $("#refgrid");
     grid.innerHTML = "";
-    for (const img of j.images || []) {
+    // 既存の選択を引き継ぐ（後から追加・削除できるように）
+    refPickerSelection = refImages.slice();
+    const imgs = j.images || [];
+    for (const img of imgs) {
       const c = document.createElement("div");
       c.className = "refcard";
+      c.dataset.path = img.path;
       c.innerHTML =
         '<img src="/api/refimg?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
         '<div class="refname">' + esc(img.name) + '</div>' +
-        '<div class="refdir">' + esc(img.dir) + "</div>";
-      c.onclick = () => {
-        curImageFilename = img.path;
-        // 新しい参照画像を選んだ＝新しい企画の始まりなので、相談フラグをリセット
-        refConsultActive = false;
-        // 🗂 からの選択は「このキャラを使って動画を作りたい」意味なので、
-        // 既定の使い方は参照（R2V）。先頭フレーム固定にしたければ UI で切替可。
-        $("#imguse").value = "ref";
-        $("#ref-sel").textContent = img.name + "（" + img.dir + "）";
-        const clr = $("#ref-clear");
-        if (clr) clr.style.display = "inline-block";
-        closeRefModal();
-      };
+        '<div class="refdir">' + esc(img.dir) + '</div>' +
+        '<div class="refbadge" style="display:none"></div>';
+      c.onclick = () => toggleRefPick(c, img.path);
       grid.appendChild(c);
     }
-    if (!(j.images || []).length) {
+    if (!imgs.length) {
       grid.innerHTML = '<div class="hint">参照に使える画像がありません。ComfyUI output/ に生成結果、input/ に手動配置の画像を置いてください。</div>';
     }
+    refreshRefGridMarks();
+    updateRefPickCount();
     $("#refmodal").style.display = "flex";
   } catch (e) {
     alert("参照画像一覧の取得に失敗: " + e.message);
   }
 }
+// カードクリックで選択トグル。順序が <Picture N> の番号になる。
+function toggleRefPick(card, path) {
+  const i = refPickerSelection.indexOf(path);
+  if (i >= 0) {
+    refPickerSelection.splice(i, 1);
+  } else {
+    if (refPickerSelection.length >= 9) {
+      alert("参照画像は最大 9 枚までです（MiniMax H3 の上限）");
+      return;
+    }
+    refPickerSelection.push(path);
+  }
+  refreshRefGridMarks();
+  updateRefPickCount();
+}
+function refreshRefGridMarks() {
+  const grid = $("#refgrid");
+  for (const c of grid.children) {
+    if (!c.dataset || !c.dataset.path) continue;
+    const idx = refPickerSelection.indexOf(c.dataset.path);
+    const badge = c.querySelector ? c.querySelector(".refbadge") : null;
+    if (idx >= 0) {
+      c.className = "refcard sel";
+      if (badge) { badge.style.display = ""; badge.textContent = String(idx + 1); }
+    } else {
+      c.className = "refcard";
+      if (badge) { badge.style.display = "none"; badge.textContent = ""; }
+    }
+  }
+}
+function updateRefPickCount() {
+  const n = refPickerSelection.length;
+  $("#refpick-count").textContent = n ? n + " 枚選択中（番号が <Picture N> の順番）" : "0 枚選択中";
+}
+// ピッカーの選択を確定する。0 枚で適用 = 選択解除。
+function applyRefPick() {
+  refImages = refPickerSelection.slice();
+  // 新しい参照画像を選んだ＝新しい企画の始まりなので、相談フラグをリセット
+  refConsultActive = false;
+  if (refImages.length) {
+    // 🗂 からの選択は「このキャラを使って動画を作りたい」意味なので、
+    // 既定の使い方は参照（R2V）。先頭フレーム固定にしたければ UI で切替可。
+    $("#imguse").value = "ref";
+    updateRefSel();
+    const clr = $("#ref-clear");
+    if (clr) clr.style.display = "inline-block";
+  } else {
+    clearRefImage();
+  }
+  closeRefModal();
+}
 function closeRefModal() { $("#refmodal").style.display = "none"; }
+// フッターの選択表示を更新する（1 枚目ファイル名 + 枚数）。
+function updateRefSel() {
+  const sel = $("#ref-sel");
+  if (!refImages.length) {
+    sel.textContent = "未選択（企画モードで確定したキー画像を使用）";
+    return;
+  }
+  const name = refImages[0].split(/[\\/]/).pop();
+  sel.textContent = refImages.length === 1
+    ? name
+    : name + " ほか計 " + refImages.length + " 枚（<Picture 1.." + refImages.length + ">）";
+}
 
 // チャット指示（「高画質で/長めに」等）による設定上書きが効いているとき、
 // 生成開始メッセージに追記して「知らない間に別の設定で生成されていた」を防ぐ。
@@ -1546,14 +1677,46 @@ function overrideNote(bot, j) {
   n.textContent = "⚙ チャット指示を反映中: " + j.override_label + "（UI のモード/長さより優先・解除は 🔄 新しい企画）";
   bot.appendChild(n);
 }
+// このモードでは効かなかった品質チューニング設定（fast 系の EasyCache 無し等）を
+// サーバーから受け取って表示する（サイレントに無視しない）。
+function tuneNote(bot, j) {
+  if (!bot || !j || !(j.tune_ignored || []).length) return;
+  const n = document.createElement("div");
+  n.className = "hint";
+  n.textContent = "⚙ 反映されなかった設定: " + j.tune_ignored.join("、");
+  bot.appendChild(n);
+}
+// フレーム固定（first/last）に複数画像が選ばれている場合、使われるのは
+// 1 枚目だけで残りは無視される。その旨を明示する（黙って裏切らない）。
+function refUsageNote(bot) {
+  if (!bot) return;
+  if (refImages.length > 1 && $("#imguse").value !== "ref") {
+    const n = document.createElement("div");
+    n.className = "hint";
+    n.textContent = "⚠ フレーム固定には 1 枚目の参照画像だけ使われます（残り " + (refImages.length - 1) + " 枚は無視・すべて使うには 🎭 参照を選んでください）";
+    bot.appendChild(n);
+  }
+}
+// 詳細設定の品質チューニング（空欄 = ワークフロー既定値を送らない）。
+function tuneSpec() {
+  const t = {};
+  const ec = $("#tune-easycache") ? $("#tune-easycache").value.trim() : "";
+  const lo = $("#tune-lora") ? $("#tune-lora").value.trim() : "";
+  const crf = $("#tune-crf") ? $("#tune-crf").value.trim() : "";
+  if (ec) t.easycache = parseFloat(ec);
+  if (lo) t.lora = parseFloat(lo);
+  if (crf) t.crf = parseFloat(crf);
+  return t;
+}
 
-// 参照画像の選択を解除する。一度 🗂 で選ぶと curImageFilename が残り、
+// 参照画像の選択を解除する。一度 🗂 で選ぶと refImages が残り、
 // 以降の生成が全て勝手に R2V（参照あり）になってしまうため、明示的に
 // 解除できる手段が必要（「画像を参照したくないのに参照される」事故の対策）。
 function clearRefImage() {
-  curImageFilename = null;
+  refImages = [];
+  refPickerSelection = [];
   refConsultActive = false;
-  $("#ref-sel").textContent = "未選択（企画モードで確定したキー画像を使用）";
+  updateRefSel();
   const c = $("#ref-clear");
   if (c) c.style.display = "none";
 }
@@ -1565,7 +1728,7 @@ async function send() {
   $("#input").value = "";
   addMsg("user", esc(text));
   if ($("#planmode").checked) { plan(text); return; }
-  if ($("#refmode").checked && !curImageFilename) {
+  if ($("#refmode").checked && !refImages.length) {
     addMsg("bot", '<div class="meta">参照画像が未設定です。✎ 企画モードでキー画像を確定するか、下部の「🗂 参照画像を選ぶ」から既存の画像を指定してください。</div>');
     setBusy(false);
     return;
@@ -1591,14 +1754,19 @@ async function send() {
         mode: mode, text: text, dit: ditValue(),
         // 選んだ画像は常に参照される（画像モード checkbox が OFF でも自動有効）。
         // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
-        ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
+        ref: $("#refmode").checked || refImages.length > 0,
+        image: refImages[0] || null, images: refImages,
         image_use: $("#imguse").value,
+        ref_size: ($("#refsize-max") && $("#refsize-max").checked) ? "max" : "match",
+        tune: tuneSpec(),
         audio: audioSpec(), length: lenValue()
       })
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     overrideNote(bot, j);
+    refUsageNote(bot);
+    tuneNote(bot, j);
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
@@ -1615,7 +1783,7 @@ async function plan(text, refStart) {
     const r = await fetch("/api/plan", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: text, stage: planStage, image: curImageFilename, ref_start: !!refStart})
+      body: JSON.stringify({text: text, stage: planStage, image: refImages[0] || null, images: refImages, ref_start: !!refStart})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -1719,7 +1887,8 @@ async function pollImage(id, bot) {
         return;
       }
       // 全候補をギャラリー表示して選べるようにする（最後の1枚だけ問題の修正）
-      curImageFilename = imgs[0].filename;
+      refImages = [imgs[0].filename];
+      updateRefSel();
       let grid = '<div class="imggrid">';
       imgs.forEach((img, i) => {
         grid +=
@@ -1760,7 +1929,8 @@ function pickKeyImage(card) {
   const grid = card.parentElement;
   grid.querySelectorAll(".imgcard").forEach(c => c.classList.remove("sel"));
   card.classList.add("sel");
-  curImageFilename = card.dataset.fn;
+  refImages = [card.dataset.fn];
+  updateRefSel();
 }
 
 function reviseImage() {
@@ -1774,7 +1944,7 @@ function confirmImage() {
     addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから画像を確定してください。</div>');
     return;
   }
-  if (!curImageFilename) {
+  if (!refImages.length) {
     addMsg("bot", '<div class="meta">⚠ 確定する画像がありません。画像を生成してから選んでください。</div>');
     return;
   }
@@ -1788,7 +1958,7 @@ function confirmImage() {
       const r = await fetch("/api/plan", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({text: "__CONFIRM_IMAGE__", stage: "video", image: curImageFilename})
+        body: JSON.stringify({text: "__CONFIRM_IMAGE__", stage: "video", image: refImages[0] || null})
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -1877,8 +2047,8 @@ function genPlanLast() {
   // lastImgPrompt を保持するのと同じ挙動に揃える）。
   setBusy(true);
   const mode = document.querySelector('input[name="mode"]:checked').value;
-  // キー画像（curImageFilename）がある場合は checkbox に関係なく画像モード
-  const useRef = $("#refmode").checked || !!curImageFilename;
+  // キー画像（refImages）がある場合は checkbox に関係なく画像モード
+  const useRef = $("#refmode").checked || refImages.length > 0;
   const tag = useRef ? imageUseTag() : "✅ この企画で生成する: ";
   addMsg("user", tag + finalPrompt);
   const bot = addMsg("bot", '<div class="meta">生成中…（モデルロード込みで数分）</div>');
@@ -1895,14 +2065,19 @@ async function doGenerate(mode, text, bot) {
         mode: mode, text: text, dit: ditValue(),
         // 選んだ画像は常に参照される（画像モード checkbox が OFF でも自動有効）。
         // 「画像を入れたのに無視されて無関係な動画ができる」事故の根本対策。
-        ref: $("#refmode").checked || !!curImageFilename, image: curImageFilename,
+        ref: $("#refmode").checked || refImages.length > 0,
+        image: refImages[0] || null, images: refImages,
         image_use: $("#imguse").value,
+        ref_size: ($("#refsize-max") && $("#refsize-max").checked) ? "max" : "match",
+        tune: tuneSpec(),
         audio: audioSpec(), length: lenValue()
       })
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     overrideNote(bot, j);
+    refUsageNote(bot);
+    tuneNote(bot, j);
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
@@ -2314,12 +2489,29 @@ class ChatHandler(BaseHTTPRequestHandler):
         text = (req.get("text") or "").strip()
         ref = req.get("ref") is True
         image_fn = req.get("image") or None
+        # 参照画像の複数指定: 新クライアントは images[]（順序付き・1枚目が主参照）
+        # を送る。旧クライアントは image だけなので 1 要素リストとして扱う。
+        images = req.get("images") or ([image_fn] if image_fn else [])
+        if not isinstance(images, list) or not all(isinstance(x, str) and x for x in images):
+            self._json(400, {"error": "images はパスのリストで指定してください"})
+            return
+        if len(images) > MAX_REF_IMAGES:
+            self._json(400, {"error": f"参照画像は最大 {MAX_REF_IMAGES} 枚までです（MiniMax H3 の上限）"})
+            return
+        image_fn = images[0] if images else None
         # 画像の使い方: "first" = 先頭フレーム固定 (I2V)、"last" = 最終フレーム固定、
         # "ref" = 参照画像（R2V・同一キャラ維持）。旧クライアントは送らないので
         # その場合は従来どおり R2V になる。
         image_use = req.get("image_use") or "ref"
         if image_use not in ("first", "last", "ref"):
             self._json(400, {"error": "unknown image_use: " + str(image_use)})
+            return
+        # 参照画像の解像度: "match"（既定・生成分解能に合わせる）/ "max"
+        # （短辺 2048px・なりきり精度最高だが毎ステップの参照トークンが
+        # 大きくなり数倍遅い）。R2V 経路のみで意味を持つ。
+        ref_size = req.get("ref_size") or "match"
+        if ref_size not in ("match", "max"):
+            self._json(400, {"error": "unknown ref_size: " + str(ref_size)})
             return
         # 画像が選択されているのに参照モード OFF のままでは、その画像は完全に
         # 無視され、テキストだけの無関係な動画が生成されていた（「女の子の
@@ -2337,6 +2529,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         if not text:
             self._json(400, {"error": "プロンプトが空です"})
+            return
+        # 未成年ガード: 手動プロンプト・過去プロンプトの再送も含め、生成直前で
+        # 最終チェック（企画 LLM 経路以外からのバイパスを塞ぐ）。
+        if _minor_guard(text):
+            self._json(400, {"error": MINOR_REFUSAL})
             return
         # UI の音声・セリフ設定をプロンプトにマージ
         text += _audio_block(audio)
@@ -2380,12 +2577,33 @@ class ChatHandler(BaseHTTPRequestHandler):
                     self._json(500, {"error": f"R2V ワークフロー読み込み失敗: {e}"})
                     return
                 try:
-                    ref_name = self._stage_ref_image(image_fn)
+                    ref_names = [self._stage_ref_image(fn) for fn in images]
                 except Exception as e:
                     self._json(400, {"error": str(e)})
                     return
-                wf[NODE_R2V_IMAGE]["inputs"]["image"] = ref_name
-                wf[NODE_R2V_PROMPT]["inputs"]["prompt"] = text + R2V_TAG_NOTE
+                wf[NODE_R2V_IMAGE]["inputs"]["image"] = ref_names[0]
+                r2v_in = wf[NODE_R2V_PROMPT]["inputs"]
+                # 2 枚目以降の参照画像: LoadImage ノードを追加して ref_image_N に
+                # 配線する（Autogrow 入力・最大 9 枚）。プロンプトからは
+                # <Picture 1>..<Picture N> で参照される。ワークフロー JSON は
+                # フラットキー（ref_images.ref_image_0）とネスト辞書
+                # （ref_images.ref_image_0）の両形式を持つため、両方に追記する。
+                if len(ref_names) > 1:
+                    next_id = max((int(k) for k in wf if k.isdigit()), default=0) + 1
+                    for i, name in enumerate(ref_names[1:], start=1):
+                        nid = str(next_id)
+                        next_id += 1
+                        wf[nid] = {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": name},
+                            "_meta": {"title": "Load Ref Image %d" % (i + 1)},
+                        }
+                        key = "ref_image_%d" % i
+                        r2v_in["ref_images." + key] = [nid, 0]
+                        r2v_in.setdefault("ref_images", {})[key] = [nid, 0]
+                if ref_size == "max":
+                    r2v_in["ref_image_size"] = "max"
+                r2v_in["prompt"] = text + _r2v_tag_note(len(ref_names))
         else:
             try:
                 with open(WORKFLOWS[eff_mode], encoding="utf-8") as f:
@@ -2423,6 +2641,65 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if n.get("class_type") in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"):
                     n["inputs"]["width"] = w_
                     n["inputs"]["height"] = h_
+        # 詳細設定の品質チューニング（任意・未指定ならワークフロー既定値のまま）。
+        # 実在するノードにだけ適用する: EasyCache / turbo LoRA は Spectrum 系の
+        # fast ワークフローには存在せず、ref LoRA（なりきり用・強度調整済み）は
+        # 変更しない。効かなかった指定は tune_ignored で返し、UI が「このモード
+        # では効かない」を表示する（サイレントな無視をしない）。
+        tune = req.get("tune") or {}
+        if not isinstance(tune, dict):
+            self._json(400, {"error": "tune はオブジェクトで指定してください"})
+            return
+
+        def _tune_num(key, lo, hi):
+            if key not in tune or tune[key] in (None, ""):
+                return None
+            try:
+                v = float(tune[key])
+            except (TypeError, ValueError):
+                raise ValueError(key)
+            if not (lo <= v <= hi):
+                raise ValueError(key)
+            return v
+
+        try:
+            t_cache = _tune_num("easycache", 0.0, 1.0)
+            t_lora = _tune_num("lora", 0.0, 2.0)
+            t_crf = _tune_num("crf", 0.0, 51.0)
+        except ValueError as bad:
+            self._json(400, {"error": f"tune.{bad} の値が範囲外か数値ではありません"})
+            return
+        classes = {n.get("class_type") for n in wf.values()}
+        tune_ignored = []
+        if t_cache is not None:
+            if "EasyCache" in classes:
+                for n in wf.values():
+                    if n.get("class_type") == "EasyCache":
+                        n["inputs"]["reuse_threshold"] = t_cache
+            else:
+                tune_ignored.append("EasyCache 閾値（このモードは EasyCache 非使用）")
+        if t_lora is not None:
+            applied = False
+            for n in wf.values():
+                ins = n.get("inputs", {})
+                # turbo LoRA だけを対象にする（ref LoRA / 画像系 LoRA は対象外）
+                if n.get("class_type") == "LoraLoaderModelOnly" and "turbo" in str(ins.get("lora_name", "")).lower():
+                    ins["strength_model"] = t_lora
+                    applied = True
+            if not applied:
+                tune_ignored.append("Turbo LoRA 強度（このモードは turbo LoRA 非使用）")
+        if t_crf is not None:
+            if "SaveVideo" in classes:
+                for n in wf.values():
+                    if n.get("class_type") == "SaveVideo":
+                        # crf は codec DynamicCombo の re-encode 経路で効く
+                        # （auto のままでは互換ストリームが再エンコードされない）。
+                        n["inputs"]["codec"] = {
+                            "codec": "h264",
+                            "encoding": {"encoding": "re-encode", "crf": t_crf},
+                        }
+            else:
+                tune_ignored.append("保存 crf（SaveVideo ノードなし）")
         # チャット指示（「高画質で/長めに/縦長で」）による上書きが有効なとき、
         # UI のモード/長さドロップダウンとは違う設定で生成されることがある。
         # 「知らない間に別の設定で生成されていた」を防ぐため、実際に効いている
@@ -2459,7 +2736,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "mode": eff_mode, "start": time.time(), "kind": "video",
                 "image_use": image_use if ref else "",
             }
-            self._json(200, {"prompt_id": pid, "eff_mode": eff_mode, "override_label": override_label})
+            self._json(200, {"prompt_id": pid, "eff_mode": eff_mode, "override_label": override_label, "tune_ignored": tune_ignored})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
@@ -2479,6 +2756,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         if not text:
             self._json(400, {"error": "メッセージが空です"})
+            return
+        # 未成年ガード: 子供を被写体にする依頼は LLM に回さず即座に断る
+        # （確定判定・LLM の自制に任せない）。
+        if _minor_guard(text):
+            self._json(200, {"reply": MINOR_REFUSAL})
             return
         endpoint = self._plan_endpoint()
         if not endpoint:
@@ -2787,6 +3069,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                 reply = IMG_FINAL_RE.sub("", reply)
                 reply = FINAL_RE.sub("", reply)
                 reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
+            # 未成年ガード: 明示的な子供依頼にモデルが従ってプロンプトを
+            # 出力しても、ここで確定にブロックする（PLAN_SYSTEM の成人限定
+            # ルール違反をサイレントに流さない）。プロンプトは破棄し、
+            # 返答を拒否メッセージに差し替える（生成ボタンが出ない）。
+            if img_prompt and _minor_guard(img_prompt):
+                img_prompt = None
+                img_prompt_ja = None
+                reply = MINOR_REFUSAL
+            if final_prompt and _minor_guard(final_prompt):
+                final_prompt = None
+                final_prompt_ja = None
+                reply = MINOR_REFUSAL
             if img_prompt:
                 with SESSION_LOCK:
                     SESSION["image_prompt"] = img_prompt
@@ -2888,6 +3182,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         text = (req.get("text") or "").strip()
         if not text:
             self._json(400, {"error": "画像プロンプトが空です"})
+            return
+        # 未成年ガード: キー画像生成の最終ゲート（企画 LLM のチェックを
+        # 抜けてきたプロンプトもここで止める）。
+        if _minor_guard(text):
+            self._json(400, {"error": MINOR_REFUSAL})
             return
         engine = req.get("engine") or "zimg"
         eng = IMG_ENGINES.get(engine)
