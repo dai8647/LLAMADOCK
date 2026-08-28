@@ -828,3 +828,28 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   - 対策: h3-chat を再起動すれば真の軽量R2V(4B)が効く。長い動画は「2秒
     セグメント + 今回の続きもの機能」で繋ぐ方が速い。LM Studio 稼働中の
     生成は避ける。
+
+## 2026-08-28（夜） 全スタック再起動 + 企画 LLM の DLL サイレント死修正
+
+user がラマドックから接続しても古い h3-chat（11:41 起動・全修正の前のコード）
+に繋がり続けていたため、全スタックを新コードで再起動した。
+
+- 古い h3-chat（PID 9724+6476）を停止 → ComfyUI を ck プロファイルで再起動
+  （.venv python main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0
+  --use-ck-attention、ログ tools/comfyui-restart.log[.err]）→ tools/h3-chat.ps1
+  で h3-chat + CPU 4B 企画 LLM を起動。
+- **発見したバグ（修正済み）**: 企画 LLM（llama-server の ROCm/HIP ビルド）は
+  amdhip64_7.dll のため ROCm bin が PATH に必要だが、
+  ① h3-chat.py の _spawn_plan_llm は GPU 分岐でしか PATH を補強していなかった
+  （CPU 4B planner は select-model.ps1 経由の PATH 継承に依存 → 普通のシェル
+  から起動すると STATUS_DLL_NOT_FOUND でサイレント死）、
+  ② h3-chat.ps1 単独実行時も同じ問題。
+  修正: _spawn_plan_llm は PLAN_GPU に関係なく PLAN_ROCM_BIN を PATH へ
+  （LLAMADOCK_ROCM_BIN 環境変数で上書き可）、h3-chat.ps1 も起動前に最新の
+  C:\Program Files\AMD\ROCm\*\bin を PATH 補強。
+- 再起動で有効になったもの: 画像の使い方セレクタ+真の軽量R2V 4B（fbc4618）/
+  キー画像・動画の日本語説明（522cf8a+3b261db）/ 未成年ガード 4 段（befcfb9）/
+  サイドバー（8786376）/ 続きもの・アップスケール・結合（170875e）。
+- 検証: 配信 HTML に全マーカー存在（こんな画像になります/こんな映像になります/
+  extendVideo/upscaleVideo/segmentChain/sess-list/imguse）、8190 planner 200、
+  ComfyUI キュー空。
