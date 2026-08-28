@@ -22,7 +22,7 @@ function makeEl(id) {
     querySelector() { return null; },
     querySelectorAll() { return []; },
     closest() { return null; },
-    classList: { add() {}, remove() {} },
+    classList: { add() {}, remove() {}, toggle() {} },
     focus() {}, click() {},
     setAttribute() {}, getAttribute() { return null; },
   };
@@ -43,11 +43,17 @@ el("mode-radio"); // placeholder, unused
 const state = {
   fetches: [],
   alerts: [],
+  confirms: [],
+  confirmAnswer: true,
   modeValue: "quick",
   planReply: { reply: "ok" },
   resetFail: false,
   refImagesResponse: null,   // null = default single image
   tuneIgnored: [],
+  sessionsResponse: null,    // null = no sessions, no active
+  sessionSaves: [],          // bodies posted to /api/sessions/save
+  switchFail: false,
+  switchResult: null,        // session doc returned by /api/sessions/switch
   statusResult: { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] },
 };
 
@@ -59,6 +65,17 @@ async function fakeFetch(url, opts) {
   if (url === "/api/generate") return j({ prompt_id: "p1", eff_mode: state.modeValue, override_label: "", tune_ignored: state.tuneIgnored });
   if (url.startsWith("/api/status/")) return j(state.statusResult);
   if (url === "/api/refimages") return j({ images: state.refImagesResponse || [{ path: "C:\\ComfyUI\\output\\x.png", name: "x.png", dir: "output" }] });
+  if (url === "/api/sessions") return j(state.sessionsResponse || { active_id: null, sessions: [], active: null });
+  if (url === "/api/sessions/save") {
+    state.sessionSaves.push({ body: opts.body });
+    const b = JSON.parse(opts.body);
+    return j({ id: b.id || "s-new-1", title: "t", updated: 1 });
+  }
+  if (url === "/api/sessions/switch") {
+    if (state.switchFail) return j({ error: "boom" }, false, 500);
+    return j({ session: state.switchResult });
+  }
+  if (url === "/api/sessions/delete") return j({ ok: true });
   if (url === "/api/plan") {
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
     if (body.text === "__RESET__") {
@@ -89,6 +106,9 @@ const sandbox = {
   document: documentStub,
   fetch: fakeFetch,
   alert(msg) { state.alerts.push(String(msg)); },
+  confirm(msg) { state.confirms.push(String(msg)); return state.confirmAnswer !== false; },
+  navigator: { sendBeacon() {} },
+  addEventListener() {},
   setInterval: () => 0,
   clearInterval() {},
   setTimeout, clearTimeout,
@@ -197,8 +217,9 @@ await tick();
   check("ref-sel shows filename", el("ref-sel").textContent === "x.png");
 }
 
-console.log("[7] resetPlan: server failure is surfaced, not swallowed");
-state.resetFail = true;
+console.log("[7] resetPlan: switch failure is surfaced, success clears to a fresh session");
+run(`lastFinalPrompt = "PROMPT_KEEP"; planStage = "video";`);
+state.switchFail = true;
 const msgsBefore = el("msgs").children.length;
 await run(`(async () => { await resetPlan(); })()`);
 await tick();
@@ -206,17 +227,18 @@ await tick();
   const added = el("msgs").children.slice(msgsBefore);
   check("warning shown on reset failure",
     added.some(c => c.innerHTML.includes("サーバー側のリセットに失敗")));
-  check("local state cleared anyway", run(`lastFinalPrompt === null && planStage === "chat"`));
+  check("messages and state kept on failure",
+    el("msgs").children.length === msgsBefore + 1 && run(`lastFinalPrompt`) === "PROMPT_KEEP");
 }
-state.resetFail = false;
-const msgsBefore2 = el("msgs").children.length;
+state.switchFail = false;
 await run(`(async () => { await resetPlan(); })()`);
 await tick();
 {
-  const added = el("msgs").children.slice(msgsBefore2);
-  check("no warning on successful reset",
-    !added.some(c => c.innerHTML.includes("サーバー側のリセットに失敗")));
-  check("reset greeted", added.some(c => c.innerHTML.includes("新しい企画を始めましょう")));
+  check("messages cleared on successful reset", el("msgs").children.length === 0);
+  check("local state reset", run(`lastFinalPrompt === null && planStage === "chat" && activeSessionId === null`));
+  const switches = state.fetches.filter(f => f.url === "/api/sessions/switch");
+  check("switch(null) used for new session",
+    switches.length > 0 && JSON.parse(switches[switches.length - 1].opts.body).id === null);
 }
 
 console.log("[8] plan() image stage: Japanese description + collapsible English");
@@ -344,6 +366,100 @@ await tick();
 }
 state.tuneIgnored = [];
 state.statusResult = { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] };
+
+console.log("[15] initSessions restores active session (messages + UI state)");
+state.sessionsResponse = {
+  active_id: "s1",
+  sessions: [{ id: "s1", title: "テスト企画", updated: Math.floor(Date.now() / 1000) - 120, n: 2 }],
+  active: {
+    id: "s1", title: "テスト企画",
+    messages: [
+      { who: "user", html: "海辺の動画を作って" },
+      { who: "bot", html: '<div class="meta">企画案</div>了解です' }
+    ],
+    ui: { planStage: "video", lastFinalPrompt: "SEASIDE_PROMPT", lastImgPrompt: null,
+          refImages: ["ref1.png"], refConsultActive: false, imguse: "ref",
+          curJobId: null, curJobKind: null }
+  }
+};
+await run(`(async () => { await initSessions(); })()`);
+await tick();
+{
+  check("messages rendered", el("msgs").children.length === 2);
+  check("user message content", el("msgs").children[0].innerHTML.includes("海辺の動画"));
+  check("UI state restored", run(`lastFinalPrompt`) === "SEASIDE_PROMPT" && run(`planStage`) === "video");
+  check("refImages restored + footer updated",
+    run(`refImages[0]`) === "ref1.png" && el("ref-sel").textContent.includes("ref1.png"));
+  check("imguse restored", run(`$("#imguse").value`) === "ref");
+  check("activeSessionId set", run(`activeSessionId`) === "s1");
+  const items = el("sess-list").children.filter(c => (c.className || "").includes("sessitem"));
+  check("sidebar shows session title",
+    items.length === 1 && items[0].children[0].textContent === "テスト企画");
+  check("sidebar marks active session", (items[0].className || "").includes("active"));
+}
+
+console.log("[16] saveSession posts snapshot + dedups unchanged saves");
+state.sessionSaves.length = 0;
+run(`addMsg("user", "新しいメッセージ");`);
+await run(`(async () => { await saveSession(); })()`);
+await tick();
+{
+  check("save posted", state.sessionSaves.length === 1);
+  const b = JSON.parse(state.sessionSaves[0].body);
+  check("save carries id + messages + ui",
+    b.id === "s1" && b.messages.length === 3 && b.ui.planStage === "video");
+}
+await run(`(async () => { await saveSession(); })()`);
+await tick();
+check("unchanged save skipped (dedup)", state.sessionSaves.length === 1);
+
+console.log("[17] switchSession: busy guard + loads target session");
+run(`setBusy(true);`);
+state.alerts.length = 0;
+await run(`(async () => { await switchSession("s2"); })()`);
+await tick();
+check("busy blocks switch", state.alerts.some(a => a.includes("生成が進行中")));
+run(`setBusy(false);`);
+state.switchResult = {
+  id: "s2", title: "別の企画",
+  messages: [{ who: "user", html: "別の企画メッセージ" }],
+  ui: { planStage: "chat", lastFinalPrompt: null, refImages: [], imguse: "first", curJobId: null }
+};
+await run(`(async () => { await switchSession("s2"); })()`);
+await tick();
+{
+  check("target session rendered",
+    el("msgs").children.length === 1 && el("msgs").children[0].innerHTML.includes("別の企画メッセージ"));
+  check("activeSessionId switched", run(`activeSessionId`) === "s2");
+  check("imguse restored to first", run(`$("#imguse").value`) === "first");
+}
+state.switchResult = null;
+
+console.log("[18] newChat starts a fresh session");
+await run(`(async () => { await newChat(); })()`);
+await tick();
+{
+  check("messages cleared", el("msgs").children.length === 0);
+  check("activeSessionId null", run(`activeSessionId`) === null);
+  const switches = state.fetches.filter(f => f.url === "/api/sessions/switch");
+  check("switch(null) called", JSON.parse(switches[switches.length - 1].opts.body).id === null);
+}
+
+console.log("[19] restoring a session with a running job resumes polling");
+state.switchResult = {
+  id: "s3", title: "生成中だった企画",
+  messages: [{ who: "bot", html: '<div class="meta">生成中…</div>' }],
+  ui: { planStage: "video", curJobId: "job-123", curJobKind: "video" }
+};
+await run(`(async () => { await switchSession("s3"); })()`);
+await tick();
+{
+  check("job state cleared after resumed job completes", run(`curJobId === null && curJobKind === null`));
+  check("poll completed after resume", el("msgs").children[0].innerHTML.includes("完成 ✅"));
+  check("busy cleared after completion", run(`busy`) === false);
+}
+state.switchResult = null;
+state.sessionsResponse = null;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

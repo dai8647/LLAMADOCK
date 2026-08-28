@@ -24,6 +24,7 @@ __pycache__/
 mcp-data/
 mcp-share/
 mcp-browser-output/
+sessions/
 logs/
 .freebuff/
 local-deep-research-test/

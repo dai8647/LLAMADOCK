@@ -948,6 +948,150 @@ def _minor_guard(text):
     return bool(MINOR_RE.search(text or ""))
 
 
+# ---- 企画セッションの永続化（サイドバー履歴） ------------------------
+# ChatGPT のように過去の企画をサイドバーに並べて切り替えられるように、
+# チャット画面（メッセージ HTML）+ UI 状態 + サーバー側企画状態
+# （PLAN_HISTORY / SESSION）をセッション単位で JSON ファイルに保存する。
+# 保存先はリポジトリ直下の sessions/（.gitignore 済み・このマシン専用データ）。
+SESSIONS_DIR = os.path.join(REPO, "sessions")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# 今表示しているセッションの id（まだ一度も保存されていない新規企画は None）
+ACTIVE_SESSION = {"id": None}
+ACTIVE_SESSION_LOCK = threading.Lock()
+
+
+def _sessions_dir():
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    return SESSIONS_DIR
+
+
+def _session_path(sid):
+    if not sid or not _SESSION_ID_RE.match(sid):
+        return None
+    return os.path.join(SESSIONS_DIR, sid + ".json")
+
+
+def _new_session_id():
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + random.choice("abcdefghjk") + str(random.randint(100, 999))
+
+
+def _load_session_file(sid):
+    path = _session_path(sid)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        if isinstance(doc, dict) and doc.get("id") == sid:
+            return doc
+    except Exception:
+        pass
+    return None
+
+
+def _write_session_file(doc):
+    path = _session_path(doc.get("id"))
+    if not path:
+        return False
+    d = _sessions_dir()
+    tmp = os.path.join(d, ".tmp-" + doc["id"] + ".json")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _session_title(messages):
+    """最初のユーザー発言からサイドバー表示用のタイトルを作る。"""
+    for m in messages or []:
+        if not isinstance(m, dict) or m.get("who") != "user":
+            continue
+        txt = re.sub(r"<[^>]+>", " ", m.get("html") or "")
+        txt = re.sub(r"\s+", " ", txt).strip()
+        txt = re.sub(r"^[\W_]+", "", txt)  # 先頭の絵文字・記号を落とす
+        if txt:
+            return txt[:34] + ("…" if len(txt) > 34 else "")
+    return "新しい企画"
+
+
+def _list_sessions():
+    """新しい順に [{id,title,updated,n}] を返す。"""
+    out = []
+    try:
+        fns = os.listdir(_sessions_dir())
+    except OSError:
+        return out
+    for fn in fns:
+        if not fn.endswith(".json") or fn.startswith((".", "_")):
+            continue
+        sid = fn[:-5]
+        doc = _load_session_file(sid)
+        if not doc:
+            continue
+        out.append({
+            "id": sid,
+            "title": doc.get("title") or "新しい企画",
+            "updated": doc.get("updated") or 0,
+            "n": len(doc.get("messages") or []),
+        })
+    out.sort(key=lambda s: s["updated"], reverse=True)
+    return out
+
+
+def _read_active_pointer():
+    try:
+        with open(os.path.join(_sessions_dir(), "_active.json"), encoding="utf-8") as f:
+            return (json.load(f) or {}).get("id")
+    except Exception:
+        return None
+
+
+def _write_active_pointer(sid):
+    try:
+        with open(os.path.join(_sessions_dir(), "_active.json"), "w", encoding="utf-8") as f:
+            json.dump({"id": sid}, f)
+    except OSError:
+        pass
+
+
+def _server_state_snapshot():
+    """企画 LLM の会話履歴と生成パラメータ上書きを JSON 化して保存する。"""
+    with PLAN_LOCK:
+        history = [dict(h) for h in PLAN_HISTORY]
+    with SESSION_LOCK:
+        sess = dict(SESSION)
+    res = sess.get("resolution")
+    if isinstance(res, tuple):
+        sess["resolution"] = list(res)
+    return {"history": history, "session": sess}
+
+
+def _restore_server_state(state):
+    state = state or {}
+    history = state.get("history") or []
+    with PLAN_LOCK:
+        PLAN_HISTORY.clear()
+        for h in history:
+            if isinstance(h, dict) and h.get("role") in ("user", "assistant"):
+                PLAN_HISTORY.append({"role": h["role"], "content": str(h.get("content") or "")})
+    sess = state.get("session") or {}
+    with SESSION_LOCK:
+        SESSION["image_prompt"] = sess.get("image_prompt")
+        SESSION["video_prompt"] = sess.get("video_prompt")
+        SESSION["mode_override"] = sess.get("mode_override")
+        SESSION["length_frames"] = sess.get("length_frames")
+        res = sess.get("resolution")
+        SESSION["resolution"] = tuple(res) if isinstance(res, (list, tuple)) and len(res) == 2 else None
+
+
 def _unclosed_tag(text, tag):
     """Content after an UNCLOSED [tag] opener, or None.
 
@@ -1117,8 +1261,34 @@ HTML = """<!doctype html>
   #status-dot.ok { background:var(--ok); box-shadow:0 0 8px rgba(52,211,153,.7); }
   #status-dot.down { background:var(--err); box-shadow:0 0 8px rgba(248,113,113,.7); }
 
+  /* ---- sidebar (past sessions, ChatGPT-style) ---- */
+  #app { flex:1; display:flex; min-height:0; }
+  #sidebar { width:250px; min-width:250px; border-right:1px solid var(--line);
+             background:var(--panel); display:flex; flex-direction:column;
+             padding:10px; gap:10px; }
+  #sidebar.hidden { display:none; }
+  #btn-newchat { background:var(--grad); color:#fff; border:none; border-radius:10px;
+                 padding:10px 12px; font-size:13px; font-weight:700; cursor:pointer; }
+  #sess-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:4px; }
+  .sessitem { padding:8px 28px 8px 10px; border-radius:10px; cursor:pointer;
+              border:1px solid transparent; position:relative; }
+  .sessitem:hover { background:var(--panel2); }
+  .sessitem.active { background:var(--panel2); border-color:var(--accent); }
+  .sessitem .sesstitle { font-size:12px; line-height:1.4; overflow:hidden;
+                         text-overflow:ellipsis; white-space:nowrap; }
+  .sessitem .sesstime { font-size:10px; color:var(--muted); margin-top:2px; }
+  .sessitem .sessdel { position:absolute; top:6px; right:6px; display:none;
+                       background:transparent; border:none; color:var(--muted);
+                       padding:2px 5px; font-size:12px; border-radius:6px; cursor:pointer; }
+  .sessitem:hover .sessdel { display:block; }
+  .sessitem .sessdel:hover { color:var(--err); background:rgba(248,113,113,.12); }
+  #sess-empty { color:var(--muted); font-size:11px; padding:6px 4px; }
+  #btn-sidebar { background:transparent; border:1px solid var(--line); color:var(--text);
+                 border-radius:8px; padding:5px 10px; font-size:14px; cursor:pointer; }
+  #btn-sidebar:hover { background:var(--panel2); filter:none; }
+
   /* ---- chat area ---- */
-  main { flex:1; overflow-y:auto; padding:18px 20px; }
+  main { flex:1; overflow-y:auto; padding:18px 20px; min-width:0; }
   .msg { max-width:80%; padding:11px 15px; border-radius:14px; margin-bottom:12px;
          font-size:14px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
   .user { background:linear-gradient(135deg,#1e3a5f,#243252); margin-left:auto;
@@ -1271,11 +1441,18 @@ HTML = """<!doctype html>
 </head>
 <body>
 <header>
+  <button id="btn-sidebar" onclick="toggleSidebar()" title="履歴サイドバーを表示/非表示">☰</button>
   <h1>🎬 MiniMax H3 チャット動画生成</h1>
   <span class="sub">企画モード: キー画像（Z-Image Turbo）→ 確認 → 動画（H3・32B/4B）</span>
   <span id="status-dot" title="ComfyUI 接続状態"></span>
 </header>
+<div id="app">
+<aside id="sidebar">
+  <button id="btn-newchat" onclick="newChat()">➕ 新しい企画</button>
+  <div id="sess-list"></div>
+</aside>
 <main id="msgs"></main>
+</div>
 <div id="shutdown-box">
   <div class="meta">生成完了 ✅ 自動停止まで <b id="countdown">90</b> 秒（GPU・メモリを解放します）</div>
   <button class="warn" onclick="stopAll()">🛑 今すぐすべて終了</button>
@@ -1404,6 +1581,11 @@ let planStage = "chat";   // chat -> image -> video -> done
 let refConsultActive = false;
 let shutdownTimer = null;
 let shutdownLeft = 0;
+// セッション履歴（サイドバー）: 今表示中のセッション id
+// （null = まだ一度も保存されていない新しい企画）
+let activeSessionId = null;
+let lastSavedJson = "";   // 自動保存の重複排除（中身 unchanged なら送らない）
+let curJobKind = null;    // "video" | "image" — セッション復元時のジョブ再開用
 
 function addMsg(kind, html) {
   const el = document.createElement("div");
@@ -1875,6 +2057,7 @@ async function genImage(prevBot) {
 async function pollImage(id, bot) {
   if (jobCancelled) return;
   curJobId = id;
+  curJobKind = "image";
   try {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
@@ -1883,6 +2066,7 @@ async function pollImage(id, bot) {
       if (!imgs.length) {
         bot.innerHTML = '<div class="meta">エラー</div><div class="err">画像が見つかりませんでした</div>';
         curJobId = null;
+        curJobKind = null;
         setBusy(false);
         return;
       }
@@ -1907,12 +2091,14 @@ async function pollImage(id, bot) {
         "</div>";
       planStage = "image";
       curJobId = null;
+      curJobKind = null;
       setBusy(false);
       return;
     }
     if (j.status === "error") {
       bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(j.error || "画像生成に失敗しました") + "</div>";
       curJobId = null;
+      curJobKind = null;
       setBusy(false);
       return;
     }
@@ -2087,6 +2273,7 @@ async function doGenerate(mode, text, bot) {
 
 async function poll(id, bot) {
   curJobId = id;
+  curJobKind = "video";
   try {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
@@ -2095,6 +2282,7 @@ async function poll(id, bot) {
       if (!vids.length) {
         bot.innerHTML = '<div class="meta">エラー</div><div class="err">生成は完了しましたが出力が見つかりませんでした。もう一度お試しください。</div>';
         curJobId = null;
+        curJobKind = null;
         setBusy(false);
         return;
       }
@@ -2104,6 +2292,7 @@ async function poll(id, bot) {
         '&type=' + encodeURIComponent(v.type || "output") + '"></video>' +
         '<div class="path">' + esc(v.path) + "</div>";
       curJobId = null;
+      curJobKind = null;
       setBusy(false);
       startShutdown();
       return;
@@ -2111,6 +2300,7 @@ async function poll(id, bot) {
     if (j.status === "error") {
       bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(j.error || "失敗しました") + "</div>";
       curJobId = null;
+      curJobKind = null;
       setBusy(false);
       return;
     }
@@ -2149,7 +2339,10 @@ async function cancelJob(id, bot) {
       body: JSON.stringify({prompt_id: id})
     });
   } catch (e) {}
-  if (curJobId === id) curJobId = null;
+  if (curJobId === id) {
+    curJobId = null;
+    curJobKind = null;
+  }
   if (bot) {
     const meta = bot.querySelector(".meta");
     if (meta) meta.textContent = "キャンセルしました（ComfyUI のジョブを中断・削除）";
@@ -2225,9 +2418,237 @@ async function doShutdown(scope) {
 
 function hideShutdown() { $("#shutdown-box").style.display = "none"; }
 
+// ---- セッション履歴（サイドバー） -------------------------------------
+// チャット画面（メッセージ HTML）+ UI 状態をサーバーに JSON 保存し、
+// サイドバーに一覧表示して切り替えられる（ChatGPT の履歴と同じ使い勝手）。
+// 切り替え時は企画 LLM の会話履歴もサーバー側で一緒に切り替わるので、
+// 過去の企画の続きをそのまま相談できる。
+
+function messagesSnapshot() {
+  return Array.from($("#msgs").children).map(c => ({
+    who: (c.className || "").indexOf("user") >= 0 ? "user" : "bot",
+    html: c.innerHTML
+  }));
+}
+
+function uiSnapshot() {
+  return {
+    planStage, lastFinalPrompt, lastImgPrompt,
+    refImages, refConsultActive,
+    imguse: $("#imguse").value,
+    curJobId: curJobId, curJobKind: curJobKind
+  };
+}
+
+async function saveSession() {
+  const msgs = messagesSnapshot();
+  if (!msgs.length && !activeSessionId) return;   // 空の新規チャットは保存しない
+  const body = JSON.stringify({id: activeSessionId, messages: msgs, ui: uiSnapshot()});
+  if (body === lastSavedJson) return;             // 前回保存から変化なし
+  try {
+    const r = await fetch("/api/sessions/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: body
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    lastSavedJson = body;
+    if (j.id) activeSessionId = j.id;
+    refreshSidebar();
+  } catch (e) {}
+}
+setInterval(saveSession, 6000);
+window.addEventListener("beforeunload", () => {
+  // タブを閉じるとき直近の状態を送る（fetch は間に合わないので sendBeacon）
+  try {
+    const msgs = messagesSnapshot();
+    if (!msgs.length && !activeSessionId) return;
+    const body = JSON.stringify({id: activeSessionId, messages: msgs, ui: uiSnapshot()});
+    if (body !== lastSavedJson && navigator.sendBeacon) {
+      navigator.sendBeacon("/api/sessions/save", new Blob([body], {type: "application/json"}));
+    }
+  } catch (e) {}
+});
+
+function relTime(ts) {
+  const d = Math.floor(Date.now() / 1000 - (ts || 0));
+  if (d < 60) return "たった今";
+  if (d < 3600) return Math.floor(d / 60) + " 分前";
+  if (d < 86400) return Math.floor(d / 3600) + " 時間前";
+  return Math.floor(d / 86400) + " 日前";
+}
+
+async function refreshSidebar() {
+  try {
+    const r = await fetch("/api/sessions");
+    const j = await r.json();
+    if (!r.ok) return;
+    const list = $("#sess-list");
+    list.innerHTML = "";
+    const sessions = j.sessions || [];
+    if (!sessions.length) {
+      const d = document.createElement("div");
+      d.id = "sess-empty";
+      d.textContent = "まだ履歴がありません。始めた企画がここに自動で表示されます。";
+      list.appendChild(d);
+      return;
+    }
+    sessions.forEach(s => {
+      const d = document.createElement("div");
+      d.className = "sessitem" + (s.id === activeSessionId ? " active" : "");
+      const t = document.createElement("div");
+      t.className = "sesstitle";
+      t.textContent = s.title || "新しい企画";
+      const tm = document.createElement("div");
+      tm.className = "sesstime";
+      tm.textContent = relTime(s.updated) + "・" + (s.n || 0) + " メッセージ";
+      const del = document.createElement("button");
+      del.className = "sessdel";
+      del.textContent = "🗑";
+      del.title = "この企画を削除";
+      del.onclick = (e) => { e.stopPropagation(); deleteSession(s.id); };
+      d.appendChild(t);
+      d.appendChild(tm);
+      d.appendChild(del);
+      d.onclick = () => switchSession(s.id);
+      list.appendChild(d);
+    });
+  } catch (e) {}
+}
+
+async function switchSession(id) {
+  if (busy) {
+    alert("生成が進行中です。完了してから切り替えてください（✕ キャンセルで中止できます）。");
+    return;
+  }
+  if (id && id === activeSessionId) return;
+  await saveSession();   // 今表示中の画面を先に確定保存する
+  try {
+    const r = await fetch("/api/sessions/switch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id: id || null})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    renderSession(j.session);
+  } catch (e) {
+    alert("セッションを切り替えられませんでした: " + (e.message || e));
+  }
+}
+
+function renderSession(doc) {
+  // 切り替え前の画面のポーリングを止める
+  jobCancelled = true;
+  curJobId = null;
+  curJobKind = null;
+  // ローカル状態をリセット
+  lastImgPrompt = null;
+  lastFinalPrompt = null;
+  planStage = "chat";
+  refConsultActive = false;
+  refImages = [];
+  refPickerSelection = [];
+  if (shutdownTimer) { clearInterval(shutdownTimer); shutdownTimer = null; }
+  hideShutdown();
+  $("#msgs").innerHTML = "";
+  lastSavedJson = "";
+  if (!doc) {
+    activeSessionId = null;
+    updateRefSel();
+    refreshSidebar();
+    return;
+  }
+  activeSessionId = doc.id;
+  const ui = doc.ui || {};
+  planStage = ui.planStage || "chat";
+  lastFinalPrompt = ui.lastFinalPrompt || null;
+  lastImgPrompt = ui.lastImgPrompt || null;
+  refImages = Array.isArray(ui.refImages) ? ui.refImages : [];
+  refConsultActive = !!ui.refConsultActive;
+  if (ui.imguse === "first" || ui.imguse === "last" || ui.imguse === "ref") $("#imguse").value = ui.imguse;
+  updateRefSel();
+  const clr = $("#ref-clear");
+  if (clr) clr.style.display = refImages.length ? "inline-block" : "none";
+  (doc.messages || []).forEach(m => addMsg(m.who, m.html));
+  $("#msgs").scrollTop = $("#msgs").scrollHeight;
+  // 保存時に未完了だった生成ジョブがあればポーリングを再開する
+  if (ui.curJobId) {
+    const kids = $("#msgs").children;
+    let lastBot = null;
+    for (let i = kids.length - 1; i >= 0; i--) {
+      if ((kids[i].className || "").indexOf("bot") >= 0) { lastBot = kids[i]; break; }
+    }
+    if (lastBot) {
+      curJobId = ui.curJobId;
+      curJobKind = ui.curJobKind === "image" ? "image" : "video";
+      setBusy(true);
+      if (curJobKind === "image") pollImage(ui.curJobId, lastBot);
+      else poll(ui.curJobId, lastBot);
+    }
+  }
+  refreshSidebar();
+}
+
+async function newChat() {
+  if (busy) {
+    alert("生成が進行中です。完了してから新しい企画を始めてください（✕ キャンセルで中止できます）。");
+    return;
+  }
+  await saveSession();
+  try {
+    const r = await fetch("/api/sessions/switch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id: null})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    renderSession(null);
+  } catch (e) {
+    alert("新しい企画を始められませんでした: " + (e.message || e));
+  }
+}
+
+async function deleteSession(id) {
+  if (id === activeSessionId) {
+    alert("今表示中のセッションは削除できません。先に他に切り替えてください。");
+    return;
+  }
+  if (!confirm("この企画を履歴から削除しますか？")) return;
+  try {
+    const r = await fetch("/api/sessions/delete", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({id: id})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    refreshSidebar();
+  } catch (e) {
+    alert("削除できませんでした: " + (e.message || e));
+  }
+}
+
+function toggleSidebar() {
+  $("#sidebar").classList.toggle("hidden");
+}
+
+// ページ読み込み時: 最後に表示していたセッションを復元しサイドバーを描画する。
+async function initSessions() {
+  try {
+    const r = await fetch("/api/sessions");
+    const j = await r.json();
+    if (!r.ok) return;
+    if (j.active) renderSession(j.active);
+    else refreshSidebar();
+  } catch (e) {}
+}
+initSessions();
+
 async function resetPlan() {
   // 進行中の生成ジョブがあれば先にキャンセルする
-  const hadJob = !!curJobId;
   if (curJobId) {
     try {
       await fetch("/api/cancel", {
@@ -2236,37 +2657,31 @@ async function resetPlan() {
         body: JSON.stringify({prompt_id: curJobId})
       });
     } catch (e) {}
-    curJobId = null;
   }
   jobCancelled = true;
+  curJobId = null;
+  curJobKind = null;
   setBusy(false);
   // 自動停止カウントダウンが残っていれば解除する
   if (shutdownTimer) { clearInterval(shutdownTimer); shutdownTimer = null; }
   $("#shutdown-box").style.display = "none";
-  // サーバー側のリセット（PLAN_HISTORY・上書き状態の消去）を待ってから画面を
-  // 切り替える。以前は fire-and-forget で、リクエストが失敗しても気づかず
-  // サーバーに古い企画状態が残ったまま次の企画が始まっていた。
+  // 今の企画を履歴に保存してから、サーバー側で新しいセッション始める。
+  // 以前は fire-and-forget の __RESET__ で、失敗しても気づかずサーバーに
+  // 古い企画状態が残ったまま次の企画が始まっていた。
   try {
-    const r = await fetch("/api/plan", {
+    await saveSession();
+    const r = await fetch("/api/sessions/switch", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: "__RESET__"})
+      body: JSON.stringify({id: null})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
   } catch (e) {
     addMsg("bot", '<div class="meta">⚠ サーバー側のリセットに失敗しました（' + esc(String(e.message || e)) + '）。企画 LLM に古い会話が残っている可能性があります。もう一度「🔄 新しい企画」を押してください。</div>');
+    return;
   }
-  lastImgPrompt = null;
-  lastFinalPrompt = null;
-  planStage = "chat";
-  // 参照画像の選択も解除する（古い画像が次の企画に勝手に参照されるのを防ぐ）
-  clearRefImage();
-  if (hadJob) {
-    addMsg("bot", '<div class="meta">新しい企画</div>進行中の生成をキャンセルし、新しい企画を始めます。作りたい映像を教えてください。');
-  } else {
-    addMsg("bot", '<div class="meta">新しい企画</div>新しい企画を始めましょう。作りたい映像を教えてください。');
-  }
+  renderSession(null);
 }
 
 $("#planmode").addEventListener("change", e => {
@@ -2346,6 +2761,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._refimg(parsed.query)
         elif parsed.path == "/api/plan-models":
             self._plan_models()
+        elif parsed.path == "/api/sessions":
+            self._sessions_list()
         else:
             self._json(404, {"error": "not found"})
 
@@ -2365,6 +2782,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._plan_settings(parsed)
         elif parsed.path == "/api/plan-model":
             self._plan_model_select(parsed)
+        elif parsed.path == "/api/sessions/save":
+            self._sessions_save(parsed)
+        elif parsed.path == "/api/sessions/switch":
+            self._sessions_switch(parsed)
+        elif parsed.path == "/api/sessions/delete":
+            self._sessions_delete(parsed)
         elif parsed.path == "/api/shutdown":
             self._shutdown(parsed)
         else:
@@ -2809,6 +3232,119 @@ class ChatHandler(BaseHTTPRequestHandler):
             SESSION["mode_override"] = None
             SESSION["length_frames"] = None
             SESSION["resolution"] = None
+
+    # ---- session history (sidebar) -----------------------------------
+
+    def _sessions_list(self):
+        with ACTIVE_SESSION_LOCK:
+            if ACTIVE_SESSION["id"] is None and os.path.isdir(SESSIONS_DIR):
+                # サーバー再起動後: 前回表示していたセッションを復元する
+                ptr = _read_active_pointer()
+                if ptr and _load_session_file(ptr):
+                    ACTIVE_SESSION["id"] = ptr
+            active = ACTIVE_SESSION["id"]
+        doc = _load_session_file(active) if active else None
+        self._json(200, {"active_id": active, "sessions": _list_sessions(), "active": doc})
+
+    def _sessions_save(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        sid = req.get("id") or None
+        messages = req.get("messages") or []
+        ui = req.get("ui") or {}
+        if not isinstance(messages, list) or len(messages) > 5000:
+            self._json(400, {"error": "messages が不正です"})
+            return
+        clean = []
+        for m in messages:
+            if not isinstance(m, dict) or m.get("who") not in ("user", "bot"):
+                continue
+            html = m.get("html")
+            if not isinstance(html, str):
+                continue
+            clean.append({"who": m["who"], "html": html})
+        if sid is not None and not _session_path(sid):
+            self._json(400, {"error": "セッション ID が不正です"})
+            return
+        if sid is None and not clean:
+            # 空の新規チャットは保存しない（サイドバーを汚さない）
+            self._json(200, {"id": None})
+            return
+        now = int(time.time())
+        old = _load_session_file(sid) if sid else None
+        if sid is None:
+            sid = _new_session_id()
+        doc = {
+            "id": sid,
+            "title": _session_title(clean),
+            "created": (old or {}).get("created") or now,
+            "updated": now,
+            "messages": clean,
+            "ui": ui if isinstance(ui, dict) else {},
+            "server": _server_state_snapshot(),
+        }
+        if not _write_session_file(doc):
+            self._json(500, {"error": "セッションの保存に失敗しました"})
+            return
+        with ACTIVE_SESSION_LOCK:
+            ACTIVE_SESSION["id"] = sid
+        _write_active_pointer(sid)
+        self._json(200, {"id": sid, "title": doc["title"], "updated": now})
+
+    def _sessions_switch(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        target = req.get("id") or None
+        if target is not None:
+            doc = _load_session_file(target)
+            if not doc:
+                self._json(404, {"error": "セッションが見つかりません"})
+                return
+            _restore_server_state(doc.get("server"))
+            with ACTIVE_SESSION_LOCK:
+                ACTIVE_SESSION["id"] = target
+            _write_active_pointer(target)
+            self._json(200, {"session": doc})
+            return
+        # id なし = 新しい企画（旧セッションはクライアントが直前に保存済み）
+        self._plan_reset()
+        with ACTIVE_SESSION_LOCK:
+            ACTIVE_SESSION["id"] = None
+        _write_active_pointer(None)
+        self._json(200, {"session": None})
+
+    def _sessions_delete(self, parsed):
+        try:
+            req = self._read_json_body()
+        except Exception:
+            self._json(400, {"error": "invalid JSON"})
+            return
+        sid = req.get("id") or ""
+        path = _session_path(sid)
+        if not path:
+            self._json(400, {"error": "セッション ID が不正です"})
+            return
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            self._json(500, {"error": f"削除に失敗しました: {e}"})
+            return
+        with ACTIVE_SESSION_LOCK:
+            was_active = ACTIVE_SESSION["id"] == sid
+            if was_active:
+                ACTIVE_SESSION["id"] = None
+        if was_active:
+            self._plan_reset()
+            _write_active_pointer(None)
+        self._json(200, {"ok": True, "was_active": was_active})
+
 
     def _audio_propose(self, parsed):
         """One-shot '🎙 自動で考える': ask the planning LLM for a voice/dialogue/
