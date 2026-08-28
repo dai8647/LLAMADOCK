@@ -620,9 +620,12 @@ def _spawn_plan_llm():
             # about this at startup); without it the model under-sees the key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     env = dict(os.environ)
-    if PLAN_GPU and os.path.isdir(PLAN_ROCM_BIN):
+    if os.path.isdir(PLAN_ROCM_BIN):
         # The HIP build links amdhip64_7.dll from the ROCm runtime; without it
-        # on PATH the server exits with STATUS_DLL_NOT_FOUND.
+        # on PATH the server exits with STATUS_DLL_NOT_FOUND. CPU planner too:
+        # its binary is the same ROCm build (-ngl 0 does not remove the DLL
+        # dependency), and the normal launcher chain (select-model.ps1) is what
+        # usually provides the PATH entry — a spawn from a plain shell fails.
         env["PATH"] = PLAN_ROCM_BIN + os.pathsep + env.get("PATH", "")
     log_path = os.path.join(os.environ.get("TEMP", REPO), "h3_plan_llm.log")
     logf = open(log_path, "a", encoding="utf-8", errors="replace")
