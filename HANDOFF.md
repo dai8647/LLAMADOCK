@@ -567,3 +567,46 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - GPU 27B 企画へ戻す場合: 次回 h3-chat 再起動後に UI のモデルドロップダウンで 27B を
   選び直せばよい（バイナリ候補鎖が TurboTan v10369 を解決する。b10536 より旧版で
   ある点だけ留意）。
+
+## 2026-08-28 画像の使い方を選択可能に（I2V 先頭/最終フレーム固定）+ 監査指摘の欠陥修正
+
+- 背景: 監査で「確認画像は動画の1フレーム目になります」という UI/企画 LLM の約束が
+  実際には果たされていなかった（画像は R2V の参照画像としてだけ使われ、フレームは
+  固定されない）こと、R2V「軽量 4B」が high と完全同一ファイルだったこと、
+  生成失敗時に動画プロンプトが失われて引き直しできないこと等が発覚した。
+- FixA 画像の使い方セレクタ（本当の I2V）:
+  - フッターに「画像の使い方」を追加: 📌 先頭フレーム固定（I2V）/ 🏁 最終フレーム固定 /
+    🎭 参照・キャラ維持（R2V）。「参照モード」checkbox は「画像モード」に改名。
+  - server: /api/generate が image_use（first/last/ref、既定 ref=旧挙動）を受け取る。
+    first/last は通常ワークフローの MiniMaxH3ImageToVideo（ノード "6"）に LoadImage
+    （専用ノード ID "20"、全ワークフローの既存 ID と非衝突）を配線し、
+    first_frame / last_frame 入力へ渡す（MiniMax H3 の keyframe conditioning、
+    comfy_extras/nodes_minimax_h3.py 組み込み機能）。ref は従来どおり R2V。
+  - 企画モードでキー画像を確定（confirmImage）すると既定が「先頭フレーム固定」に、
+    🗂 参照画像ピッカーで選ぶと「参照（R2V）」に自動切替。いつでも変更可。
+  - 生成開始メッセージに「📌 先頭フレーム固定で生成する: 」等と使い方を明示。
+  - 企画 LLM の画像確定メッセージを「1フレーム目として固定されて生成されます」に更新。
+- FixB 生成失敗時のプロンプト喪失: genPlanLast が生成前に lastFinalPrompt を
+  null にしていたのを廃止。失敗・キャンセル後も同じ「🎬 この企画で生成 ▶」ボタンで
+  引き直し可能（genImage が lastImgPrompt を保持する挙動と対称にした）。
+- FixC R2V「軽量 4B」の偽選択肢: h3_workflow_r2v_4b.json を新設
+  （4B heretic エンコーダ + ClipProj 射影 + 参照 LoRA、フル尺 1344x768x48@24fps、
+  r2v_short_4b と同じ構成）。R2V_WORKFLOWS["lite"] がこれを指すように変更。
+- 小物修正:
+  - resetPlan の __RESET__ が fire-and-forget だった → await して失敗時は
+    「サーバー側のリセットに失敗」と警告表示（状態漏洩の可視化）。
+  - .gif が /api/status で video 扱いだったのを image に修正（/api/view の
+    Content-Type に image/gif も追加）。
+  - 死にコード削除: NODE_SAVE / NODE_ZIMG_SAVE 定数（filename_prefix は未使用）、
+    startShutdown の未使用引数。
+- 検証: py_compile / node --check / ワークフロー構造シミュレーション
+  （6 モード × first/last/ref 全組合せ・ノード "20" 非衝突・lite の 4B 化を確認）/
+  新規クライアントハーネス tools/h3-chat-client.test.mjs 23/23 PASS
+  （ハーネスを初めてリポジトリにコミットし、再検証可能にした）。
+- 未実装（監査で指摘の大きい機能・要 GPU 検証のため次回以降）:
+  参照画像の複数枚（最大9枚）/ ref_videos / ref_audios、MiniMaxH3AddGuide
+  （動画途中アンカー）、ref_image_size "max"、ネガティブプロンプト UI 公開、
+  EasyCache/LoRA 強度/crf の公開。h3_workflow_src.json と未使用レガシー
+  ワークフロー 12 個の整理は削除判断が必要なため保留。
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
