@@ -479,3 +479,32 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   生成未開始 / 2ターン目 ref_start=false / 通常モード→/api/generate 直行（回帰なし）/
   企画モード→ref_start=false / 参照モード+画像未設定→案内のみ。
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
+## 2026-08-28 ワークフローの同種欠点をまとめて修正（参照画像解除 / 確認ガード / 上書き可視化）
+
+- 方針: 「参照モード直行」事象と同種＝ユーザーの意図がサイレントに裏切られる欠点を
+  git 履歴とコード通読から洗い出し、3 件を修正。
+- Fix1 参照画像を解除する手段がなかった:
+  - 🗂 で参照画像を選ぶと curImageFilename がセットされ、以降 参照モード checkbox が
+    OFF でも全生成に自動参照され続けていた（解除手段なし＝意図しないキャラ固定が続く）。
+  - #refpick に「✕ 解除」ボタン（#ref-clear）を追加。clearRefImage() で
+    curImageFilename / refConsultActive を null 化し、#ref-sel を「未選択」表示に戻す。
+    resetPlan()（🔄 新しい企画）からも clearRefImage() を呼んで確実に解除。
+- Fix2 キー画像確認(__CONFIRM_IMAGE__)と参照相談(ref_start)のガード順序を強化:
+  - _plan_llm で is_confirm を先に確定し、stage=="video" and ref_start の相談ラップが
+    確認ターンに被らないよう `and not is_confirm` を明示。ref_note 添付も is_confirm を
+    除外。確認と相談のプロンプトが混ざって意図しない指示になるのを防止。
+- Fix3 チャット指示の上書きが見えなかった:
+  - 「もっと高画質で」「長めに」「縦長で」等のチャット指示は SESSION の
+    mode_override / length_frames / resolution に入り、UI のモード/長さ選択を
+    サイレレントに上書きしていた（ユーザーは選んだ設定で生成されると思っている）。
+  - server: _generate で発動中の override を override_label 文字列にまとめ、
+    /api/generate レスポンスに eff_mode と共に返す（MODE_LABELS で人間可読ラベル化）。
+  - client: overrideNote() が override_label 非空のとき生成メッセージに
+    「⚙ チャット指示を反映中: …（UI のモード/長さより優先・解除は 🔄 新しい企画）」
+    の .hint を追記。poll() が .meta を上書きしても消えない別要素として表示。
+    send() と doGenerate()（✍ 手動プロンプト / 🎬 この企画で生成）両経路に組み込み。
+- 検証: py_compile / node --check 済み。Node ハーネスを拡張し 18/18 PASS
+  （既存 9 + 新規 9: override ラベル表示 / 空ラベルでは非表示 / clearRefImage で
+    選択・相談フラグ・✕ボタンが全てリセット / 解除後は ref=false・image=null で生成）。
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
