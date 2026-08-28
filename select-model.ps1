@@ -3786,7 +3786,22 @@ for ($i = 0; $i -lt $maxWait; $i++) {
     $gatewayReady = Test-GatewayReady -ExpectedModelId $expectedReadyModel
     if ($directReady -and $gatewayReady) {
         $ready = $true
-        Set-ClientBaseUrl -ExpectedModelId $expectedReadyModel | Out-Null
+        # Set-ClientBaseUrl re-tests the gateway and throws on a transient
+        # miss; the ready check above just passed, so retry briefly and fall
+        # back to the gateway URL instead of killing the whole launch.
+        $clientUrlSet = $false
+        for ($retry = 0; $retry -lt 5 -and -not $clientUrlSet; $retry++) {
+            try {
+                Set-ClientBaseUrl -ExpectedModelId $expectedReadyModel | Out-Null
+                $clientUrlSet = $true
+            }
+            catch {
+                Start-Sleep -Seconds 2
+            }
+        }
+        if (-not $clientUrlSet) {
+            $script:ClientBaseUrl = $GatewayBaseUrl
+        }
         Write-Host " Done!" -ForegroundColor Green
         break
     }
