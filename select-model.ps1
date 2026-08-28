@@ -62,7 +62,16 @@ param(
     # requests (thinking tokens count against it). 0 = gateway default (16384
     # or LLAMADOCK_CLINE_MAX_TOKENS). Raise it if Cline frequently reports
     # "maximum output token limit" mid-turn.
-    [int]$ClineMaxTokens = 0
+    [int]$ClineMaxTokens = 0,
+    # DRY repetition-penalty sampler (llama.cpp). 0 = disabled (llama.cpp
+    # default). Recommended for quantized models that repeat words:
+    # -DryMultiplier 0.8 (with -DryBase 1.75 -DryAllowedLength 2
+    # -DryPenaltyLastN 256). Companion flags stay at llama.cpp defaults
+    # (1.75 / 2 / 64) when left at 0.
+    [float]$DryMultiplier = 0,
+    [float]$DryBase = 0,
+    [int]$DryAllowedLength = 0,
+    [int]$DryPenaltyLastN = 0
 )
 
 $ErrorActionPreference = "Continue"
@@ -3414,6 +3423,17 @@ if ($effectiveUbatch -gt 0) {
 
 if ($effectiveReasoningMode) {
     $args += @("--reasoning", $effectiveReasoningMode)
+}
+
+# DRY repetition-penalty sampler. On by default via -DryMultiplier; the
+# companion flags only appear when explicitly set (they keep llama.cpp
+# defaults otherwise). quantized models that repeat words usually need
+# -DryMultiplier 0.8 or higher.
+if ($DryMultiplier -gt 0) {
+    $args += @("--dry-multiplier", "$DryMultiplier")
+    if ($DryBase -gt 0) { $args += @("--dry-base", "$DryBase") }
+    if ($DryAllowedLength -gt 0) { $args += @("--dry-allowed-length", "$DryAllowedLength") }
+    if ($DryPenaltyLastN -gt 0) { $args += @("--dry-penalty-last-n", "$DryPenaltyLastN") }
 }
 
 $args += @("--cache-ram", "$effectiveCacheRamMiB")
