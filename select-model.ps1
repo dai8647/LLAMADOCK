@@ -20,7 +20,7 @@ param(
     [string]$McpMode = "Prompt",
     [ValidateSet("Prompt", "On", "Off")]
     [string]$FlashAttentionMode = "Prompt",
-    [ValidateSet("Prompt", "Off", "MtpNextN", "DSpark", "DFlash2")]
+    [ValidateSet("Prompt", "Off", "MtpNextN", "MtpExtQwenNext", "DSpark", "DFlash2")]
     [string]$SpecMode = "Prompt",
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
@@ -52,7 +52,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "ExpertsLaguna", "LongCat", "DFlash2")]
+    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "ExpertsLaguna", "LongCat", "DFlash2", "QwenNext")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -157,6 +157,17 @@ elseif (Test-Path "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama
 }
 else {
     "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
+}
+# Qwen3.8-Flash-Next (arch qwen4exp) engine: llama.cpp PR #27742 branch with
+# GDN + PLE N-gram table + MTP/NextN draft support. ROCm 7.1 HIP, gfx1101.
+$QwenNextServerPath = if ($env:LLAMA_QWEN_NEXT_SERVER) {
+    $env:LLAMA_QWEN_NEXT_SERVER
+}
+elseif (Test-Path "C:\llama-qwen-next\build-hip\bin\llama-server.exe") {
+    "C:\llama-qwen-next\build-hip\bin\llama-server.exe"
+}
+else {
+    "C:\llama-qwen-next\build-hip\bin\llama-server.exe"
 }
 $ModelsBase = if ($env:LLAMADOCK_MODELS_BASE) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_MODELS_BASE)
@@ -643,6 +654,13 @@ function Get-RequiredEngine {
     # AtomicBot/TurboTan do not support the DFlash2 grouped-dynamic-convolution arch.
     if ($modelText -match "(?i)DFlash2") {
         return "DFlash2"
+    }
+
+    # Qwen3.8-Flash-Next (arch qwen4exp: GDN + PLE N-gram table + 512 experts):
+    # only the PR #27742 branch build can load this arch. Keep the pattern
+    # specific to Flash-Next so plain Qwen3.8-27B GGUFs still route to AtomicBot.
+    if ($modelText -match "(?i)Flash[-_ ]?Next|qwen4exp") {
+        return "QwenNext"
     }
 
     # Default non-special GGUFs use the AtomicBot TurboQuant runtime.
@@ -1960,6 +1978,7 @@ $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "ExpertsLaguna"; Path = $ExpertsLagunaServerPath },
     [PSCustomObject]@{ Name = "LongCat"; Path = $LongCatServerPath },
     [PSCustomObject]@{ Name = "DFlash2"; Path = $DFlash2ServerPath },
+    [PSCustomObject]@{ Name = "QwenNext"; Path = $QwenNextServerPath },
     [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
     [PSCustomObject]@{ Name = "OfficialHIP"; Path = $OfficialHIPServerPath },
     [PSCustomObject]@{ Name = "OfficialCPU"; Path = $OfficialCPUServerPath }
@@ -2081,14 +2100,14 @@ $selected = $models[$selection - 1]
 $selectedModelSizeGB = [math]::Round($selected.SizeMB / 1024, 1)
 $requiredEngine = Get-RequiredEngine -Model $selected
 $selectedModelText = "$($selected.Name) $($selected.FullName)"
-$isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert|DeepSeek|Laguna"
+$isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert|DeepSeek|Laguna|Flash[-_ ]?Next"
 $isDeepSeek = $selectedModelText -match "(?i)DeepSeek"
 if ($EngineMode -ne "Auto") {
     $requiredEngine = $EngineMode
 }
 
 # Engine selection prompt (skip for special engines and non-interactive mode)
-$specialEngines = @('TurboTan', 'ExpertsLaguna', 'LongCat', 'DFlash2')
+$specialEngines = @('TurboTan', 'ExpertsLaguna', 'LongCat', 'DFlash2', 'QwenNext')
 if ($EngineMode -eq 'Auto' -and $PresetMode -eq 'Prompt' -and $specialEngines -notcontains $requiredEngine -and -not $isQuickLaunch) {
     # Check which engines are actually available
     $availableEngines = @()
@@ -2115,6 +2134,7 @@ if ($EngineMode -eq 'Auto' -and $PresetMode -eq 'Prompt' -and $specialEngines -n
                 $engineValid = $true
             }
             else {
+                $engineSelection = 0
                 $engineValid = [int]::TryParse($engineInput, [ref]$engineSelection)
                 $engineSelection--
             }
@@ -2137,6 +2157,9 @@ elseif ($requiredEngine -eq "LongCat") {
 }
 elseif ($requiredEngine -eq "DFlash2") {
     $ServerPath = $DFlash2ServerPath
+}
+elseif ($requiredEngine -eq "QwenNext") {
+    $ServerPath = $QwenNextServerPath
 }
 elseif ($requiredEngine -eq "OfficialVulkan") {
     $ServerPath = $OfficialVulkanServerPath
@@ -2293,6 +2316,9 @@ if (-not (Test-Path $ServerPath)) {
     elseif ($requiredEngine -eq "OfficialCPU") {
         Write-Host "Install an official llama.cpp CPU Windows build, or set LLAMADOCK_OFFICIAL_CPU_SERVER." -ForegroundColor Red
     }
+    elseif ($requiredEngine -eq "QwenNext") {
+        Write-Host "Build the qwen4exp branch (llama.cpp PR #27742) at C:\llama-qwen-next, or set LLAMA_QWEN_NEXT_SERVER." -ForegroundColor Red
+    }
     exit 1
 }
 
@@ -2337,6 +2363,17 @@ elseif ($envVision -eq "on") {
 $systemRamGB = $hardware.RamGB
 $primaryVramGB = if ($hardware.PrimaryGpu) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
 $maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
+# qwen4exp (Qwen3.8-Flash-Next) breaks the generic RAM model two ways: the
+# GGUF is mmap demand-paged, so only the hot expert weights (~84GB) plus the
+# attention layers need page cache while the ~35GB PLE n-gram dictionary is
+# touched ~2KB/token and streams from SSD; and only 12 of 48 layers keep a KV
+# cache (36 GDN layers carry fixed-size recurrent state), so 32K of q8/q4 KV
+# is ~0.5GB, not the dense-model 0.22x-size estimate. Without this override
+# the ceiling math sees a >100GB-resident model and caps context at 8K.
+$isQwenNextModel = ($requiredEngine -eq "QwenNext")
+if ($isQwenNextModel) {
+    $maxContextTokensForRam = 131072
+}
 $recommendedDefaultTokens = if ($isDeepSeek) {
     # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
     16384
@@ -2367,14 +2404,24 @@ if (-not $isQuickLaunch) {
     Write-Host "Context size:" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
         Write-Host ("Detected RAM: {0}GB; selected model: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
-        Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
+        if ($isQwenNextModel) {
+            Write-Host "qwen4exp: hot experts (~84GB) stay resident; context adds only KV (~0.5GB/32K, 12/48 attn layers)" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
+        }
     }
     for ($i = 0; $i -lt $contextOptions.Count; $i++) {
         $ctx = $contextOptions[$i]
         if ($ctx.Tokens -gt 0) {
-            $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
             $defaultMark = if ($ctx.Tokens -eq $recommendedDefaultTokens) { " [recommended]" } else { "" }
-            Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
+            if ($isQwenNextModel) {
+                Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note)$defaultMark"
+            }
+            else {
+                $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
+                Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
+            }
         }
         else {
             Write-Host " [$($i+1)] $($ctx.Label) - $($ctx.Note)"
@@ -2428,10 +2475,23 @@ if (-not $isQuickLaunch) {
     Write-Host ""
     Write-Host "Context: $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
-        Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
+        if ($isQwenNextModel) {
+            Write-Host "Context risk: qwen4exp mmap - hot experts ~84GB resident, PLE dict paged from SSD, KV ~0.5GB/32K (12/48 attn layers)" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
+        }
     }
 }
-if ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)) {
+if ($isQwenNextModel) {
+    # Generic fit test assumes the whole file resident in RAM; for qwen4exp
+    # the constraint is the hot expert set (~84GB) vs page cache, which is
+    # context-independent. Warn past 128K instead of hard-blocking.
+    if ($selectedContext.Tokens -gt 131072) {
+        Write-Host "WARNING: context past 128K on qwen4exp grows KV and prefill buffers; watch RAM." -ForegroundColor Yellow
+    }
+}
+elseif ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)) {
     Write-Host "ERROR: Selected context is likely to exceed available RAM for this model." -ForegroundColor Red
     Write-Host "Selected: $($selectedContext.Tokens) tokens; ceiling: $maxContextTokensForRam tokens." -ForegroundColor Red
     Write-Host "Use a lower context or a smaller/lighter model." -ForegroundColor Red
@@ -2498,7 +2558,7 @@ if ($requiredEngine -eq "TurboTan") {
         }
     }
 }
-elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "LongCat" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
+elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "LongCat" -or $requiredEngine -eq "QwenNext" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
     $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
     if (-not $isQuickLaunch) {
         Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
@@ -2794,8 +2854,10 @@ if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace
     Write-Host ""
 
     do {
-        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
-        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
+        # qwen4exp measured best at 44 (4 of 48 expert layers on GPU); deeper
+        # GPU offload loses to CPU/DDR4 on this box (see qwen-next tuning).
+        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } elseif ($requiredEngine -eq "QwenNext") { "Heavy (44)" } else { "Auto" }
+        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } elseif ($requiredEngine -eq "QwenNext") { 5 } else { 1 }
         $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
         if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
             $cpuMoeSelection = $defaultCpuMoeIndex
@@ -2837,6 +2899,15 @@ if ($cpuMoeMode -eq "Auto") {
             $selectedCpuMoe = "99"
             if (-not $isQuickLaunch) {
                 Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
+            }
+        }
+        elseif ($requiredEngine -eq "QwenNext") {
+            # qwen4exp measured best at 44 on RX 7800 XT + DDR4 (4 of 48 expert
+            # layers on GPU). Deeper GPU offload is slower (kernel-launch +
+            # CPU<->GPU bounce beats the DDR4 bandwidth saving).
+            $selectedCpuMoe = "44"
+            if (-not $isQuickLaunch) {
+                Write-Host "CPU MoE layers: Auto (44) - qwen4exp tuned for RX 7800 XT" -ForegroundColor Yellow
             }
         }
         else {
@@ -3059,13 +3130,25 @@ else {
     Join-Path $ModelsBase "incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
 }
 
+# Standalone MTP/NextN draft head for Qwen3.8-Flash-Next (qwen4exp). The
+# abliterated/regular Flash-Next GGUFs ship WITHOUT embedded MTP heads, so
+# draft-mtp needs this external head via -md (dzannotti Q4_K_M head).
+$qwenNextMtpDraftModel = if ($env:LLAMADOCK_QWENNEXT_MTP_DRAFT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_QWENNEXT_MTP_DRAFT)
+}
+else {
+    Join-Path $ModelsBase "dzannotti\Qwen3.8-Flash-Next-MTP-GGUF\Qwen3.8-Flash-Next-MTP-Q4_K_M.gguf"
+}
+
 if ($SpecMode -eq "Prompt") {
     # Default suggestion: MTP models -> MtpNextN, Qwen3.8-27B with an
     # installed DSpark draft -> DSpark, DFlash2 draft -> DFlash2, everything else -> Off.
     $modelIsMtp = $selected.Name -match "(?i)MTP"
     $modelIsQwen27B = $selected.Name -match "(?i)Qwen3\.8-27B"
+    $modelIsQwenNext = $selected.Name -match "(?i)Flash[-_ ]?Next"
     $draftExists = Test-Path -LiteralPath $dsparkDraftModel
     $dflash2DraftExists = Test-Path -LiteralPath $dflash2DraftModel
+    $qwenNextMtpExists = Test-Path -LiteralPath $qwenNextMtpDraftModel
 
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
     Write-Host " [1] Off - normal decoding"
@@ -3093,17 +3176,29 @@ if ($SpecMode -eq "Prompt") {
     else {
         Write-Host " [4] DFlash2 - grouped dynamic convolution (draft model not found; requires DFlash2 engine)"
     }
+    if ($modelIsQwenNext) {
+        if ($qwenNextMtpExists) {
+            # Measured 2026-08-28 on RX 7800 XT + DDR4-2666: MTP head (GPU or CPU) costs
+            # ~17ms/draft and per-step overhead eats the gain — 6.4 t/s vs 6.8 t/s plain.
+            Write-Host " [5] MTP external head - dzannotti NextN draft GGUF via -md (requires QwenNext engine; measured SLOWER on this box)"
+        }
+        else {
+            Write-Host " [5] MTP external head - draft head not found (requires QwenNext engine)"
+        }
+    }
     Write-Host ""
 
+    $maxSpecChoice = if ($modelIsQwenNext) { 5 } else { 4 }
     do {
         $defaultSpecChoice = if ($modelIsMtp) { 2 } elseif ($dflash2DraftExists -and $modelIsQwen27B) { 4 } elseif ($draftExists -and $modelIsQwen27B) { 3 } else { 1 }
         $defaultSpecLabel = switch ($defaultSpecChoice) {
             2 { "MTP/NextN" }
             3 { "DSpark" }
             4 { "DFlash2" }
+            5 { "MTP external head" }
             default { "Off" }
         }
-        $specInput = Read-Host "Select speculative mode (1-4), or press Enter for $defaultSpecLabel"
+        $specInput = Read-Host "Select speculative mode (1-$maxSpecChoice), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
             $specSelection = $defaultSpecChoice
             $specValid = $true
@@ -3112,11 +3207,12 @@ if ($SpecMode -eq "Prompt") {
             $specSelection = 0
             $specValid = [int]::TryParse($specInput, [ref]$specSelection)
         }
-    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt 4)
+    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt $maxSpecChoice)
 
     if ($specSelection -eq 1) { $SpecMode = "Off" }
     elseif ($specSelection -eq 2) { $SpecMode = "MtpNextN" }
     elseif ($specSelection -eq 3) { $SpecMode = "DSpark" }
+    elseif ($specSelection -eq 5) { $SpecMode = "MtpExtQwenNext" }
     else { $SpecMode = "DFlash2" }
 }
 
@@ -3188,6 +3284,29 @@ if ($SpecMode -eq "DFlash2") {
     if (-not (Test-Path -LiteralPath $ServerPath)) {
         Write-Host "ERROR: DFlash2 engine not found at $ServerPath" -ForegroundColor Red
         Write-Host "Build the DFlash2 fork (z-lab/llama.cpp-fork dflash2 branch) with ROCm 7.1." -ForegroundColor Red
+        exit 1
+    }
+}
+
+if ($SpecMode -eq "MtpExtQwenNext") {
+    # External MTP/NextN draft head for qwen4exp models whose GGUF ships
+    # without embedded MTP layers (everything but combined *_MTP.gguf).
+    if (-not (Test-Path -LiteralPath $qwenNextMtpDraftModel)) {
+        Write-Host "ERROR: QwenNext MTP draft head not found: $qwenNextMtpDraftModel" -ForegroundColor Red
+        Write-Host "Download dzannotti/Qwen3.8-Flash-Next-MTP-GGUF, or set LLAMADOCK_QWENNEXT_MTP_DRAFT." -ForegroundColor Red
+        exit 1
+    }
+    if ($selected.Name -notmatch "(?i)Flash[-_ ]?Next") {
+        Write-Host "WARNING: the QwenNext MTP head only matches Qwen3.8-Flash-Next (qwen4exp) models." -ForegroundColor Yellow
+    }
+    if ($requiredEngine -ne "QwenNext") {
+        Write-Host "MTP external head requires the QwenNext engine (PR #27742). Switching engine..." -ForegroundColor Yellow
+        $requiredEngine = "QwenNext"
+        $ServerPath = $QwenNextServerPath
+    }
+    if (-not (Test-Path -LiteralPath $ServerPath)) {
+        Write-Host "ERROR: QwenNext engine not found at $ServerPath" -ForegroundColor Red
+        Write-Host "Build the qwen4exp branch (llama.cpp PR #27742), or set LLAMA_QWEN_NEXT_SERVER." -ForegroundColor Red
         exit 1
     }
 }
@@ -3321,6 +3440,24 @@ if ($SpecMode -eq "MtpNextN") {
         "-ngld", "$serverOffload",
         "-ctkd", "$effectiveKCacheType",
         "-ctvd", "$effectiveVCacheType"
+    )
+}
+
+if ($SpecMode -eq "MtpExtQwenNext") {
+    # dzannotti recipe for the standalone qwen4exp MTP head: shallow drafting
+    # (n-max 3 / p-min 0.75) — deeper drafting measured SLOWER because the
+    # head runs its own 512-expert MoE per draft token. LLAMA_ATTN_ROT_DISABLE
+    # is read by the KV cache layer of the PR #27742 build; set it here so the
+    # supervisor (started later by this script) inherits it.
+    $env:LLAMA_ATTN_ROT_DISABLE = "1"
+    $args += @(
+        "--spec-type", "draft-mtp",
+        "-md", "$qwenNextMtpDraftModel",
+        "--spec-draft-n-max", "3",
+        "--spec-draft-p-min", "0.75",
+        "-ngld", "999",
+        "-ctkd", "q8_0",
+        "-ctvd", "q4_0"
     )
 }
 
