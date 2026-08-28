@@ -541,8 +541,9 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 
 - 症状: 「企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）」(503)。
 - 原因: TurboTan ビルド `C:\Users\dai86\Downloads\llama-b10536-rocm\`（llama-server.exe,
-  b10536）が日中に消失（最後の正常起動は 10:37、%TEMP%\h3_plan_llm.log に記録）。
-  h3-chat は起動時に PLAN_SERVER_BIN を一度だけ解決するため、以降の GPU 企画 LLM
+  b10536）がユーザー承認済みのエンジン整理で削除されていた（最後の正常起動は 10:37、
+  %TEMP%\h3_plan_llm.log に記録）。ただし稼働中の h3-chat は削除前に起動しており、
+  PLAN_SERVER_BIN を起動時に一度だけ解決するため、以降の GPU 企画 LLM
   （port 8191, Qwen3.8-27B）起動が全てサイレントに失敗し続けていた。
   エラーメッセージはどのファイルが無いのかを示していなかった。
 - 復旧（再起動不要・ライブ回復）:
