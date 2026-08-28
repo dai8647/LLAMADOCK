@@ -720,3 +720,50 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   （refgrid クリアの再現のため）。
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
 
+## 2026-08-28 過去履歴のサイドバー（ChatGPT 風セッション永続化）
+
+- 要望: 「チャットGPTみたいに過去の履歴はサイドバーに」。企画セッションを
+  自動保存し、左サイドバーから一覧・切替・復元・削除できるようにした。
+- 保存形式: `REPO/sessions/<id>.json` に 1 セッション 1 ファイル（gitignore
+  済み）。中身 = {id, title, created, updated, messages:[{who,html}], ui:{…},
+  server:{plan_history, session}}。server スナップショット（PLAN_HISTORY と
+  SESSION のコピー）は保存時にサーバー側が自分で撮る — クライアントからは
+  見えないため。resolution の tuple↔list 変換は保存/復元時に行う。
+  - セッション ID は `^[A-Za-z0-9_-]{1,64}$` のみ許可（パス traversal 防止）。
+  - 書き込みは tmp + os.replace のアトミック。
+  - タイトル = 最初のユーザー発言から HTML タグ・先頭の絵文字/記号を落として
+    34 文字 + 「…」。
+  - `sessions/_active.json` が「今開いているセッション」のポインタ。
+    h3-chat 再起動後の初回アクセスで自動復元される（再起動しても最後の
+    セッションに戻れる）。
+- API（4 つ）:
+  - GET /api/sessions → {active_id, sessions:[{id,title,updated,n}], active}
+  - POST /api/sessions/save {id,messages,ui} → {id,title,updated}
+    （id=null かつ空メッセージは {id:null} を返して保存しない = 空の新規
+    チャットはサイドバーに残さない）
+  - POST /api/sessions/switch {id|null} → {session}（null = 新規セッション。
+    server 状態は _plan_reset で初期化）
+  - POST /api/sessions/delete {id} → {ok, was_active}
+- クライアント:
+  - 自動保存: 6 秒毎 + beforeunload（sendBeacon）。JSON が前回と同一なら
+    送信しない（dedup）。
+  - 復元: renderSession(doc) がメッセージ DOM・planStage・lastFinalPrompt・
+    lastImgPrompt・参照画像・imguse・モード上書き等を全部復元するため、
+    復元後も「確定→動画を相談」「引き直す」等のボタンがそのまま動く。
+  - ジョブ再開: 保存中の ui.curJobId/curJobKind があれば、復元時に最後の
+    bot メッセージへポーリングを再接続（video→poll / image→pollImage）。
+    生成中にページを閉じても、開き直せば進捗表示が復活する。
+  - 切替ガード: 生成中（busy）は切替・新規をブロック（アラートで案内、
+    ✕ キャンセルで中止可能）。
+  - 「🔄 新しい企画」= 現セッションを保存 → 新規セッションへ切替。
+    旧セッションはサイドバーの履歴に残る（ChatGPT と同じ挙動）。
+    server リセット失敗時は画面を消さず警告だけ出して状態を保持
+    （client/server 乖離を防ぐ）。
+  - ヘッダーの ☰ ボタンでサイドバー表示/非表示をトグル。
+- 検証: py_compile / node --check / クライアントハーネス [15]-[19] 追加 +
+  [7] 書き直しで 69/69 PASS（復元・自動保存 dedup・busy ガード・新規チャット・
+  ジョブ再開 / リセット失敗時の状態保持）。サーバー側は単体テスト 20/20
+  （タイトル抽出・ID 安全性・書込/読込・スナップショット往復・一覧順・
+  ポインタ）。
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
