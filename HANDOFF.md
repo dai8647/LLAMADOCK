@@ -637,3 +637,86 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず。7f29fdd 以降の
   全変更が次回再起動でまとめて有効になる）
 
+## 2026-08-28 未成年被写体のブロック（決定論ガード 4 段）
+
+- 実装コミット: befcfb9（下記の参照画像バッチと同一コミット）
+- 背景: 実機テストで「小学校6年生の女の子」の企画に対し、企画 LLM が
+  PLAN_SYSTEM の成人限定ルールを無視して性的な描写を含む [IMG_PROMPT] を出力する
+  事故が発生。LLM の自制のみに依存する安全対策は破られることが確定したため、
+  コード側で決定論的にブロックする。
+- 仕組み（4 ゲート。どの経路からも未成年コンテンツが生成されない構成）:
+  1. /api/plan 入口: ユーザー入力テキストが MINOR_RE に該当したら LLM に渡さず
+     MINOR_REFUSAL を即返答。
+  2. _plan_llm 出口: LLM が従わず img_prompt / final_prompt に未成年表現を
+     含めたら、プロンプトを破棄（None 化）して reply を MINOR_REFUSAL に置換。
+     事故プロンプトがキー画像生成ボタンに到達するのを防ぐ。
+  3. /api/generate 入口: 手動プロンプト・再挑戦・直接生成でも 400 で拒否。
+  4. /api/zimg 入口: キー画像生成エンドポイント単体でも 400 で拒否。
+- MINOR_RE: 日本語（小学生/中学生/高校生/高生/幼稚園/保育園/幼児/児童/未成年/
+  幼女/幼男/ロリ/ショタ 等）+ 英語（loli/shota/preteen/underage/under-18/
+  kindergarten/elementary school/middle school/junior high/schoolgirl/schoolboy/
+  child/children/kid(s)/little-young girl-boy）+ 年齢パターン（5〜17 歳の
+  "years old" / "year-old" 表記）。
+- PLAN_SYSTEM にも拒否指示を追加: 未成年を被写体にする企画は即座に断り、
+  成人に置き換えた代替案を提案するよう必須化（UX 側の体験改善。実効保証は
+  上記ゲートが担う）。
+- 検証: Python 単体で事故プロンプト（本物の事故テキスト含む）検出・成人プロンプト
+  非検出・誤検出チェック（"high fashion" / "elevated lifestyle" 等はクリーン）
+  の全項目 PASS。女子高生（「高生」単独パターン）も検出確認済み。
+- 注意: このガードは被写体の年齢表現に対するもので、成人被写体のコンテンツ
+  生成には影響しない。
+
+## 2026-08-28 参照画像まわりの機能拡張バッチ（監査残タスク消化）
+
+- 背景: 「comfy を含めて機能をすべて引き出せていない」調査で判明した
+  未実装項目のうち、実装可能と判定したものを一括実装。
+- 複数参照画像（R2V 最大 9 枚）:
+  - MiniMaxH3ReferenceToVideo ノードは ref_image_0..8（Autogrow、最大 9）を
+    サポートするが、h3-chat は 1 枚しか渡せていなかった。
+  - server: images 配列を受け取り（image は後方互換の 1 枚目）、9 枚超は 400。
+    追加画像は LoadImage ノードを動的 ID（既存数値 ID 最大+1）で追加し、
+    node 16 配線はフラットキー "ref_images.ref_image_N" とネスト dict
+    "ref_images" の両形式を維持（動作確認済みファイル形式のミラー）。
+    全 6 R2V ワークフローで構造シミュレーション 25/25 PASS。
+  - プロンプトには _r2v_tag_note() で <Picture 1..N> の意味を追記
+    （1 枚目は従来どおり R2V_TAG_NOTE）。企画 LLM がタグを知らなくても
+    各参照画像と被写体の対応が付く。
+  - client: 参照画像ピッカーを単発選択→複数トグル選択+「✅ 参照画像として使う」
+    確定方式に変更。クリック順が <Picture N> の番号になり、バッジで表示。
+    curImageFilename は廃止し refImages 配列に一本化（全参照箇所更新・残骸ゼロ）。
+- ref_image_size "max" トグル: ノードの combo 入力（match 既定 / max = 短辺
+  2048px・数倍遅い）を詳細設定に露出。server は値を検証し R2V ノードに設定。
+- 品質チューニング露出（EasyCache / LoRA / crf）:
+  - EasyCache reuse_threshold（0-1）: ノードを持つワークフロー（turbo/super/
+    clipproj/r2v）に適用。持たないモード（fast 系）は tune_ignored で報告。
+  - Turbo LoRA strength_model（0-2）: turbo LoRA のみ対象（ref LoRA は対象外）。
+    非使用モードは tune_ignored。
+  - SaveVideo crf（0-51）: codec を dict 形式 {"codec":"h264","encoding":
+    {"encoding":"re-encode","crf":X}} で設定（auto のままでは再エンコード
+    されないため）。SaveVideo 無しは tune_ignored。
+  - 範囲外・非数値は 400。空欄は送信しない（ワークフロー既定値を維持）。
+- 黙って裏切らない仕組み（tune_ignored / refUsageNote）:
+  - server → tune_ignored 配列で「このモードでは効かなかった設定」を返し、
+    client は生成開始メッセージに「⚙ 反映されなかった設定: …」を表示。
+  - フレーム固定（first/last）に複数画像が選ばれている場合「1 枚目だけ使われ
+    残り無視」の警告を生成開始メッセージに追記（refUsageNote）。
+- 調査のみで実装しなかった項目（判定付き）:
+  - ネガティブプロンプト = N/A: 全ワークフローの KSampler が cfg=1 で、
+    negative conditioning は数学的に無効（MiniMax H3 は CFG フリー）。
+    UI に出すと「効かない設定を効くと見せる」偽の選択肢になるため露出しない。
+  - ref_videos / ref_video_audios / ref_audios = 延期: ノードは対応
+    （動画最大 3・24fps 2-15s、音声最大 3、動画+サウンドトラックのペアリング）
+    するが、動画/音声参照のアップロード経路が h3-chat に無く、UX 設計と
+    GPU 検証が必要なため。
+  - MiniMaxH3AddGuide = 延期: フレーム指定アンカー（frame_idx + 画像/音声）は
+    UX 設計が先。
+  - 旧ワークフロー 12 ファイル + h3_workflow_src.json = 削除せず保持を推奨:
+    docs/MiniMax-H3-Tuning.md と README がチューニング履歴として参照中。
+    削除はユーザーの明示 OK 待ち。
+- 検証: py_compile / node --check / クライアントハーネス [10]-[14] 追加で
+  47/47 PASS（複数選択トグル+順序+確定 / images[]+ref_size+tune ペイロード /
+  フレーム固定+複数画像警告 / 9 枚上限アラート / tune_ignored 表示）。
+  ハーネスの innerHTML スタブを実 DOM と同じく「代入で子を消す」挙動に修正
+  （refgrid クリアの再現のため）。
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
