@@ -536,3 +536,33 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   （既存 18 + 新規 6: ギャラリー引き直しボタン表示・同プロンプトで /api/zimg 再送 /
     日本語説明「こんな映像になります」表示・英語原文折りたたみ格納）。
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
+## 2026-08-28 企画 LLM 起動失敗の緊急復旧 + 再発防止（TurboTan ビルド消失）
+
+- 症状: 「企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）」(503)。
+- 原因: TurboTan ビルド `C:\Users\dai86\Downloads\llama-b10536-rocm\`（llama-server.exe,
+  b10536）が日中に消失（最後の正常起動は 10:37、%TEMP%\h3_plan_llm.log に記録）。
+  h3-chat は起動時に PLAN_SERVER_BIN を一度だけ解決するため、以降の GPU 企画 LLM
+  （port 8191, Qwen3.8-27B）起動が全てサイレントに失敗し続けていた。
+  エラーメッセージはどのファイルが無いのかを示していなかった。
+- 復旧（再起動不要・ライブ回復）:
+  - POST /api/plan-model で CPU プランナー Qwen3.5-4B（port 8190）へ切替。
+    switch_plan_model がバイナリを C:\llama-tq3\build-rocm71-fa（実在）へ再解決。
+  - /api/audio で end-to-end 検証: コールド起動 24.6 秒 + 正常な [AUDIO_SET] 応答。
+    /api/plan-models で running:true を確認（/api/audio は PLAN_HISTORY を汚染しない）。
+- 併せて発見・対処: ComfyUI (8188) がハング（LISTEN するが HTTP 無応答）→ のちプロセス
+  終了。ck プロファイルで再起動（.venv python main.py --port 8188 --listen 127.0.0.1
+  --reserve-vram 1.0 --use-ck-attention、ログ tools/comfyui-restart.log[.err]）。
+  全 5 カスタムノード（Spectrum 含む）正常 import、/api/queue でキュー空を確認。
+- 再発防止コード（py_compile 済み・反映には h3-chat 再起動が必要）:
+  - 生存する TurboTan ビルド `turbo-tan-llama.cpp-tq3-check\build-rocm71\bin`
+    （version 10369、--version 動作確認済み）を _GPU/_CPU_BIN_CANDIDATES の先頭に
+    追加。TURBOTAN_SERVER_BIN（DSpark 用）も同パスへ更新。
+  - _spawn_plan_llm: 記憶している PLAN_SERVER_BIN が消失していたら起動時に再解決
+    （self-heal）+ 欠如ファイル（binary/model/DFlash2/DSpark）をサーバーログに
+    明示する print を追加。
+- 注意: DSpark ドラフト（erlidev）と DFlash2 ビルド + ドラフト（incoai, llama-dflash2）も
+  この機械から消失しており、speculative decoding は現在すべて使用不可。
+- GPU 27B 企画へ戻す場合: 次回 h3-chat 再起動後に UI のモデルドロップダウンで 27B を
+  選び直せばよい（バイナリ候補鎖が TurboTan v10369 を解決する。b10536 より旧版で
+  ある点だけ留意）。
