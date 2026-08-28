@@ -88,6 +88,22 @@ if ($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu) {
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
+# llama-server（ROCm/HIP ビルド）は amdhip64_7.dll 等の ROCm ランタイム DLL が
+# PATH に無いと STATUS_DLL_NOT_FOUND でサイレントに終了する。select-model.ps1
+# 経由の起動では PATH が継承されるが、このスクリプトを普通のシェルから単独
+# 実行すると企画 LLM が死ぬため、ここで必ず補強する（h3-chat.py 側の
+# _spawn_plan_llm も同じ補強を持つ）。
+$rocmBin = if ($env:LLAMADOCK_ROCM_BIN) { $env:LLAMADOCK_ROCM_BIN } else {
+    $amdRoot = "C:\Program Files\AMD\ROCm"
+    if (Test-Path -LiteralPath $amdRoot) {
+        $latest = Get-ChildItem -LiteralPath $amdRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($latest) { Join-Path $latest.FullName "bin" }
+    }
+}
+if ($rocmBin -and (Test-Path -LiteralPath $rocmBin) -and ($env:PATH -notlike "*$rocmBin*")) {
+    $env:PATH = "$rocmBin;$env:PATH"
+}
+
 $planServer = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
 if (-not (Test-Path -LiteralPath $planServer)) {
     $planServer = "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
