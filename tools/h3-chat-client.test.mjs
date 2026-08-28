@@ -205,5 +205,39 @@ await tick();
   check("reset greeted", added.some(c => c.innerHTML.includes("新しい企画を始めましょう")));
 }
 
+console.log("[8] plan() image stage: Japanese description + collapsible English");
+run(`planStage = "chat"; lastImgPrompt = null;`);
+state.planReply = {
+  reply: "キー画像の案です。",
+  img_prompt: "A young woman in a white sundress standing in a sunflower field, golden hour",
+  img_prompt_ja: "夕暮れのヒマワリ畑に白いワンピースの女性が立つ一枚です。",
+};
+await run(`(async () => { await plan("キー画像を作って"); })()`);
+await tick();
+{
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  const last = bots[bots.length - 1];
+  check("img JA box shown", last.innerHTML.includes("🖼 こんな画像になります") && last.innerHTML.includes("白いワンピース"));
+  check("english original collapsible", last.innerHTML.includes("英語プロンプト（原文") && last.innerHTML.includes("sundress"));
+  check("generate button shown", last.innerHTML.includes("🖼 キー画像を生成 ▶"));
+  check("lastImgPrompt set (english)", run(`lastImgPrompt`).includes("sundress"));
+  check("JA box appears before the collapsible", last.innerHTML.indexOf("こんな画像になります") < last.innerHTML.indexOf("英語プロンプト（原文"));
+}
+
+console.log("[9] plan() image stage: graceful degrade without JA tag");
+run(`planStage = "chat";`);
+state.planReply = {
+  reply: "出しますね。",
+  img_prompt: "A shiba inu running along the shoreline at sunset, warm golden light",
+};
+await run(`(async () => { await plan("キー画像を作って"); })()`);
+await tick();
+{
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  const last = bots[bots.length - 1];
+  check("no JA box when tag missing", !last.innerHTML.includes("🖼 こんな画像になります"));
+  check("collapsible english + button still there", last.innerHTML.includes("shiba inu") && last.innerHTML.includes("🖼 キー画像を生成 ▶"));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

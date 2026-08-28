@@ -813,6 +813,9 @@ PLAN_SYSTEM = (
     "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
     "固まったら英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す（例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, low-angle cinematic composition[/IMG_PROMPT]）。"
     "タグは必ず1組だけ。固まるまでは日本語で会話を続ける。"
+    "【画像の日本語説明・必須】[IMG_PROMPT] を出したら、必ずその直後に [IMG_PROMPT_JA] と [/IMG_PROMPT_JA] で、"
+    "そのプロンプトから実際に生成される画像の内容を日本語でわかりやすく説明する（被写体・ポーズと構図・服装の状態・雰囲気・ライティングを1〜3文で）。"
+    "英語プロンプトの直訳ではなく、ユーザーがどんな画像になるか一目でイメージできる説明にすること。[IMG_PROMPT_JA] は [IMG_PROMPT] と必ず対で出す。"
     "【音声・セリフ・音楽】セリフ（誰が何を言うか）・声の質・効果音・音楽も企画に含める。"
     "ユーザーが指定しなかった項目は、映像に合うものを自然に決めて提案する（空にしない）。"
     "ユーザー指定のセリフは一字一句そのまま使う（翻訳・言い換え禁止）。"
@@ -835,7 +838,7 @@ PLAN_SYSTEM = (
     "英語プロンプトの直訳ではなく、ユーザーがどんな映像になるか一目でイメージできる説明にすること。[FINAL_PROMPT_JA] は [FINAL_PROMPT] と必ず対で出す。"
     "セリフ表記: 話者に (S1)(S2) の安定IDを付け、初登場時に声の特徴（年齢・性別・声質・トーン・話速）を記述し、発話は <d>[Japanese] 原文</d> に入れる"
     "（例: The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] 今夜は帰らないで。</d>）。"
-    "タグは必ず1組だけ。開いたら必ず閉じタグ（[/IMG_PROMPT] / [/FINAL_PROMPT]）まで書き切る。タグ以外の補足説明は不要。"
+    "タグは必ず1組だけ。開いたら必ず閉じタグ（[/IMG_PROMPT] / [/IMG_PROMPT_JA] / [/FINAL_PROMPT] / [/FINAL_PROMPT_JA]）まで書き切る。タグ以外の補足説明は不要。"
     "プロンプトに Midjourney / Stable Diffusion 系のパラメータ（--ar, --v, --style, --q, --seed など）は絶対に付けない。この環境では無意味です。"
 )
 
@@ -976,6 +979,10 @@ FINAL_RE = re.compile(r"\[FINAL_PROMPT\](.*?)(?:\[/FINAL_PROMPT\]|</FINAL_PROMPT
 # ユーザーが「どんな動画になるか」を日本語で確認できるように、[FINAL_PROMPT] と
 # 対で出力させる日本語説明ブロック（直訳でなく映像の内容説明）。
 FINAL_JA_RE = re.compile(r"\[FINAL_PROMPT_JA\](.*?)(?:\[/FINAL_PROMPT_JA\]|</FINAL_PROMPT_JA>)", re.S)
+
+# キー画像版: [IMG_PROMPT] と対の日本語説明ブロック。英語プロンプトだけだと
+# どんな画像が生成されるかユーザーに分からない問題の対策。
+IMG_JA_RE = re.compile(r"\[IMG_PROMPT_JA\](.*?)(?:\[/IMG_PROMPT_JA\]|</IMG_PROMPT_JA>)", re.S)
 
 # Structured audio/dialogue proposal the planning LLM may append outside the
 # [FINAL_PROMPT] block (voice / dialogue / sfx / music), so the UI can
@@ -1617,6 +1624,12 @@ async function plan(text, refStart) {
       lastImgPrompt = j.img_prompt;
       const revising = (planStage === "image");
       planStage = "image";
+      // どんな画像になるか日本語で必ず示す（英語プロンプトだけだと内容が分からない
+      // 問題の対策・動画側の「こんな映像になります」と同じ仕組み）。
+      if (j.img_prompt_ja) {
+        html += '<div class="promptja"><div class="meta">🖼 こんな画像になります</div><div class="ja-body">' + esc(j.img_prompt_ja) + "</div></div>";
+      }
+      html += '<details class="thinkbox"><summary>📝 英語プロンプト（原文・クリックで表示）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.img_prompt) + '</pre></details>';
       // 修正時も自動で再生成せず、必ずボタンを出す（ユーザーが確認してから
       // 生成を始める）。自動 genImage は qimg（約20分）を勝手に回して
       // 「再生成します…」のまま固まる原因になっていた。
@@ -2492,15 +2505,17 @@ class ChatHandler(BaseHTTPRequestHandler):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
         try:
-            reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
+            reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja, img_prompt_ja = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
         except Exception as e:
             self._json(502, {"error": f"企画 LLM エラー: {e}"})
             return
         if final_prompt and not reply:
             reply = "動画プロンプトがまとまりました。下のボタンで生成できます。"
         if img_prompt and not reply:
-            reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。\n\n" + img_prompt
-        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "final_prompt": final_prompt, "final_prompt_ja": final_prompt_ja, "audio": audio, "thinking": thinking})
+            # 英語原文は足さない（動画側と同じく、日本語説明 + 折りたたみ英語で
+            # 表示するため。泡に生の英語プロンプトを残さない）。
+            reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。"
+        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "img_prompt_ja": img_prompt_ja, "final_prompt": final_prompt, "final_prompt_ja": final_prompt_ja, "audio": audio, "thinking": thinking})
 
     def _plan_reset(self):
         global PLAN_HISTORY
@@ -2606,7 +2621,8 @@ class ChatHandler(BaseHTTPRequestHandler):
     def _plan_llm(self, user_text, endpoint, stage="chat", image_fn=None, timeout=300, ref_start=False):
         """Send the message (plus history) to the planning LLM.
 
-        Returns (reply_text, img_prompt, final_prompt, audio, thinking).
+        Returns (reply_text, img_prompt, final_prompt, audio, thinking,
+        final_prompt_ja, img_prompt_ja).
         - stage "chat"/"image": the model settles on the key-image prompt
           ([IMG_PROMPT] tags, or a tool-call prompt argument).
         - stage "video": the model settles on the final video prompt
@@ -2721,6 +2737,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             img_prompt = None
             final_prompt = None
             final_prompt_ja = None
+            img_prompt_ja = None
             if stage == "video":
                 final_prompt = _best_tag_match(FINAL_RE, reply)
                 if not final_prompt:
@@ -2760,6 +2777,17 @@ class ChatHandler(BaseHTTPRequestHandler):
                 reply = FINAL_RE.sub("", reply)
                 reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
             if img_prompt:
+                # キー画像も同様に: 日本語説明（[IMG_PROMPT_JA]）を取り出し、英語
+                # ブロックごと reply から除く（UI は「こんな画像になります」+
+                # 折りたたみ英語原文）。タグが閉じずに _unclosed_tag 等の
+                # フォールバックで抽出された場合は対が無いため何も除去されない。
+                img_prompt_ja = _best_tag_match(IMG_JA_RE, reply)
+                if img_prompt_ja:
+                    reply = IMG_JA_RE.sub("", reply)
+                reply = IMG_FINAL_RE.sub("", reply)
+                reply = FINAL_RE.sub("", reply)
+                reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
+            if img_prompt:
                 with SESSION_LOCK:
                     SESSION["image_prompt"] = img_prompt
             if final_prompt:
@@ -2769,7 +2797,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             # messages have context (a tool-call reply becomes its prompt text)
             history_reply = reply or final_prompt or img_prompt or "（企画案）"
             PLAN_HISTORY.append({"role": "assistant", "content": history_reply})
-            return reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja
+            return reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja, img_prompt_ja
 
     # ---- R2V reference image ----------------------------------------
 
