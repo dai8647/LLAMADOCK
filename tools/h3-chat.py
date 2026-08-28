@@ -68,6 +68,13 @@ WORKFLOWS = {
 # run times (see _status / job_meta).
 ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250}
 
+# モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
+MODE_LABELS = {
+    "fast": "最高画質 spectrum", "high": "高精度 32B",
+    "fast_quick": "高画質 spectrum・短尺", "quick": "クイック 32B",
+    "lite": "軽量 4B", "quicklite": "最速 4B",
+}
+
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
 # workflows). "default" is the NVFP4 10Eros-Max beta2 (11.7GB — smaller AND
 # higher quality than the old int8 default, so it took over as default).
@@ -1209,6 +1216,7 @@ HTML = """<!doctype html>
     <div id="refpick">
       <button type="button" onclick="pickRefImage()">🗂 参照画像を選ぶ</button>
       <span id="ref-sel" class="hint">未選択（企画モードで確定したキー画像を使用）</span>
+      <button type="button" id="ref-clear" onclick="clearRefImage()" style="display:none" title="参照画像の選択を解除する">✕ 解除</button>
     </div>
     <button type="button" id="btn-reset" onclick="resetPlan()">🔄 新しい企画</button>
     <button type="button" id="btn-manual" onclick="showManualPrompt()">✍ 手動プロンプト</button>
@@ -1460,6 +1468,8 @@ async function pickRefImage() {
         // 新しい参照画像を選んだ＝新しい企画の始まりなので、相談フラグをリセット
         refConsultActive = false;
         $("#ref-sel").textContent = img.name + "（" + img.dir + "）";
+        const clr = $("#ref-clear");
+        if (clr) clr.style.display = "inline-block";
         closeRefModal();
       };
       grid.appendChild(c);
@@ -1473,6 +1483,27 @@ async function pickRefImage() {
   }
 }
 function closeRefModal() { $("#refmodal").style.display = "none"; }
+
+// チャット指示（「高画質で/長めに」等）による設定上書きが効いているとき、
+// 生成開始メッセージに追記して「知らない間に別の設定で生成されていた」を防ぐ。
+function overrideNote(bot, j) {
+  if (!bot || !j || !j.override_label) return;
+  const n = document.createElement("div");
+  n.className = "hint";
+  n.textContent = "⚙ チャット指示を反映中: " + j.override_label + "（UI のモード/長さより優先・解除は 🔄 新しい企画）";
+  bot.appendChild(n);
+}
+
+// 参照画像の選択を解除する。一度 🗂 で選ぶと curImageFilename が残り、
+// 以降の生成が全て勝手に R2V（参照あり）になってしまうため、明示的に
+// 解除できる手段が必要（「画像を参照したくないのに参照される」事故の対策）。
+function clearRefImage() {
+  curImageFilename = null;
+  refConsultActive = false;
+  $("#ref-sel").textContent = "未選択（企画モードで確定したキー画像を使用）";
+  const c = $("#ref-clear");
+  if (c) c.style.display = "none";
+}
 
 async function send() {
   const text = $("#input").value.trim();
@@ -1513,6 +1544,7 @@ async function send() {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    overrideNote(bot, j);
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
@@ -1787,6 +1819,7 @@ async function doGenerate(mode, text, bot) {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    overrideNote(bot, j);
     poll(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";
@@ -1960,7 +1993,8 @@ async function resetPlan() {
   lastImgPrompt = null;
   lastFinalPrompt = null;
   planStage = "chat";
-  refConsultActive = false;
+  // 参照画像の選択も解除する（古い画像が次の企画に勝手に参照されるのを防ぐ）
+  clearRefImage();
   if (hadJob) {
     addMsg("bot", '<div class="meta">新しい企画</div>進行中の生成をキャンセルし、新しい企画を始めます。作りたい映像を教えてください。');
   } else {
@@ -2262,6 +2296,19 @@ class ChatHandler(BaseHTTPRequestHandler):
                 if n.get("class_type") in ("MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"):
                     n["inputs"]["width"] = w_
                     n["inputs"]["height"] = h_
+        # チャット指示（「高画質で/長めに/縦長で」）による上書きが有効なとき、
+        # UI のモード/長さドロップダウンとは違う設定で生成されることがある。
+        # 「知らない間に別の設定で生成されていた」を防ぐため、実際に効いている
+        # 上書きを UI 側で表示できるようラベルにして返す。
+        override_notes = []
+        if SESSION.get("mode_override"):
+            override_notes.append("モード→" + MODE_LABELS.get(eff_mode, eff_mode))
+        if SESSION.get("length_frames"):
+            override_notes.append("長さ 約" + str(max(1, round(SESSION["length_frames"] / 24))) + "秒")
+        if SESSION.get("resolution"):
+            ow, oh = SESSION["resolution"]
+            override_notes.append("向き " + str(ow) + "x" + str(oh))
+        override_label = "・".join(override_notes)
         wf[NODE_UNET]["inputs"]["unet_name"] = DITS[dit]
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
@@ -2282,7 +2329,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             pid = json.loads(raw)["prompt_id"]
             self.server.job_meta[pid] = {"mode": eff_mode, "start": time.time(), "kind": "video"}
-            self._json(200, {"prompt_id": pid})
+            self._json(200, {"prompt_id": pid, "eff_mode": eff_mode, "override_label": override_label})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
@@ -2452,7 +2499,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         """
         global PLAN_HISTORY
         content = user_text
-        if stage == "video" and user_text == "__CONFIRM_IMAGE__":
+        # 元テキストがキー画像確定(__CONFIRM_IMAGE__)かどうかを、書き替え前に確定しておく
+        # （後段の ref_start 分岐が「書き替え済みテキスト」を見て誤発火しないように）。
+        is_confirm = (stage == "video" and user_text == "__CONFIRM_IMAGE__")
+        if is_confirm:
             with SESSION_LOCK:
                 ip = SESSION.get("image_prompt") or ""
             user_text = (
@@ -2462,7 +2512,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "1〜2個の質問でユーザーと相談してください。\n"
                 f"画像プロンプト: {ip}"
             )
-        if stage == "video" and ref_start and user_text != "__CONFIRM_IMAGE__":
+        if stage == "video" and ref_start and not is_confirm:
             # 参照モードからの動画相談開始。キー画像確定(__CONFIRM_IMAGE__)と
             # 違い、添付画像は「1フレーム目」ではなく「同一キャラを保つ
             # 参照画像」。内容を決めずに生成へ直行しないよう、まず相談させる。
@@ -2482,7 +2532,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         # not only after confirmation. Planners without a vision projector
         # (PLAN_HAS_VISION false) get the prompt text only.
         ref_note = None
-        if image_fn and user_text != "__CONFIRM_IMAGE__":
+        if image_fn and not is_confirm:
             if stage in ("chat", "image"):
                 ref_note = (
                     "【添付画像】ユーザーが指定した参照画像です。この画像の被写体・外見・"
