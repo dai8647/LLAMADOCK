@@ -63,15 +63,16 @@ param(
     # or LLAMADOCK_CLINE_MAX_TOKENS). Raise it if Cline frequently reports
     # "maximum output token limit" mid-turn.
     [int]$ClineMaxTokens = 0,
-    # DRY repetition-penalty sampler (llama.cpp). 0 = disabled (llama.cpp
-    # default). Recommended for quantized models that repeat words:
-    # -DryMultiplier 0.8 (with -DryBase 1.75 -DryAllowedLength 2
-    # -DryPenaltyLastN 256). Companion flags stay at llama.cpp defaults
-    # (1.75 / 2 / 64) when left at 0.
-    [float]$DryMultiplier = 0,
-    [float]$DryBase = 0,
-    [int]$DryAllowedLength = 0,
-    [int]$DryPenaltyLastN = 0
+    # Reasoning / thinking control, mapped to the native llama.cpp flags
+    # --reasoning, --reasoning-effort and --reasoning-budget. Empty = show the
+    # interactive menu (or fall back to the engine default). Values:
+    #   off              no thinking (fastest; best for agentic tool calls)
+    #   on               unrestricted thinking
+    #   low|medium|high  bounded thinking via --reasoning-effort
+    #   budget           cap thinking tokens via --reasoning-budget
+    [string]$ReasoningMode = "",
+    # Thinking token cap used with -ReasoningMode budget. 0 = default 2048.
+    [int]$ReasoningBudget = 0
 )
 
 $ErrorActionPreference = "Continue"
@@ -2963,26 +2964,39 @@ if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -no
     }
 }
 
-# Reasoning effort prompt (all models)
+# Reasoning / thinking control (all models). Uses the native llama.cpp flags
+# --reasoning, --reasoning-effort and --reasoning-budget (no JSON kwargs).
 $effectiveReasoningMode = ""
-if (-not $DryRun -and -not $isQuickLaunch) {
-    $reasoningOptions = @(
-        [PSCustomObject]@{ Label = "Off"; Value = "off"; ChatKwargs = '{"enable_thinking":false}' },
-        [PSCustomObject]@{ Label = "Low"; Value = "low"; ChatKwargs = '{"reasoning_effort":"low"}' },
-        [PSCustomObject]@{ Label = "Medium"; Value = "medium"; ChatKwargs = '{"reasoning_effort":"medium"}' },
-        [PSCustomObject]@{ Label = "High"; Value = "high"; ChatKwargs = '{"reasoning_effort":"high"}' }
-    )
+$effectiveReasoningEffort = ""
+$effectiveReasoningBudget = 0
+$selectedReasoningValue = ""
+$selectedReasoningBudget = 0
+
+$reasoningOptions = @(
+    [PSCustomObject]@{ Label = "Off    - no thinking (fastest, best for tool calls)"; Value = "off" },
+    [PSCustomObject]@{ Label = "Low    - light thinking (--reasoning-effort low)"; Value = "low" },
+    [PSCustomObject]@{ Label = "Medium - moderate thinking (--reasoning-effort medium)"; Value = "medium" },
+    [PSCustomObject]@{ Label = "High   - deep thinking (--reasoning-effort high)"; Value = "high" },
+    [PSCustomObject]@{ Label = "Budget - cap thinking tokens (--reasoning-budget N)"; Value = "budget" },
+    [PSCustomObject]@{ Label = "On     - unrestricted thinking"; Value = "on" }
+)
+
+if (-not [string]::IsNullOrWhiteSpace($ReasoningMode)) {
+    # Non-interactive: -ReasoningMode (and optional -ReasoningBudget) supplied.
+    $selectedReasoningValue = $ReasoningMode.Trim().ToLower()
+    $selectedReasoningBudget = $ReasoningBudget
+}
+elseif (-not $DryRun -and -not $isQuickLaunch) {
     Write-Host "Reasoning (thinking) mode:" -ForegroundColor Green
     for ($i = 0; $i -lt $reasoningOptions.Count; $i++) {
-        $ro = $reasoningOptions[$i]
-        Write-Host " [$($i+1)] $($ro.Label) - $($ro.ChatKwargs)"
+        Write-Host " [$($i+1)] $($reasoningOptions[$i].Label)"
     }
     Write-Host ""
     $defaultReasoning = "low"
     do {
-        $reasoningInput = Read-Host "Select reasoning mode (1-4), or press Enter for $defaultReasoning"
+        $reasoningInput = Read-Host "Select reasoning mode (1-$($reasoningOptions.Count)), or press Enter for $defaultReasoning"
         if ([string]::IsNullOrWhiteSpace($reasoningInput)) {
-            $reasoningSelection = if ($defaultReasoning -eq "off") { 1 } else { 2 }
+            $reasoningSelection = 2
             $reasoningValid = $true
         }
         else {
@@ -2991,21 +3005,39 @@ if (-not $DryRun -and -not $isQuickLaunch) {
         }
     } while (-not $reasoningValid -or $reasoningSelection -lt 1 -or $reasoningSelection -gt $reasoningOptions.Count)
 
-    $selectedReasoning = $reasoningOptions[$reasoningSelection - 1]
-    # Map reasoning selection to --reasoning flag (on/off only) and chat-template-kwargs
-    if ($selectedReasoning.Value -eq "off") {
-        $effectiveReasoningMode = "off"
+    $selectedReasoningValue = $reasoningOptions[$reasoningSelection - 1].Value
+    if ($selectedReasoningValue -eq "budget") {
+        $budgetInput = Read-Host "Thinking token budget, or press Enter for 2048"
+        if (-not [string]::IsNullOrWhiteSpace($budgetInput)) {
+            $parsedBudget = 0
+            if ([int]::TryParse($budgetInput, [ref]$parsedBudget) -and $parsedBudget -gt 0) {
+                $selectedReasoningBudget = $parsedBudget
+            }
+        }
     }
-    else {
-        # low/medium/high → reasoning on + reasoning_effort in chat-template-kwargs
-        $effectiveReasoningMode = "on"
+}
+
+# Map the selected reasoning mode to the native llama.cpp flags.
+if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
+    switch ($selectedReasoningValue) {
+        "off"    { $effectiveReasoningMode = "off" }
+        "on"     { $effectiveReasoningMode = "on" }
+        "low"    { $effectiveReasoningMode = "on"; $effectiveReasoningEffort = "low" }
+        "medium" { $effectiveReasoningMode = "on"; $effectiveReasoningEffort = "medium" }
+        "high"   { $effectiveReasoningMode = "on"; $effectiveReasoningEffort = "high" }
+        "budget" {
+            $effectiveReasoningMode = "on"
+            if ($selectedReasoningBudget -gt 0) { $effectiveReasoningBudget = $selectedReasoningBudget } else { $effectiveReasoningBudget = 2048 }
+        }
+        default  { Write-Host "WARNING: unknown reasoning mode '$selectedReasoningValue', ignoring." -ForegroundColor Yellow }
     }
-    # Set chat-template-kwargs from reasoning selection if user didn't provide custom kwargs
-    if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs)) {
-        $effectiveChatTemplateKwargs = $selectedReasoning.ChatKwargs
+    if ($effectiveReasoningMode) {
+        $reasoningSummary = "--reasoning $effectiveReasoningMode"
+        if ($effectiveReasoningEffort) { $reasoningSummary += " --reasoning-effort $effectiveReasoningEffort" }
+        if ($effectiveReasoningBudget -gt 0) { $reasoningSummary += " --reasoning-budget $effectiveReasoningBudget" }
+        Write-Host "Reasoning mode: $selectedReasoningValue ($reasoningSummary)" -ForegroundColor Green
+        Write-Host ""
     }
-    Write-Host "Reasoning mode: $($selectedReasoning.Value) (--reasoning $effectiveReasoningMode)" -ForegroundColor Green
-    Write-Host ""
 }
 
 # Merge with user-provided chat-template-kwargs (reasoning kwargs take precedence if no custom input)
@@ -3424,16 +3456,11 @@ if ($effectiveUbatch -gt 0) {
 if ($effectiveReasoningMode) {
     $args += @("--reasoning", $effectiveReasoningMode)
 }
-
-# DRY repetition-penalty sampler. On by default via -DryMultiplier; the
-# companion flags only appear when explicitly set (they keep llama.cpp
-# defaults otherwise). quantized models that repeat words usually need
-# -DryMultiplier 0.8 or higher.
-if ($DryMultiplier -gt 0) {
-    $args += @("--dry-multiplier", "$DryMultiplier")
-    if ($DryBase -gt 0) { $args += @("--dry-base", "$DryBase") }
-    if ($DryAllowedLength -gt 0) { $args += @("--dry-allowed-length", "$DryAllowedLength") }
-    if ($DryPenaltyLastN -gt 0) { $args += @("--dry-penalty-last-n", "$DryPenaltyLastN") }
+if ($effectiveReasoningEffort) {
+    $args += @("--reasoning-effort", $effectiveReasoningEffort)
+}
+if ($effectiveReasoningBudget -gt 0) {
+    $args += @("--reasoning-budget", "$effectiveReasoningBudget")
 }
 
 $args += @("--cache-ram", "$effectiveCacheRamMiB")
