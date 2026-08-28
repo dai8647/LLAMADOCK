@@ -273,12 +273,17 @@ def _resolve_plan_model(for_gpu):
 # fallback; the plain build-rocm71 tree was deprecated as broken.
 # CPU planner keeps the TurboTan build it has always used.
 # LLAMADOCK_PLAN_BIN overrides either chain.
+# NOTE: the TurboTan b10536 prebuilt (Downloads\llama-b10536-rocm) disappeared
+# on 2026-08-28; the surviving TurboTan checkout is turbo-tan-llama.cpp-tq3-check
+# (version 10369). Paths churn — _spawn_plan_llm re-resolves when one dies.
 _GPU_BIN_CANDIDATES = (
+    r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe",
     r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
     r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
     r"C:\llama-tq3\build-rocm71\bin\llama-server.exe",
 )
 _CPU_BIN_CANDIDATES = (
+    r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe",
     r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
     r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
 )
@@ -342,7 +347,7 @@ PLAN_ENGINE = _plan_engine_label()
 # DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
 DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
 # DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
-TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
+TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"
 # DFlash2 draft model path (Qwen3.8-27B-DFlash2, grouped dynamic convolution, Q4_K_M ~1.14GB)
 DFLASH2_GGUF = r"C:\Users\dai86\.lmstudio\models\incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
 # DFlash2 requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch, ROCm 7.1 HIP).
@@ -370,17 +375,30 @@ def _spawn_plan_llm():
     Returns the Popen handle, or None when the binary/model is missing or
     the process could not be started.
     """
-    if not os.path.isfile(PLAN_SERVER_BIN) or not os.path.isfile(PLAN_MODEL_PATH):
+    global PLAN_SERVER_BIN
+    # PLAN_SERVER_BIN is resolved at import time; the build trees churn
+    # (the TurboTan prebuilt vanished mid-session on 2026-08-28), so
+    # re-resolve when the remembered path no longer exists instead of
+    # failing every spawn until h3-chat restarts.
+    if not os.path.isfile(PLAN_SERVER_BIN):
+        PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
+    if not os.path.isfile(PLAN_SERVER_BIN):
+        print(f"h3-chat: planning LLM binary not found: {PLAN_SERVER_BIN}")
+        return None
+    if not os.path.isfile(PLAN_MODEL_PATH):
+        print(f"h3-chat: planning model not found: {PLAN_MODEL_PATH}")
         return None
     # Speculative decoding requires fork-specific builds: draft-dspark exists
     # only in TurboTan and draft-dflash only in the DFlash2 build; AtomicBot
     # rejects unknown --spec-type values at startup.
     if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
         if not os.path.isfile(DFLASH2_SERVER_BIN):
+            print(f"h3-chat: DFlash2 binary not found: {DFLASH2_SERVER_BIN}")
             return None
         server_bin = DFLASH2_SERVER_BIN
     elif PLAN_GPU and PLAN_SETTINGS["dspark"]:
         if not os.path.isfile(TURBOTAN_SERVER_BIN):
+            print(f"h3-chat: DSpark needs the TurboTan binary, not found: {TURBOTAN_SERVER_BIN}")
             return None
         server_bin = TURBOTAN_SERVER_BIN
     else:
