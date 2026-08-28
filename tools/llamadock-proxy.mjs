@@ -288,7 +288,11 @@ const server = http.createServer(async (request, response) => {
     if (completed || disconnected || responseBodyDone || response.writableEnded || response.writableFinished) return;
     disconnected = true;
     controller.abort();
-    if (inference) void requestRestart("client_disconnect");
+    // Aborting the upstream request makes llama-server cancel the in-flight
+    // generation and free the slot, so a client disconnect (e.g. pressing ESC
+    // in Cline) must NOT recycle the whole server. The old behavior restarted
+    // the model on every cancel. A genuinely dead server is still recovered via
+    // the throttled upstream_unreachable path below.
     void record({ type: "client_disconnect", request_id: requestId, path: url.pathname, ...requestMeta });
   };
   request.on("aborted", abortUpstream);
