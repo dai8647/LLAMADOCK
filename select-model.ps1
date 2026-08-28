@@ -57,7 +57,12 @@ param(
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
     [switch]$SkipOpenBrowser,
-    [string]$ComfyUIFlags = ""
+    [string]$ComfyUIFlags = "",
+    # Per-request output token cap the recovery gateway applies to Cline
+    # requests (thinking tokens count against it). 0 = gateway default (16384
+    # or LLAMADOCK_CLINE_MAX_TOKENS). Raise it if Cline frequently reports
+    # "maximum output token limit" mid-turn.
+    [int]$ClineMaxTokens = 0
 )
 
 $ErrorActionPreference = "Continue"
@@ -3760,6 +3765,9 @@ $supervisorArgs = @(
     "-UpstreamPort", 8080,
     "-LogDir", (Join-Path $PSScriptRoot "logs")
 )
+if ($ClineMaxTokens -gt 0) {
+    $supervisorArgs += "-ClineMaxTokens", $ClineMaxTokens
+}
 # Opt-in resilience: without -AutoRestart a manually killed llama-server
 # stays down and the supervisor shuts the gateway and itself cleanly.
 if ($AutoRestart) {

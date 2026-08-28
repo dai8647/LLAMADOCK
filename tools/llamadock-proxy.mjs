@@ -42,8 +42,10 @@ const LOG_DIR = option("--log-dir", process.env.LLAMADOCK_LOG_DIR || "");
 const MAX_BODY = 16 * 1024 * 1024;
 // Cline must be able to finish JSON tool arguments. 512 tokens truncates
 // ordinary file-edit payloads and leaves the agent retrying the same action.
-// Clients may still override this cap with LLAMADOCK_CLINE_MAX_TOKENS.
-const CLINE_MAX_TOKENS = Number(process.env.LLAMADOCK_CLINE_MAX_TOKENS || 2048);
+// Thinking/reasoning models also burn this budget before the answer, so the
+// default is generous. Override with --cline-max-tokens <N> or the
+// LLAMADOCK_CLINE_MAX_TOKENS environment variable (CLI argument wins).
+const CLINE_MAX_TOKENS = Number(option("--cline-max-tokens", process.env.LLAMADOCK_CLINE_MAX_TOKENS || "16384"));
 
 function computeFingerprint(body) {
   if (!body) return "";

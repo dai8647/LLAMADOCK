@@ -8,7 +8,10 @@ param(
     [int]$GatewayPort = 8090,
     [int]$UpstreamPort = 8080,
     [string]$LogDir = "",
-    [switch]$AutoRestartServer
+    [switch]$AutoRestartServer,
+    # Per-request output token cap applied to Cline requests by the recovery
+    # gateway. 0 = leave the gateway's own default/env override untouched.
+    [int]$ClineMaxTokens = 0
 )
 
 # Resolve Root from PSCommandPath after param binding (same pattern as harness)
@@ -212,6 +215,9 @@ function Start-GatewayChild {
         "--restart-flag", $flagPath,
         "--log-dir", $LogDir
     )
+    if ($ClineMaxTokens -gt 0) {
+        $gatewayArguments += "--cline-max-tokens", [string]$ClineMaxTokens
+    }
     Write-SupervisorLog "Starting LlamaDock gateway on 127.0.0.1:$GatewayPort."
     $process = Start-Process -FilePath $node -ArgumentList $gatewayArguments -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
     Set-Content -LiteralPath $gatewayPidPath -Value ([string]$process.Id) -Encoding ASCII
