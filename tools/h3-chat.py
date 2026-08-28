@@ -1558,7 +1558,15 @@ function imgEngine() {
 }
 
 async function genImage(prevBot) {
-  if (!lastImgPrompt || busy) return;
+  if (!lastImgPrompt) {
+    addMsg("bot", '<div class="meta">⚠ 生成する画像プロンプトがありません。企画 LLM に案を出してもらってください。</div>');
+    return;
+  }
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了するまでお待ちください。</div>');
+    return;
+  }
+  jobCancelled = false;
   const eng = imgEngine();
   const label = eng === "qimg" ? "Qwen-Image 2512（4候補・約20分）" : "Z-Image Turbo（数秒）";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
@@ -1579,6 +1587,7 @@ async function genImage(prevBot) {
 }
 
 async function pollImage(id, bot) {
+  if (jobCancelled) return;
   curJobId = id;
   try {
     const r = await fetch("/api/status/" + id);
@@ -1620,8 +1629,10 @@ async function pollImage(id, bot) {
       return;
     }
     bot.querySelector(".meta").textContent = "キー画像生成中… " + (j.extra || "");
+    if (jobCancelled) return;
     setTimeout(() => pollImage(id, bot), 2000);
   } catch (e) {
+    if (jobCancelled) return;
     setTimeout(() => pollImage(id, bot), 2000);
   }
 }
@@ -1640,7 +1651,14 @@ function reviseImage() {
 }
 
 function confirmImage() {
-  if (busy) return;
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから画像を確定してください。</div>');
+    return;
+  }
+  if (!curImageFilename) {
+    addMsg("bot", '<div class="meta">⚠ 確定する画像がありません。画像を生成してから選んでください。</div>');
+    return;
+  }
   setBusy(true);
   const bot = addMsg("bot", '<div class="meta">企画 LLM と動画の内容を相談中…（Z-Image はアンロード済み）</div>');
   (async () => {
@@ -1673,17 +1691,34 @@ function confirmImage() {
 }
 
 function showManualPrompt() {
+  // 生成中に開けると、🎬 側の busy ガードに当たって「押しても何も起きない」
+  // ことになるので、先に開かない。
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから「✍ 手動プロンプト」を開いてください。</div>');
+    return;
+  }
   const bot = addMsg("bot",
     '<div class="meta">✍ 手動プロンプト</div>' +
     '<textarea id="manual-prompt" style="width:100%;height:110px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;font-size:13px" placeholder="動画プロンプトを英語で直接入力（例: [Shot 1] The woman turns to the camera and smiles, the camera slowly dollies in...）"></textarea>' +
-    '<div class="row"><button class="ok" onclick="useManualPrompt()">🎬 このプロンプトで生成 ▶</button></div>');
+    '<div class="row"><button class="ok" onclick="useManualPrompt(this)">🎬 このプロンプトで生成 ▶</button></div>');
   bot.querySelector("#manual-prompt").focus();
 }
 
-function useManualPrompt() {
-  const ta = document.querySelector("#manual-prompt");
+function useManualPrompt(btn) {
+  // 手動プロンプト UI は何度でも開けてメッセージが残るため、
+  // document.querySelector だと古い（空の）textarea が先にヒットして
+  // 無反応になる。必ず自分のメッセージ内の textarea を読む。
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了してから実行してください。</div>');
+    return;
+  }
+  const msg = btn ? btn.closest(".msg") : null;
+  const ta = msg ? msg.querySelector("#manual-prompt") : document.querySelector("#manual-prompt");
   const text = ta ? ta.value.trim() : "";
-  if (!text) return;
+  if (!text) {
+    addMsg("bot", '<div class="meta">⚠ プロンプトが空です。上の入力欄に動画プロンプトを書いてから押してください。</div>');
+    return;
+  }
   lastFinalPrompt = text;
   planStage = "video";
   addMsg("user", "✍ 手動プロンプトで生成: " + text);
@@ -1691,8 +1726,15 @@ function useManualPrompt() {
 }
 
 function genPlanLast() {
-  if (busy) return;
-  if (!lastFinalPrompt) return;
+  // 無言で return すると「ボタンが動かない」ように見える。必ず理由を表示する。
+  if (busy) {
+    addMsg("bot", '<div class="meta">⚠ 生成が進行中です。完了するまでお待ちください。</div>');
+    return;
+  }
+  if (!lastFinalPrompt) {
+    addMsg("bot", '<div class="meta">⚠ 生成するプロンプトがありません。「✍ 手動プロンプト」で入力するか、企画を再相談してください。</div>');
+    return;
+  }
   const finalPrompt = lastFinalPrompt;
   lastFinalPrompt = null;
   setBusy(true);
@@ -1734,7 +1776,14 @@ async function poll(id, bot) {
     const r = await fetch("/api/status/" + id);
     const j = await r.json();
     if (j.status === "success") {
-      const v = j.videos[0];
+      const vids = j.videos || [];
+      if (!vids.length) {
+        bot.innerHTML = '<div class="meta">エラー</div><div class="err">生成は完了しましたが出力が見つかりませんでした。もう一度お試しください。</div>';
+        curJobId = null;
+        setBusy(false);
+        return;
+      }
+      const v = vids[0];
       bot.innerHTML = '<div class="meta">完成 ✅</div>' +
         '<video controls autoplay loop muted src="/api/view?filename=' + encodeURIComponent(v.filename) +
         '&type=' + encodeURIComponent(v.type || "output") + '"></video>' +
@@ -1795,7 +1844,12 @@ async function cancelJob(id, bot) {
 }
 
 async function cancelCurrent() {
-  if (!curJobId) return;
+  if (!curJobId) {
+    // busy 中でもジョブ ID が無い = 企画 LLM の応答待ち。無言で返すと
+    // 「キャンセルが効かない」ように見えるので、理由を表示する。
+    addMsg("bot", '<div class="meta">⚠ 実行中のジョブがありません。企画 LLM の応答待ちの場合は、応答後に操作できます。</div>');
+    return;
+  }
   const id = curJobId;
   await cancelJob(id, null);
   addMsg("bot", '<div class="meta">キャンセルしました。</div>');
