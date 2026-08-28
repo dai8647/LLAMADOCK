@@ -424,3 +424,27 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
     ブラウザに古い 1 枚表示版ページがキャッシュされる事故を防止
 - 未コミット: tools/h3chat-restart.log.err（再起動ログ、コミット対象外）
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
+
+## 2026-08-28 ボタン無反応のサイレント失敗を全修正（commit 7f29fdd）
+
+- 報告: 「🎬 このプロンプトで生成 ▶」が出たが押しても何も起きない
+- 根因: 無言 return のサイレント失敗が 3 種 + 無限リトライ 1 種
+  1. showManualPrompt は busy 中でも開けてしまう → 開いた後 🎬 を押しても
+     genPlanLast の busy ガードに当たり無反応
+  2. useManualPrompt が document.querySelector("#manual-prompt") で読むため、
+     手動プロンプト UI を複数回開くと古い（空の）textarea が先にヒットして無反応
+  3. 空プロンプト・busy・プロンプト未確定で無言 return
+  4. poll(): サーバーが success + videos 空を返すと v.filename が TypeError →
+     3 秒ごとの無限リトライで「生成中…」のまま黙り続ける
+- 修正内容:
+  - useManualPrompt(btn): btn.closest(".msg") 内の textarea を読む（スコープ解決）
+  - showManualPrompt / useManualPrompt / genPlanLast / genImage / confirmImage:
+    busy・空・未確定の各 return に ⚠ メッセージを表示
+  - poll: videos 空なら「出力が見つかりませんでした」エラー表示（無限リトライ廃止）
+  - pollImage: jobCancelled を尊重（キャンセル後もポーリングが続く問題を修正）
+  - genImage: jobCancelled を false にリセット（video 側と整合）
+  - cancelCurrent: ジョブ無し（企画 LLM 応答待ち）でも理由メッセージを表示
+- 検証: py_compile / node --check 済み。モックサーバー（port 9190、GPU 不使用）で
+  全パス動作確認: 空プロンプト警告 / 複数 textarea スコープ / busy ガード /
+  空 videos エラー / 画像生成中キャンセル
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
