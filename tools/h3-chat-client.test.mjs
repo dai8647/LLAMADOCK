@@ -54,6 +54,8 @@ const state = {
   sessionSaves: [],          // bodies posted to /api/sessions/save
   switchFail: false,
   switchResult: null,        // session doc returned by /api/sessions/switch
+  extendResult: null,        // null = default {image: "h3_ext_1.png"}
+  concatBodies: [],          // bodies posted to /api/concat
   statusResult: { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] },
 };
 
@@ -76,6 +78,12 @@ async function fakeFetch(url, opts) {
     return j({ session: state.switchResult });
   }
   if (url === "/api/sessions/delete") return j({ ok: true });
+  if (url === "/api/extend") return j(state.extendResult || { image: "h3_ext_1.png" });
+  if (url === "/api/upscale") return j({ prompt_id: "up-1", scale: 2 });
+  if (url === "/api/concat") {
+    state.concatBodies.push(opts.body);
+    return j({ filename: "h3_joined_1.mp4", path: "C:\\x\\h3_joined_1.mp4" });
+  }
   if (url === "/api/plan") {
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
     if (body.text === "__RESET__") {
@@ -460,6 +468,117 @@ await tick();
 }
 state.switchResult = null;
 state.sessionsResponse = null;
+
+console.log("[20] extendVideo: last frame staged + continuation setup");
+run(`
+  setBusy(false);
+  segmentChain = []; extendFrom = null; refImages = [];
+  $("#imguse").value = "ref"; $("#planmode").checked = false;
+`);
+await run(`(async () => { await extendVideo("a.mp4"); })()`);
+await tick();
+{
+  const ext = state.fetches.filter(f => f.url === "/api/extend");
+  check("extend posted with filename", ext.length === 1 && JSON.parse(ext[0].opts.body).filename === "a.mp4");
+  check("refImages = extracted last frame", run(`refImages.length === 1 && refImages[0] === "h3_ext_1.png"`));
+  check("imguse forced to first (I2V)", run(`$("#imguse").value`) === "first");
+  check("planmode turned on", el("planmode").checked === true);
+  check("planStage = video", run(`planStage`) === "video");
+  check("extendFrom remembers source video", run(`extendFrom`) === "a.mp4");
+  check("chain seeded with source video", run(`segmentChain.length === 1 && segmentChain[0] === "a.mp4"`));
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  check("guidance message shown", bots[bots.length - 1].innerHTML.includes("続きの準備 ✅"));
+}
+
+console.log("[21] continuation completion grows chain + shows action buttons");
+// [20] の続き: extendFrom="a.mp4" の状態で動画が完成すると連鎖が伸びる
+state.statusResult = { status: "success", videos: [{ filename: "b.mp4", type: "output", path: "C:\\x\\b.mp4", kind: "video" }] };
+run(`lastFinalPrompt = "CONT_PROMPT"; $("#imguse").value = "first";`);
+await run(`(async () => { genPlanLast(); })()`);
+await tick();
+{
+  check("chain grew on continuation completion", run(`segmentChain.length === 2 && segmentChain[1] === "b.mp4"`));
+  check("extendFrom cleared after completion", run(`extendFrom`) === null);
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  const last = bots[bots.length - 1];
+  check("続きを作る + アップスケール buttons shown",
+    last.innerHTML.includes("この動画の続きを作る") && last.innerHTML.includes("アップスケール（2倍）"));
+  check("concat button shown at chain tail", last.innerHTML.includes("本の動画を1本に結合"));
+  // onclick 属性: HTML エンティティをデコードして JS として構文チェック
+  // （&quot; 方式がブラウザで実際に動くことの検証）
+  const m = last.innerHTML.match(/onclick="([^"]*)"/);
+  check("onclick attribute present", !!m);
+  if (m) {
+    const code = m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    let okSyntax = true;
+    try { new vm.Script(code); } catch (e) { okSyntax = false; }
+    check("onclick JS syntactically valid after entity decode", okSyntax, code);
+    check("onclick targets the completed file", code.includes("b.mp4"));
+  }
+}
+
+console.log("[22] upscaleVideo: completes as upscale (no action buttons, no shutdown)");
+state.statusResult = { status: "success", videos: [{ filename: "h3_upscaled_1.mp4", type: "output", path: "C:\\x\\h3_upscaled_1.mp4", kind: "video" }] };
+el("shutdown-box").style.display = "none";
+await run(`(async () => { await upscaleVideo("b.mp4"); })()`);
+await tick();
+{
+  const up = state.fetches.filter(f => f.url === "/api/upscale");
+  check("upscale posted with filename + scale=2",
+    up.length === 1 && JSON.parse(up[0].opts.body).filename === "b.mp4" && JSON.parse(up[0].opts.body).scale === 2);
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  const last = bots[bots.length - 1];
+  check("upscale completion label", last.innerHTML.includes("アップスケール完了 ✅"));
+  check("no continuation buttons on upscale result", !last.innerHTML.includes("この動画の続きを作る"));
+  check("chain not polluted by upscale job", run(`segmentChain.length === 2 && extendFrom === null`));
+  check("shutdown box not triggered by upscale", el("shutdown-box").style.display !== "block");
+  check("busy cleared after upscale", run(`busy`) === false);
+}
+
+console.log("[23] concatVideos: posts chain and shows joined player");
+state.concatBodies.length = 0;
+await run(`(async () => { await concatVideos(${JSON.stringify(JSON.stringify(["a.mp4", "b.mp4"]))}); })()`);
+await tick();
+{
+  check("concat posted with the file list",
+    state.concatBodies.length === 1 &&
+    JSON.stringify(JSON.parse(state.concatBodies[0]).files) === JSON.stringify(["a.mp4", "b.mp4"]));
+  const bots = el("msgs").children.filter(c => c.className === "msg bot");
+  const last = bots[bots.length - 1];
+  check("joined video player shown", last.innerHTML.includes("結合完了 ✅") && last.innerHTML.includes("h3_joined_1.mp4"));
+}
+{
+  const n = state.concatBodies.length;
+  await run(`(async () => { await concatVideos(JSON.stringify(["only.mp4"])); })()`);
+  await tick();
+  check("concat with <2 files rejected client-side", state.concatBodies.length === n);
+}
+
+console.log("[24] segmentChain/extendFrom survive save + session switch");
+run(`segmentChain = ["a.mp4", "b.mp4"]; extendFrom = null;`);
+state.sessionSaves.length = 0;
+run(`addMsg("user", "チェイン保存テスト");`);
+await run(`(async () => { await saveSession(); })()`);
+await tick();
+{
+  const b = JSON.parse(state.sessionSaves[state.sessionSaves.length - 1].body);
+  check("snapshot carries chain", JSON.stringify(b.ui.segmentChain) === JSON.stringify(["a.mp4", "b.mp4"]));
+  check("snapshot carries extendFrom", b.ui.extendFrom === null);
+}
+state.switchResult = {
+  id: "s9", title: "チェイン企画",
+  messages: [{ who: "user", html: "チェイン復元" }],
+  ui: { planStage: "video", refImages: [], imguse: "first", curJobId: null,
+        segmentChain: ["a.mp4", "b.mp4"], extendFrom: "b.mp4" }
+};
+await run(`(async () => { await switchSession("s9"); })()`);
+await tick();
+check("chain + extendFrom restored on switch", run(`segmentChain.length === 2 && extendFrom === "b.mp4"`));
+state.switchResult = { id: "s10", title: "x", messages: [], ui: { planStage: "chat" } };
+await run(`(async () => { await switchSession("s10"); })()`);
+await tick();
+check("chain reset when session has none", run(`segmentChain.length === 0 && extendFrom === null`));
+state.switchResult = null;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
