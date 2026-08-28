@@ -409,3 +409,18 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
   YTan2000 Huihui-Qwen3.5-A35B TQ3_4S(12.4GB)。GPU 判定は名前列挙から .Gpu フラグ参照へ簡素化
 - 検証: py_compile OK / PS Parser OK / GET・POST API 実機テスト OK / GPU planner 実起動確認
   （HauhauCS IQ3_M + TurboTan、port 8191、企画応答 1m15s）/ CPU へ戻す切替も確認済み
+
+## 2026-08-28 Qwen-Image 4候補の明示保証 + UI キャッシュ対策
+
+- 報告: 「Qwen-Image 2512（高画質・4候補）」のラベルがあるのに 4 候補にならない
+- 調査結果: 生成・表示のコードは既に 4 候補対応済みだった
+  - h3_workflow_qimage.json の EmptySD3LatentImage は batch_size=4
+  - ComfyUI 実績: 8/17・8/18 の各実行で 4 枚ずつ保存済み（計 8 ファイル、全て別 md5 = 別内容）
+  - /api/status は ComfyUI 履歴の全出力を列挙し、JS ギャラリーも全候補をグリッド表示
+- 対処（commit 5ea2ae9）:
+  - IMG_ENGINES に batch_size を明示（qimg=4 / zimg=1）。_zimg ハンドラーが latent ノードの
+    batch_size を毎回設定するため、ワークフロー JSON が編集されても 4 候補が保証される
+  - _html() に Cache-Control: no-store を追加。UI はサーバー内蔵 JS なので、
+    ブラウザに古い 1 枚表示版ページがキャッシュされる事故を防止
+- 未コミット: tools/h3chat-restart.log.err（再起動ログ、コミット対象外）
+- 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
