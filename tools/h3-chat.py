@@ -403,26 +403,15 @@ def _resolve_plan_model(for_gpu):
     return _auto_plan_model(for_gpu)
 
 
-# GPU planner: TurboTan first — measured ~5x faster than the AtomicBot FA
-# build on the 27B MTP planner quants (1.9 t/s there vs a finished plan in
-# 2m16s here), and it is the only build with draft-dspark. AtomicBot FA as
-# fallback; the plain build-rocm71 tree was deprecated as broken.
-# CPU planner keeps the TurboTan build it has always used.
-# LLAMADOCK_PLAN_BIN overrides either chain.
-# NOTE: the TurboTan b10536 prebuilt (Downloads\llama-b10536-rocm) disappeared
-# on 2026-08-28; the surviving TurboTan checkout is turbo-tan-llama.cpp-tq3-check
-# (version 10369). Paths churn — _spawn_plan_llm re-resolves when one dies.
+# Planner engine: single engine since 2026-08-30 — the Unsloth llama.cpp HIP
+# build (b10687, gfx110X = RX 7800 XT). It is the fastest measured backend on
+# this box (prefill 227-271 t/s vs 49-80 t/s on Vulkan) and replaces the
+# retired AtomicBot/TurboTan/DFlash2 chain. Path may churn if Unsloth Desktop
+# updates — _spawn_plan_llm re-resolves when the remembered path dies.
 _GPU_BIN_CANDIDATES = (
-    r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe",
-    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
-    r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
-    r"C:\llama-tq3\build-rocm71\bin\llama-server.exe",
+    r"C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe",
 )
-_CPU_BIN_CANDIDATES = (
-    r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe",
-    r"C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe",
-    r"C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe",
-)
+_CPU_BIN_CANDIDATES = _GPU_BIN_CANDIDATES
 
 
 def _resolve_plan_bin(for_gpu):
@@ -446,21 +435,11 @@ PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
 # 企画 LLM のエンジン名（コーダー側のエンジン表記と揃えた表示用ラベル）。
 # モデル切替で GPU/CPU が変わり得るので、起動時のスナップショット
 # (PLAN_ENGINE) と現在値 (_plan_engine_label) を分けて持つ。
-PLAN_ENGINE_DSPARK = "TurboTan (draft-dspark)"
-PLAN_ENGINE_DFLASH2 = "DFlash2 (ROCm 7.1 HIP, draft-dflash)"
 
 
 def _plan_engine_label():
-    if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
-        return PLAN_ENGINE_DFLASH2
-    if PLAN_GPU and PLAN_SETTINGS.get("dspark"):
-        return PLAN_ENGINE_DSPARK
-    if "llama.cpp-openPangu" in PLAN_SERVER_BIN:
-        return "openPangu (native CPU)"
-    if "build-rocm71" in PLAN_SERVER_BIN:
-        return "AtomicBot (ROCm 7.1 HIP)"
-    if "llama-b10536" in PLAN_SERVER_BIN:
-        return "TurboTan (ROCm HIP)"
+    if ".unsloth" in PLAN_SERVER_BIN:
+        return "Unsloth (ROCm 7.1 HIP)"
     return "Unknown"
 # The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
@@ -476,18 +455,8 @@ PLAN_SETTINGS = {
     "fa": True,           # Flash Attention
     "reasoning_effort": "medium",  # off, low, medium, xhigh
     "reasoning_budget": 1536,       # max thinking tokens
-    "dspark": False,      # DSpark speculative decoding (experimental)
-    "dflash2": False,     # DFlash2 speculative decoding (experimental)
 }
 PLAN_ENGINE = _plan_engine_label()
-# DSpark draft model path (Qwen3.8-27B-DSPark, 1B dflash arch, Q8_0 1.35GB)
-DSPARK_GGUF = r"C:\Users\dai86\.lmstudio\models\erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
-# DSpark requires the TurboTan build (AtomicBot does not support draft-dspark).
-TURBOTAN_SERVER_BIN = r"C:\Users\dai86\Downloads\turbo-tan-llama.cpp-tq3-check\build-rocm71\bin\llama-server.exe"
-# DFlash2 draft model path (Qwen3.8-27B-DFlash2, grouped dynamic convolution, Q4_K_M ~1.14GB)
-DFLASH2_GGUF = r"C:\Users\dai86\.lmstudio\models\incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
-# DFlash2 requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch, ROCm 7.1 HIP).
-DFLASH2_SERVER_BIN = r"C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
 PLAN_PROC = None
 PLAN_LAST_TRY = 0.0
 
@@ -524,21 +493,7 @@ def _spawn_plan_llm():
     if not os.path.isfile(PLAN_MODEL_PATH):
         print(f"h3-chat: planning model not found: {PLAN_MODEL_PATH}")
         return None
-    # Speculative decoding requires fork-specific builds: draft-dspark exists
-    # only in TurboTan and draft-dflash only in the DFlash2 build; AtomicBot
-    # rejects unknown --spec-type values at startup.
-    if PLAN_GPU and PLAN_SETTINGS.get("dflash2"):
-        if not os.path.isfile(DFLASH2_SERVER_BIN):
-            print(f"h3-chat: DFlash2 binary not found: {DFLASH2_SERVER_BIN}")
-            return None
-        server_bin = DFLASH2_SERVER_BIN
-    elif PLAN_GPU and PLAN_SETTINGS["dspark"]:
-        if not os.path.isfile(TURBOTAN_SERVER_BIN):
-            print(f"h3-chat: DSpark needs the TurboTan binary, not found: {TURBOTAN_SERVER_BIN}")
-            return None
-        server_bin = TURBOTAN_SERVER_BIN
-    else:
-        server_bin = PLAN_SERVER_BIN
+    server_bin = PLAN_SERVER_BIN
     args = [
         server_bin, "-m", PLAN_MODEL_PATH,
         "--port", str(PLAN_PORT),
@@ -570,28 +525,6 @@ def _spawn_plan_llm():
             # Vision-capable planner: attach the mmproj shipped next to the
             # model so the planner can see the confirmed key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
-        # DSpark speculative decoding: separate 1B dflash draft model predicts
-        # up to 7 tokens ahead; main model verifies. Experimental — requires
-        # llama.cpp PR #25173+ (spec-type draft-dspark).
-        if PLAN_SETTINGS["dspark"] and os.path.isfile(DSPARK_GGUF):
-            args += [
-                "--spec-type", "draft-dspark",
-                "--spec-draft-model", DSPARK_GGUF,
-                "--spec-draft-n-max", "7",
-                "-ngld", "99",
-            ]
-        # DFlash2 speculative decoding: grouped dynamic depthwise convolution
-        # draft model predicts up to 7 tokens ahead; main model verifies.
-        # Requires the DFlash2 fork build (z-lab/llama.cpp-fork dflash2 branch).
-        # n_max stays within the checkpoint's trained block size (8) to avoid
-        # the "clamping to 7" warning at load time.
-        if PLAN_SETTINGS.get("dflash2") and os.path.isfile(DFLASH2_GGUF):
-            args += [
-                "--spec-type", "draft-dflash",
-                "--spec-draft-model", DFLASH2_GGUF,
-                "--spec-draft-n-max", "7",
-                "-ngld", "99",
-            ]
     else:
         args += [
             "-ngl", "0", "--mlock",
@@ -738,8 +671,8 @@ def switch_plan_model(path, mmproj=None, gpu=None):
         PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
         ChatHandler._kill_port(PLAN_PORT)   # stale leftover on the new port
         PLAN_HAS_VISION = bool(PLAN_MMPROJ_PATH)
-        # CPU<->GPU の切替で適切な llama-server も選び直す（env 指定が優先）。
-        # 例: CPU 起動後に GPU モデルへ切替 → TurboTan から AtomicBot FA へ。
+        # CPU<->GPU の切替でも同一エンジン（Unsloth）を使うため再解決のみ
+        # （env 指定が優先）。
         if not os.environ.get("LLAMADOCK_PLAN_BIN"):
             PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
         PLAN_ENGINE = _plan_engine_label()
@@ -932,9 +865,7 @@ PLAN_SYSTEM = (
     "性的シーンなら行為・体位・部位・動き・リズム・表情・声・体液・衣服の状態まで英語プロンプトに具体的に含める。曖昧な一般表現に丸めない。"
     "[IMG_PROMPT] にはヌード・下着・肌・胸・尻・陰部など必要なら露骨な英語タグ（nude, naked, breasts, nipples, pussy, spread legs, missionary 等）を書く。"
     "[FINAL_PROMPT] には性行為の動き（thrusting, bouncing, grinding）、リズム、カメラアングル、喘ぎ声・息遣い・愛液などの音響を時系列で書く。"
-    "被写体は全員成人（adult）。未成年を示す表現は絶対に使わない。ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
-    "【未成年の拒否・必須】ユーザーが未成年・子供（小学生・中学生・高校生・幼稚園児・「○歳」の未成年など）を被写体にする企画を求めたら、"
-    "その企画は即座に断り、被写体を成人に置き換えた代替案を提案する。未成年を示す表現を [IMG_PROMPT] / [FINAL_PROMPT] に絶対に含めない。"
+    "ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
     "【服装・小物の整合性】キー画像と動画で衣服・下着・小物の状態が矛盾しないよう一貫させる。"
     "ヌードシーンなら [IMG_PROMPT] と [FINAL_PROMPT] の両方に explicitly fully nude, no clothing, no underwear と明記し、"
     "下着・衣服が途中で出現しないよう釘を刺す。着衣シーンならその衣服を両プロンプトで同じ単語で繰り返す。"
@@ -1031,32 +962,6 @@ def _strip_gen_params(text):
     return GEN_PARAM_RE.sub("", text or "").strip()
 
 
-# 未成年被写体ガード。この環境は成人向け創作専用で、PLAN_SYSTEM も「被写体は
-# 全員成人・未成年を示す表現は絶対に使わない」と定めているが、ユーザーが明示的に
-# 子供を依頼すると小型モデルは指示違反に従ってしまう（実際に 2026-08-28、
-# 小学生を性的に描いた IMG_PROMPT が出力された）。LLM の自制だけに任せず、
-# コード側で確定にブロックする（企画入力・抽出済みプロンプト・生成ゲートの3段）。
-MINOR_RE = re.compile(
-    r"小学生|中学[生校]|小学|高校[生校]|高生|幼稚園|保育園|幼児|児童|未成年|幼女|幼男|ロリ|ショタ|"
-    r"loli\b|shota\b|preteen|pre[\s-]?teen|underage|under[\s-]?18|kindergarten|"
-    r"elementary\s+school|middle\s+school|junior\s+high|grade\s+school|"
-    r"school[\s-]?girl|school[\s-]?boy|"
-    r"\bchild\b|\bchildren\b|\bkids?\b|"
-    r"little\s+girl|young\s+girl|little\s+boy|young\s+boy|"
-    r"\b([5-9]|1[0-7])\s*[-–]?\s*years?\s*old\b|"
-    r"\b([5-9]|1[0-7])\s*[-–]\s*year\s*[-–]\s*old\b",
-    re.I,
-)
-
-MINOR_REFUSAL = (
-    "⚠ 未成年（子供）を被写体にする企画・プロンプトはこの環境では生成できません。"
-    "被写体は成人（adult）に限定されています。成人の被写体で企画し直してください。"
-)
-
-
-def _minor_guard(text):
-    """未成年の被写体を示す表現を含んでいれば True。"""
-    return bool(MINOR_RE.search(text or ""))
 
 
 # ---- 企画セッションの永続化（サイドバー履歴） ------------------------
@@ -1652,8 +1557,6 @@ HTML = """<!doctype html>
         <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> フラッシュアテンション</label>
         <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
         <label>予算:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
-        <label><input type="checkbox" id="p-dspark" onchange="if(this.checked){const d=document.getElementById('p-dflash2');if(d)d.checked=false;}sendPlanSettings()"> DSpark（実験・投機的デコード）</label>
-        <label><input type="checkbox" id="p-dflash2" onchange="if(this.checked){const d=document.getElementById('p-dspark');if(d)d.checked=false;}sendPlanSettings()"> DFlash2（実験・投機的デコード）</label>
       </div>
     </details>
     <details id="audioset">
@@ -1770,8 +1673,6 @@ function sendPlanSettings() {
   const fa = $("#p-fa");
   const re = $("#p-reasoning");
   const rb = $("#p-budget");
-  const dspark = $("#p-dspark");
-  const dflash2 = $("#p-dflash2");
   if (!ctk) return;
   fetch("/api/plan-settings", {
     method: "POST",
@@ -1779,9 +1680,7 @@ function sendPlanSettings() {
     body: JSON.stringify({
       ctk: ctk.value, ctv: ctv.value,
       fa: fa.checked, reasoning_effort: re.value,
-      reasoning_budget: parseInt(rb.value, 10) || 1536,
-      dspark: dspark ? dspark.checked : false,
-      dflash2: dflash2 ? dflash2.checked : false
+      reasoning_budget: parseInt(rb.value, 10) || 1536
     })
   }).catch(() => {});
 }
@@ -3090,17 +2989,6 @@ class ChatHandler(BaseHTTPRequestHandler):
                 PLAN_SETTINGS["reasoning_budget"] = max(0, min(32768, int(req["reasoning_budget"])))
             except (ValueError, TypeError):
                 pass
-        if "dspark" in req:
-            PLAN_SETTINGS["dspark"] = bool(req["dspark"])
-            # DSpark (draft-dspark, TurboTan build) and DFlash2 (draft-dflash,
-            # DFlash2 build) need different llama-server binaries — keep the
-            # two modes mutually exclusive so _spawn_plan_llm picks one bin.
-            if PLAN_SETTINGS["dspark"]:
-                PLAN_SETTINGS["dflash2"] = False
-        if "dflash2" in req:
-            PLAN_SETTINGS["dflash2"] = bool(req["dflash2"])
-            if PLAN_SETTINGS["dflash2"]:
-                PLAN_SETTINGS["dspark"] = False
         self._json(200, PLAN_SETTINGS)
 
     def _plan_models(self):
@@ -3195,11 +3083,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "プロンプトが空です"})
             return
-        # 未成年ガード: 手動プロンプト・過去プロンプトの再送も含め、生成直前で
-        # 最終チェック（企画 LLM 経路以外からのバイパスを塞ぐ）。
-        if _minor_guard(text):
-            self._json(400, {"error": MINOR_REFUSAL})
-            return
+
         # UI の音声・セリフ設定をプロンプトにマージ
         text += _audio_block(audio)
         if ref:
@@ -3422,11 +3306,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "メッセージが空です"})
             return
-        # 未成年ガード: 子供を被写体にする依頼は LLM に回さず即座に断る
-        # （確定判定・LLM の自制に任せない）。
-        if _minor_guard(text):
-            self._json(200, {"reply": MINOR_REFUSAL})
-            return
+
         endpoint = self._plan_endpoint()
         if not endpoint:
             self._json(503, {"error": "企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）"})
@@ -3847,18 +3727,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 reply = IMG_FINAL_RE.sub("", reply)
                 reply = FINAL_RE.sub("", reply)
                 reply = "\n".join(line.rstrip() for line in reply.splitlines() if line.strip())
-            # 未成年ガード: 明示的な子供依頼にモデルが従ってプロンプトを
-            # 出力しても、ここで確定にブロックする（PLAN_SYSTEM の成人限定
-            # ルール違反をサイレントに流さない）。プロンプトは破棄し、
-            # 返答を拒否メッセージに差し替える（生成ボタンが出ない）。
-            if img_prompt and _minor_guard(img_prompt):
-                img_prompt = None
-                img_prompt_ja = None
-                reply = MINOR_REFUSAL
-            if final_prompt and _minor_guard(final_prompt):
-                final_prompt = None
-                final_prompt_ja = None
-                reply = MINOR_REFUSAL
+
             if img_prompt:
                 with SESSION_LOCK:
                     SESSION["image_prompt"] = img_prompt
@@ -4091,11 +3960,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not text:
             self._json(400, {"error": "画像プロンプトが空です"})
             return
-        # 未成年ガード: キー画像生成の最終ゲート（企画 LLM のチェックを
-        # 抜けてきたプロンプトもここで止める）。
-        if _minor_guard(text):
-            self._json(400, {"error": MINOR_REFUSAL})
-            return
+
         engine = req.get("engine") or "zimg"
         eng = IMG_ENGINES.get(engine)
         if not eng:
