@@ -4226,6 +4226,12 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        # ── セッション自動クリーンアップ（ログ残さない）──────────
+        import shutil
+        if os.path.isdir(SESSIONS_DIR):
+            shutil.rmtree(SESSIONS_DIR, ignore_errors=True)
+            print("h3-chat: sessions cleaned up.")
 
 
 if __name__ == "__main__":
