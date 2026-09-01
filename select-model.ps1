@@ -20,7 +20,7 @@ param(
     [string]$McpMode = "Prompt",
     [ValidateSet("Prompt", "On", "Off")]
     [string]$FlashAttentionMode = "Prompt",
-    [ValidateSet("Prompt", "Off", "MtpNextN", "MtpExtQwenNext", "DSpark", "DFlash2")]
+    [ValidateSet("Prompt", "Off", "MtpNextN")]
     [string]$SpecMode = "Prompt",
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
@@ -52,7 +52,7 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "AtomicBot", "TurboTan", "OfficialVulkan", "OfficialHIP", "OfficialCPU", "ExpertsLaguna", "LongCat", "DFlash2", "QwenNext")]
+    [ValidateSet("Auto", "Unsloth")]
     [string]$EngineMode = "Auto",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -72,7 +72,36 @@ param(
     #   budget           cap thinking tokens via --reasoning-budget
     [string]$ReasoningMode = "",
     # Thinking token cap used with -ReasoningMode budget. 0 = default 2048.
-    [int]$ReasoningBudget = 0
+    [int]$ReasoningBudget = 0,
+    # Repeat penalty for repetition loops (--repeat-penalty / --repeat-last-n).
+    # Default "" = llama.cpp default (1.0 = no penalty). 1.1 recommended for
+    # degenerated loops (text like "待待待...").
+    [string]$RepeatPenalty = "",
+    # Repeat penalty window (--repeat-last-n). 0 = llama.cpp default (256).
+    [int]$RepeatLastN = 0,
+    # Sampler preset bundling the native llama.cpp output-quality flags.
+    # Empty = show the interactive menu (or default to "qwen-code" on
+    # quick launches). Values:
+    #   qwen-code     Qwen3.6 official coding recs + repeat guard (recommended)
+    #   chat          softer general-chat sampler
+    #   repeat-only   llama.cpp defaults + repeat-penalty 1.1 only
+    #   off           pure llama.cpp defaults
+    [string]$SamplerPreset = "",
+    # Individual sampler overrides (0 / empty = use the preset or default).
+    # These take precedence over the selected preset.
+    [double]$Temperature = 0,
+    [int]$TopK = 0,
+    [double]$TopP = 0,
+    [double]$MinP = 0,
+    # Prompt-cache KV reuse (--cache-reuse N). Min chunk size (tokens) to
+    # reuse from the prompt cache via KV shifting. -1 = optimal default (512),
+    # 0 = disabled. Coding agents (Cline) resend the same long system prompt +
+    # tool definitions every turn; reuse skips re-prefilling the shared prefix.
+    [int]$CacheReuse = -1,
+    # Process/thread priority (--prio): low(-1) / normal(0) / medium(1) /
+    # high(2) / realtime(3). Empty = optimal default "high". Realtime (3) can
+    # starve the OS; avoid it.
+    [string]$Priority = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -81,109 +110,21 @@ if (Test-Path -LiteralPath $utf8Helper) {
     . $utf8Helper
 }
 
-$AtomicBotServerPath = if ($env:LLAMA_TQ3_ATOMICBOT_SERVER) {
-    $env:LLAMA_TQ3_ATOMICBOT_SERVER
+# Single engine since 2026-08-30: the Unsloth llama.cpp HIP build (b10687,
+# gfx110X = RX 7800 XT). It is the fastest measured backend on this box
+# (prefill 227-271 t/s vs 49-80 t/s on Vulkan) and supports every flag the
+# launcher passes (--cache-reuse, --prio, --reasoning, --spec-type draft-mtp,
+# ...). Override with LLAMADOCK_UNSLOTH_SERVER if the path ever moves.
+$UnslothServerPath = if ($env:LLAMADOCK_UNSLOTH_SERVER) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
 }
-# FA-fixed rebuild is the only supported on-disk candidate (2026-08-24).
-# The old build-rocm71 was renamed to build-rocm71-deprecated: it shipped
-# with FLASH_ATTN_EXT mostly unsupported (7831/22454 probes NOT SUPPORTED)
-# and must not be silently picked up as a fallback. If this path is missing,
-# rebuild with tools/build-atomicbot-rocm71-fa.ps1.
-elseif (Test-Path "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe") {
-    "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
-}
-else {
-    # Report the expected FA-fixed path so the generic missing-engine check
-    # below can print a useful message instead of failing on $null.
-    "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
-}
-
-$TurboTanServerPath = if ($env:LLAMA_TQ3_TURBOTAN_SERVER) {
-    $env:LLAMA_TQ3_TURBOTAN_SERVER
-}
-elseif (Test-Path "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe") {
-    "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
-}
-elseif (Test-Path "C:\llama-tq3-turbotan\build\bin\llama-server.exe") {
-    "C:\llama-tq3-turbotan\build\bin\llama-server.exe"
+elseif (Test-Path "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe") {
+    "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 }
 else {
-    "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
+    "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 }
-$ServerPath = $AtomicBotServerPath
-$OfficialVulkanServerPath = if ($env:LLAMADOCK_OFFICIAL_VULKAN_SERVER) {
-    $env:LLAMADOCK_OFFICIAL_VULKAN_SERVER
-}
-elseif (Test-Path "C:\llama.cpp-vulkan\llama-server.exe") {
-    "C:\llama.cpp-vulkan\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\Downloads\llama.cpp-vulkan\llama-server.exe"
-}
-$OfficialHIPServerPath = if ($env:LLAMADOCK_OFFICIAL_HIP_SERVER) {
-    $env:LLAMADOCK_OFFICIAL_HIP_SERVER
-}
-elseif (Test-Path "C:\llama.cpp-hip\llama-server.exe") {
-    "C:\llama.cpp-hip\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\Downloads\llama.cpp-hip\llama-server.exe"
-}
-$OfficialCPUServerPath = if ($env:LLAMADOCK_OFFICIAL_CPU_SERVER) {
-    $env:LLAMADOCK_OFFICIAL_CPU_SERVER
-}
-elseif (Test-Path "C:\llama.cpp-cpu\llama-server.exe") {
-    "C:\llama.cpp-cpu\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\Downloads\llama.cpp-cpu\llama-server.exe"
-}
-$ExpertsLagunaServerPath = if ($env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER) {
-    $env:LLAMA_TQ3_EXPERTS_LAGUNA_SERVER
-}
-elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-hip\bin\llama-server.exe") {
-    "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-hip\bin\llama-server.exe"
-}
-elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe") {
-    "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\llama-cpp-turboquant\build-hip\bin\llama-server.exe"
-}
-# InquiringMinds-AI llama.cpp fork (longcat-flash-ngram branch) for
-# LongCat-Flash / LongCat-Flash-Lite GGUF models (arch longcat-flash-ngram).
-$LongCatServerPath = if ($env:LLAMA_TQ3_LONGCAT_SERVER) {
-    $env:LLAMA_TQ3_LONGCAT_SERVER
-}
-elseif (Test-Path "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\llama-server.exe") {
-    "C:\Users\dai86\Downloads\longcat-llama.cpp\build-rocm71\bin\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\Downloads\longcat-llama.cpp\build\bin\llama-server.exe"
-}
-# DFlash2 llama.cpp fork (z-lab/llama.cpp-fork dflash2 branch) for
-# DFlash2 speculative decoding (grouped dynamic depthwise convolution).
-# Built with ROCm 7.1 HIP for RX 7800 XT (gfx1101).
-$DFlash2ServerPath = if ($env:LLAMA_TQ3_DFLASH2_SERVER) {
-    $env:LLAMA_TQ3_DFLASH2_SERVER
-}
-elseif (Test-Path "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe") {
-    "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
-}
-else {
-    "C:\Users\dai86\Downloads\llama-dflash2\build-rocm71\bin\llama-server.exe"
-}
-# Qwen3.8-Flash-Next (arch qwen4exp) engine: llama.cpp PR #27742 branch with
-# GDN + PLE N-gram table + MTP/NextN draft support. ROCm 7.1 HIP, gfx1101.
-$QwenNextServerPath = if ($env:LLAMA_QWEN_NEXT_SERVER) {
-    $env:LLAMA_QWEN_NEXT_SERVER
-}
-elseif (Test-Path "C:\llama-qwen-next\build-hip\bin\llama-server.exe") {
-    "C:\llama-qwen-next\build-hip\bin\llama-server.exe"
-}
-else {
-    "C:\llama-qwen-next\build-hip\bin\llama-server.exe"
-}
+$ServerPath = $UnslothServerPath
 $ModelsBase = if ($env:LLAMADOCK_MODELS_BASE) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_MODELS_BASE)
 }
@@ -647,39 +588,9 @@ function Test-PortBusy {
 
 function Get-RequiredEngine {
     param([object]$Model)
-
-    $modelText = "$($Model.Name) $($Model.FullName)"
-    # DeepSeek-family GGUFs use the native experts-laguna fork. This includes
-    # REAP and MXFP4 variants; do not let a TQ3 marker route them to TurboTan.
-    if ($modelText -match "(?i)DeepSeek|ds4-compact|REAP[-_ ]?K128|Laguna") {
-        return "ExpertsLaguna"
-    }
-
-    if ($modelText -match "(?i)TQ3_4S|TQ3") {
-        return "TurboTan"
-    }
-
-    # LongCat-Flash / LongCat-Flash-Lite GGUF: needs InquiringMinds-AI longcat
-    # fork (arch longcat-flash-ngram); mainline/AtomicBot cannot load these.
-    if ($modelText -match "(?i)LongCat") {
-        return "LongCat"
-    }
-
-    # DFlash2 checkpoints: needs the DFlash2 fork build (z-lab/llama.cpp-fork).
-    # AtomicBot/TurboTan do not support the DFlash2 grouped-dynamic-convolution arch.
-    if ($modelText -match "(?i)DFlash2") {
-        return "DFlash2"
-    }
-
-    # Qwen3.8-Flash-Next (arch qwen4exp: GDN + PLE N-gram table + 512 experts):
-    # only the PR #27742 branch build can load this arch. Keep the pattern
-    # specific to Flash-Next so plain Qwen3.8-27B GGUFs still route to AtomicBot.
-    if ($modelText -match "(?i)Flash[-_ ]?Next|qwen4exp") {
-        return "QwenNext"
-    }
-
-    # Default non-special GGUFs use the AtomicBot TurboQuant runtime.
-    return "AtomicBot"
+    # Single engine since 2026-08-30: Unsloth's llama.cpp HIP build runs every
+    # supported arch (including MTP GGUFs); no per-model engine routing needed.
+    return "Unsloth"
 }
 
 function Get-ModelNote {
@@ -1709,9 +1620,9 @@ function Start-H3Chat {
                 catch { }
             }
             if (-not ($chatUpNow -and $planUpNow)) {
-                # 企画 LLM のエンジン: GPU プランナーは AtomicBot（h3-chat.py が PLAN_SERVER_BIN で起動）、
-                # CPU プランナーは openPangu ネイティブ CPU ビルド（h3-chat.ps1 が選択）。
-                $planEngineHint = if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or $script:PlanModelChoice -eq "Qwen3.5-A35B-GPU-Vision" -or ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) { "AtomicBot (ROCm 7.1 HIP)" } else { "openPangu (native CPU)" }
+                # 企画 LLM のエンジン: 単一エンジン（Unsloth HIP ビルド）を h3-chat.py/
+                # h3-chat.ps1 が PLAN_SERVER_BIN で起動する。
+                $planEngineHint = "Unsloth (ROCm 7.1 HIP)"
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
@@ -1988,15 +1899,7 @@ Show-LlamaDockBanner
 $hardware = Get-HardwareEstimate
 
 $runtimeCandidates = @(
-    [PSCustomObject]@{ Name = "AtomicBot"; Path = $AtomicBotServerPath }
-    [PSCustomObject]@{ Name = "TurboTan"; Path = $TurboTanServerPath },
-    [PSCustomObject]@{ Name = "ExpertsLaguna"; Path = $ExpertsLagunaServerPath },
-    [PSCustomObject]@{ Name = "LongCat"; Path = $LongCatServerPath },
-    [PSCustomObject]@{ Name = "DFlash2"; Path = $DFlash2ServerPath },
-    [PSCustomObject]@{ Name = "QwenNext"; Path = $QwenNextServerPath },
-    [PSCustomObject]@{ Name = "OfficialVulkan"; Path = $OfficialVulkanServerPath },
-    [PSCustomObject]@{ Name = "OfficialHIP"; Path = $OfficialHIPServerPath },
-    [PSCustomObject]@{ Name = "OfficialCPU"; Path = $OfficialCPUServerPath }
+    [PSCustomObject]@{ Name = "Unsloth"; Path = $UnslothServerPath }
 )
 
 # ComfyUI is a model-independent workspace. Keep it at the front door so a
@@ -2060,13 +1963,11 @@ $models = @()
 foreach ($f in $allFiles) {
     if ($f.Name -notmatch "mmproj" -and $f.Name -notmatch "(?i)DFlash2") {
         $isTQ3 = $f.Name -match "TQ3"
-        $engine = Get-RequiredEngine -Model $f
         $models += [PSCustomObject]@{
             Name = $f.Name
             FullName = $f.FullName
             SizeMB = [math]::Round($f.Length / 1MB, 1)
             IsTQ3 = $isTQ3
-            Engine = $engine
         }
     }
 }
@@ -2091,7 +1992,7 @@ for ($i = 0; $i -lt $models.Count; $i++) {
     $m = $models[$i]
     $sizeStr = if ($m.SizeMB -ge 1024) { "{0:N1} GB" -f ($m.SizeMB / 1024) } else { "{0:N0} MB" -f $m.SizeMB }
     $tq3Tag = if ($m.IsTQ3) { "TQ3" } else { "GGUF" }
-    Write-Host (" [{0}] {1}  {2}  {3}  {4}" -f ($i + 1), $m.Name, $sizeStr, $tq3Tag, $m.Engine)
+    Write-Host (" [{0}] {1}  {2}  {3}" -f ($i + 1), $m.Name, $sizeStr, $tq3Tag)
 }
 Write-Host ""
 
@@ -2121,73 +2022,8 @@ if ($EngineMode -ne "Auto") {
     $requiredEngine = $EngineMode
 }
 
-# Engine selection prompt (skip for special engines and non-interactive mode)
-$specialEngines = @('TurboTan', 'ExpertsLaguna', 'LongCat', 'DFlash2', 'QwenNext')
-if ($EngineMode -eq 'Auto' -and $PresetMode -eq 'Prompt' -and $specialEngines -notcontains $requiredEngine -and -not $isQuickLaunch) {
-    # Check which engines are actually available
-    $availableEngines = @()
-    if (Test-Path $AtomicBotServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'AtomicBot (ROCm)'; Value = 'AtomicBot'; Note = 'GDN layers may fall back to CPU' } }
-    if (Test-Path $OfficialVulkanServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'Vulkan'; Value = 'OfficialVulkan'; Note = 'GDN layers GPU-accelerated' } }
-    if (Test-Path $OfficialCPUServerPath) { $availableEngines += [PSCustomObject]@{ Label = 'CPU'; Value = 'OfficialCPU'; Note = 'Small models, no GPU needed' } }
-
-    if ($availableEngines.Count -gt 1) {
-        Write-Host ''
-        Write-Host 'Runtime engine:' -ForegroundColor Green
-        for ($i = 0; $i -lt $availableEngines.Count; $i++) {
-            $eng = $availableEngines[$i]
-            Write-Host " [$(($i+1))] $($eng.Label) - $($eng.Note)"
-        }
-        Write-Host ''
-        $defaultEngineIdx = 0
-        for ($i = 0; $i -lt $availableEngines.Count; $i++) {
-            if ($availableEngines[$i].Value -eq 'OfficialVulkan') { $defaultEngineIdx = $i; break }
-        }
-        do {
-            $engineInput = Read-Host "Select engine (1-$($availableEngines.Count)), or press Enter for $($availableEngines[$defaultEngineIdx].Label)"
-            if ([string]::IsNullOrWhiteSpace($engineInput)) {
-                $engineSelection = $defaultEngineIdx
-                $engineValid = $true
-            }
-            else {
-                $engineSelection = 0
-                $engineValid = [int]::TryParse($engineInput, [ref]$engineSelection)
-                $engineSelection--
-            }
-        } while (-not $engineValid -or $engineSelection -lt 0 -or $engineSelection -ge $availableEngines.Count)
-
-        $requiredEngine = $availableEngines[$engineSelection].Value
-        Write-Host "Engine: $($availableEngines[$engineSelection].Label)" -ForegroundColor Green
-        Write-Host ''
-    }
-}
-
-if ($requiredEngine -eq "TurboTan") {
-    $ServerPath = $TurboTanServerPath
-}
-elseif ($requiredEngine -eq "ExpertsLaguna") {
-    $ServerPath = $ExpertsLagunaServerPath
-}
-elseif ($requiredEngine -eq "LongCat") {
-    $ServerPath = $LongCatServerPath
-}
-elseif ($requiredEngine -eq "DFlash2") {
-    $ServerPath = $DFlash2ServerPath
-}
-elseif ($requiredEngine -eq "QwenNext") {
-    $ServerPath = $QwenNextServerPath
-}
-elseif ($requiredEngine -eq "OfficialVulkan") {
-    $ServerPath = $OfficialVulkanServerPath
-}
-elseif ($requiredEngine -eq "OfficialHIP") {
-    $ServerPath = $OfficialHIPServerPath
-}
-elseif ($requiredEngine -eq "OfficialCPU") {
-    $ServerPath = $OfficialCPUServerPath
-}
-else {
-    $ServerPath = $AtomicBotServerPath
-}
+# Single engine (Unsloth HIP) since 2026-08-30: no engine selection menu.
+$ServerPath = $UnslothServerPath
 
 $modelNote = Get-ModelNote -Model $selected
 
@@ -2225,8 +2061,7 @@ $isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding")
 if ($isQuickLaunch) {
     if ($KCacheIndex -eq 0) { $KCacheIndex = 1 }
     if ($VCacheIndex -eq 0) {
-        if ($requiredEngine -eq "TurboTan") { $VCacheIndex = 4 }
-        elseif ($selectedModelSizeGB -ge 20) { $VCacheIndex = 4 }
+        if ($selectedModelSizeGB -ge 20) { $VCacheIndex = 4 }
         else { $VCacheIndex = 1 }
     }
 }
@@ -2314,26 +2149,9 @@ else {
 Write-Host ""
 
 if (-not (Test-Path $ServerPath)) {
-    Write-Host "ERROR: Required engine is not built:" -ForegroundColor Red
+    Write-Host "ERROR: Unsloth llama-server is not installed:" -ForegroundColor Red
     Write-Host $ServerPath -ForegroundColor Red
-    if ($requiredEngine -eq "TurboTan") {
-        Write-Host "Build TurboTan first, or set LLAMA_TQ3_TURBOTAN_SERVER to its llama-server.exe." -ForegroundColor Red
-    }
-    elseif ($requiredEngine -eq "AtomicBot") {
-        Write-Host "Rebuild with: tools\build-atomicbot-rocm71-fa.ps1 (see HANDOFF.md), or set LLAMA_TQ3_ATOMICBOT_SERVER." -ForegroundColor Red
-    }
-    elseif ($requiredEngine -eq "OfficialVulkan") {
-        Write-Host "Install an official llama.cpp Vulkan Windows build, or set LLAMADOCK_OFFICIAL_VULKAN_SERVER." -ForegroundColor Red
-    }
-    elseif ($requiredEngine -eq "OfficialHIP") {
-        Write-Host "Install an official llama.cpp HIP Windows build, or set LLAMADOCK_OFFICIAL_HIP_SERVER." -ForegroundColor Red
-    }
-    elseif ($requiredEngine -eq "OfficialCPU") {
-        Write-Host "Install an official llama.cpp CPU Windows build, or set LLAMADOCK_OFFICIAL_CPU_SERVER." -ForegroundColor Red
-    }
-    elseif ($requiredEngine -eq "QwenNext") {
-        Write-Host "Build the qwen4exp branch (llama.cpp PR #27742) at C:\llama-qwen-next, or set LLAMA_QWEN_NEXT_SERVER." -ForegroundColor Red
-    }
+    Write-Host "Install Unsloth Desktop (bundles this build), or set LLAMADOCK_UNSLOTH_SERVER to its llama-server.exe." -ForegroundColor Red
     exit 1
 }
 
@@ -2378,17 +2196,6 @@ elseif ($envVision -eq "on") {
 $systemRamGB = $hardware.RamGB
 $primaryVramGB = if ($hardware.PrimaryGpu) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
 $maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
-# qwen4exp (Qwen3.8-Flash-Next) breaks the generic RAM model two ways: the
-# GGUF is mmap demand-paged, so only the hot expert weights (~84GB) plus the
-# attention layers need page cache while the ~35GB PLE n-gram dictionary is
-# touched ~2KB/token and streams from SSD; and only 12 of 48 layers keep a KV
-# cache (36 GDN layers carry fixed-size recurrent state), so 32K of q8/q4 KV
-# is ~0.5GB, not the dense-model 0.22x-size estimate. Without this override
-# the ceiling math sees a >100GB-resident model and caps context at 8K.
-$isQwenNextModel = ($requiredEngine -eq "QwenNext")
-if ($isQwenNextModel) {
-    $maxContextTokensForRam = 131072
-}
 $recommendedDefaultTokens = if ($isDeepSeek) {
     # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
     16384
@@ -2419,24 +2226,14 @@ if (-not $isQuickLaunch) {
     Write-Host "Context size:" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
         Write-Host ("Detected RAM: {0}GB; selected model: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
-        if ($isQwenNextModel) {
-            Write-Host "qwen4exp: hot experts (~84GB) stay resident; context adds only KV (~0.5GB/32K, 12/48 attn layers)" -ForegroundColor DarkGray
-        }
-        else {
-            Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
-        }
+        Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
     }
     for ($i = 0; $i -lt $contextOptions.Count; $i++) {
         $ctx = $contextOptions[$i]
         if ($ctx.Tokens -gt 0) {
             $defaultMark = if ($ctx.Tokens -eq $recommendedDefaultTokens) { " [recommended]" } else { "" }
-            if ($isQwenNextModel) {
-                Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note)$defaultMark"
-            }
-            else {
-                $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
-                Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
-            }
+            $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
+            Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
         }
         else {
             Write-Host " [$($i+1)] $($ctx.Label) - $($ctx.Note)"
@@ -2490,23 +2287,10 @@ if (-not $isQuickLaunch) {
     Write-Host ""
     Write-Host "Context: $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
-        if ($isQwenNextModel) {
-            Write-Host "Context risk: qwen4exp mmap - hot experts ~84GB resident, PLE dict paged from SSD, KV ~0.5GB/32K (12/48 attn layers)" -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
-        }
+        Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
     }
 }
-if ($isQwenNextModel) {
-    # Generic fit test assumes the whole file resident in RAM; for qwen4exp
-    # the constraint is the hot expert set (~84GB) vs page cache, which is
-    # context-independent. Warn past 128K instead of hard-blocking.
-    if ($selectedContext.Tokens -gt 131072) {
-        Write-Host "WARNING: context past 128K on qwen4exp grows KV and prefill buffers; watch RAM." -ForegroundColor Yellow
-    }
-}
-elseif ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)) {
+if ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)) {
     Write-Host "ERROR: Selected context is likely to exceed available RAM for this model." -ForegroundColor Red
     Write-Host "Selected: $($selectedContext.Tokens) tokens; ceiling: $maxContextTokensForRam tokens." -ForegroundColor Red
     Write-Host "Use a lower context or a smaller/lighter model." -ForegroundColor Red
@@ -2549,36 +2333,12 @@ $kvOptions = @(
     [PSCustomObject]@{ Label = "Q5_1"; Type = "q5_1"; Note = "supported middle option for K, safer than Q4" },
     [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "supported compact middle option" },
     [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "compact, more quality risk for K" },
-    [PSCustomObject]@{ Label = "turbo4"; Type = "turbo4"; Note = "TurboQuant 4.5bit" },
-    [PSCustomObject]@{ Label = "turbo3"; Type = "turbo3"; Note = "TurboQuant 3.5bit" },
     [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "uncompressed compatibility fallback" },
     [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "uncompressed compatibility fallback, lower memory than f32" }
 )
 
-if ($requiredEngine -eq "TurboTan") {
-    # Older TurboTan builds accepted tq3_0/turbo* KV caches; the current
-    # b10536 build rejects them (instant startup crash when selected). Probe
-    # the actual binary and keep only cache types it validates for BOTH K and
-    # V, so the menu can never offer a combination that kills llama-server.
-    $probedKv = @()
-    foreach ($kv in $kvOptions) {
-        $okK = Test-CacheTypeSupported -ServerPath $ServerPath -Flag "-ctk" -Value $kv.Type
-        $okV = Test-CacheTypeSupported -ServerPath $ServerPath -Flag "-ctv" -Value $kv.Type
-        if ($okK -and $okV) { $probedKv += $kv }
-    }
-    if ($probedKv.Count -gt 0) {
-        $kvOptions = $probedKv
-        if (-not $isQuickLaunch) {
-            Write-Host "TurboTan KV probe: keeping $($kvOptions.Count) cache types accepted by this build." -ForegroundColor DarkGray
-        }
-    }
-}
-elseif ($requiredEngine -eq "OfficialVulkan" -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "OfficialCPU" -or $requiredEngine -eq "LongCat" -or $requiredEngine -eq "QwenNext" -or ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek)) {
-    $kvOptions = @($kvOptions | Where-Object { $_.Type -ne "turbo4" -and $_.Type -ne "turbo3" })
-    if (-not $isQuickLaunch) {
-        Write-Host "Current llama.cpp engine: TurboQuant KV types hidden; quality-first K/V default is Q8/Q8." -ForegroundColor Yellow
-    }
-}
+# Unsloth mainline build supports standard cache types only (no turbo KV).
+# No engine-specific probe needed.
 
 if (-not $isQuickLaunch) {
     Write-Host "KV cache K type:" -ForegroundColor Green
@@ -2601,7 +2361,7 @@ if ($KCacheIndex -gt 0) {
     }
 }
 else {
-    $defaultKType = if ($isDeepSeek) { "turbo4" } else { "q8_0" }
+    $defaultKType = "q8_0"
     do {
         $defaultKLabel = $defaultKType
         $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for $defaultKLabel"
@@ -2869,10 +2629,11 @@ if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace
     Write-Host ""
 
     do {
-        # qwen4exp measured best at 44 (4 of 48 expert layers on GPU); deeper
-        # GPU offload loses to CPU/DDR4 on this box (see qwen-next tuning).
-        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } elseif ($requiredEngine -eq "QwenNext") { "Heavy (44)" } else { "Auto" }
-        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } elseif ($requiredEngine -eq "QwenNext") { 5 } else { 1 }
+        # qwen4exp (Qwen3.8-Flash-Next) measured best at 44 (4 of 48 expert
+        # layers on GPU); deeper GPU offload loses to CPU/DDR4 on this box.
+        # Kept as reference; the model itself no longer switches engines.
+        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
+        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
         $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
         if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
             $cpuMoeSelection = $defaultCpuMoeIndex
@@ -2901,7 +2662,7 @@ if ($cpuMoeMode -eq "Auto") {
         # Reserve headroom for KV cache, compute buffers and the OS compositor.
         $vramGB = [math]::Max(4, [math]::Floor($detectedVramGB - 1.5))
     }
-    elseif ($env:HIP_PATH -or $requiredEngine -eq "OfficialHIP" -or $requiredEngine -eq "ExpertsLaguna") {
+    elseif ($env:HIP_PATH) {
         $vramGB = 14  # RX 7800 XT estimate, minus headroom
     }
     else {
@@ -2914,15 +2675,6 @@ if ($cpuMoeMode -eq "Auto") {
             $selectedCpuMoe = "99"
             if (-not $isQuickLaunch) {
                 Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
-            }
-        }
-        elseif ($requiredEngine -eq "QwenNext") {
-            # qwen4exp measured best at 44 on RX 7800 XT + DDR4 (4 of 48 expert
-            # layers on GPU). Deeper GPU offload is slower (kernel-launch +
-            # CPU<->GPU bounce beats the DDR4 bandwidth saving).
-            $selectedCpuMoe = "44"
-            if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto (44) - qwen4exp tuned for RX 7800 XT" -ForegroundColor Yellow
             }
         }
         else {
@@ -2957,7 +2709,7 @@ if (-not $isQuickLaunch -and $selectedCpuMoe -ne "0") {
 }
 
 if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -not $isQuickLaunch) {
-    $kwargsDefaultLabel = if ($requiredEngine -eq "TurboTan") { "TQ3 default disables thinking" } else { "none" }
+    $kwargsDefaultLabel = "none"
     $kwargsInput = Read-Host "chat-template-kwargs JSON, or press Enter for $kwargsDefaultLabel"
     if (-not [string]::IsNullOrWhiteSpace($kwargsInput)) {
         $ChatTemplateKwargs = $kwargsInput
@@ -3040,11 +2792,156 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
     }
 }
 
+# Advanced（詳細設定）gate. Rarely-touched knobs (sampler preset, prompt-cache
+# reuse, process priority, ubatch) are collapsed behind one prompt and default
+# to the researched optimal values; entering the gate reveals the per-option
+# menus below. Everything is still reachable manually.
+$advancedSettingsMenu = $false
+if (-not $DryRun -and -not $isQuickLaunch) {
+    Write-Host "Advanced settings（詳細設定）:" -ForegroundColor Green
+    Write-Host " [Enter] 最適設定のまま（推奨）"
+    Write-Host " [1] 詳細設定を変更する"
+    Write-Host ""
+    $advancedInput = Read-Host "詳細設定を変更しますか? (Enter = 最適設定のまま, 1 = 変更)"
+    if ($advancedInput.Trim() -eq "1") {
+        $advancedSettingsMenu = $true
+    }
+    Write-Host ""
+}
+
+# Sampler / output-quality preset. Server-side defaults (clients may still
+# override per request). Presets bundle native llama.cpp sampler flags;
+# individual params (-Temperature/-TopK/-TopP/-MinP/-RepeatPenalty/
+# -RepeatLastN) take precedence. Research 2026-08-29 (Qwen3.6-35B-A3B
+# model card + llama.cpp issues): coding works best at temp 0.6 / top-k 20
+# / top-p 0.95 / min-p 0.05; a 512-token repeat window covers phrase loops
+# that 256 misses.
+$samplerPresetOptions = @(
+    [PSCustomObject]@{ Label = "Qwen 推奨（コード向け）- temp 0.6 / top-k 20 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)"; Value = "qwen-code" },
+    [PSCustomObject]@{ Label = "チャット向け - temp 0.8 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)"; Value = "chat" },
+    [PSCustomObject]@{ Label = "繰り返し対策のみ - repeat 1.1 (window 512)"; Value = "repeat-only" },
+    [PSCustomObject]@{ Label = "Off（llama.cpp デフォルト）"; Value = "off" }
+)
+
+$effectiveSamplerPreset = ""
+if (-not [string]::IsNullOrWhiteSpace($SamplerPreset)) {
+    $effectiveSamplerPreset = $SamplerPreset.Trim().ToLower()
+}
+elseif (-not $DryRun -and $advancedSettingsMenu) {
+    Write-Host "Sampler（出力調整）preset:" -ForegroundColor Green
+    for ($i = 0; $i -lt $samplerPresetOptions.Count; $i++) {
+        Write-Host " [$($i+1)] $($samplerPresetOptions[$i].Label)"
+    }
+    Write-Host ""
+    $defaultSampler = "qwen-code"
+    do {
+        $samplerInput = Read-Host "Select sampler preset (1-$($samplerPresetOptions.Count)), or press Enter for $defaultSampler"
+        if ([string]::IsNullOrWhiteSpace($samplerInput)) {
+            $samplerSelection = 1
+            $samplerValid = $true
+        }
+        else {
+            $samplerSelection = 0
+            $samplerValid = [int]::TryParse($samplerInput, [ref]$samplerSelection)
+        }
+    } while (-not $samplerValid -or $samplerSelection -lt 1 -or $samplerSelection -gt $samplerPresetOptions.Count)
+    $effectiveSamplerPreset = $samplerPresetOptions[$samplerSelection - 1].Value
+}
+elseif (-not $DryRun) {
+    # Quick launch: default to the recommended preset.
+    $effectiveSamplerPreset = "qwen-code"
+}
+
+# Resolve effective sampler values (preset values, overridden by explicit params).
+$presetTemp = 0; $presetTopK = 0; $presetTopP = 0; $presetMinP = 0
+$presetRepeat = ""; $presetRepeatLastN = 0
+switch ($effectiveSamplerPreset) {
+    "qwen-code"   { $presetTemp = 0.6; $presetTopK = 20; $presetTopP = 0.95; $presetMinP = 0.05; $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
+    "chat"        { $presetTemp = 0.8;                       $presetTopP = 0.95; $presetMinP = 0.05; $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
+    "repeat-only" {                                                                                     $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
+    "off"         { }
+    default       { if ($effectiveSamplerPreset) { Write-Host "WARNING: unknown sampler preset '$effectiveSamplerPreset', ignoring." -ForegroundColor Yellow } }
+}
+$effectiveTemperature = if ($Temperature -gt 0) { $Temperature } else { $presetTemp }
+$effectiveTopK = if ($TopK -gt 0) { $TopK } else { $presetTopK }
+$effectiveTopP = if ($TopP -gt 0) { $TopP } else { $presetTopP }
+$effectiveMinP = if ($MinP -gt 0) { $MinP } else { $presetMinP }
+$effectiveRepeatPenalty = if (-not [string]::IsNullOrWhiteSpace($RepeatPenalty)) { $RepeatPenalty } else { $presetRepeat }
+$effectiveRepeatLastN = if ($RepeatLastN -gt 0) { $RepeatLastN } else { $presetRepeatLastN }
+
+$samplerSummary = @()
+if ($effectiveSamplerPreset) { $samplerSummary += "preset=$effectiveSamplerPreset" }
+if ($effectiveTemperature -gt 0) { $samplerSummary += "temp=$effectiveTemperature" }
+if ($effectiveTopK -gt 0) { $samplerSummary += "top-k=$effectiveTopK" }
+if ($effectiveTopP -gt 0) { $samplerSummary += "top-p=$effectiveTopP" }
+if ($effectiveMinP -gt 0) { $samplerSummary += "min-p=$effectiveMinP" }
+if ($effectiveRepeatPenalty) { $samplerSummary += "repeat=$effectiveRepeatPenalty/w$effectiveRepeatLastN" }
+
+# Prompt-cache KV reuse (--cache-reuse). Coding-agent workloads resend the
+# same long prefix every turn; KV shifting reuses it instead of re-prefilling.
+$effectiveCacheReuse = $CacheReuse
+if ($effectiveCacheReuse -lt 0) { $effectiveCacheReuse = 512 }
+if (-not $DryRun -and $advancedSettingsMenu -and $CacheReuse -lt 0) {
+    $cacheReuseInput = Read-Host "Prompt-cache reuse (--cache-reuse), press Enter for 512 (0 = off)"
+    if (-not [string]::IsNullOrWhiteSpace($cacheReuseInput)) {
+        $parsedCacheReuse = 0
+        if ([int]::TryParse($cacheReuseInput, [ref]$parsedCacheReuse)) { $effectiveCacheReuse = $parsedCacheReuse }
+    }
+}
+
+# Process priority (--prio). high = optimal on Windows (small decode win, less
+# latency jitter); realtime (3) can starve the OS.
+$priorityMap = @{ "low" = -1; "normal" = 0; "medium" = 1; "high" = 2; "realtime" = 3 }
+$effectivePriorityValue = 2
+if (-not [string]::IsNullOrWhiteSpace($Priority)) {
+    $prioKey = $Priority.Trim().ToLower()
+    if ($priorityMap.ContainsKey($prioKey)) { $effectivePriorityValue = $priorityMap[$prioKey] }
+    else {
+        $parsedPrio = 0
+        if ([int]::TryParse($Priority, [ref]$parsedPrio) -and $parsedPrio -ge -1 -and $parsedPrio -le 3) { $effectivePriorityValue = $parsedPrio }
+        else { Write-Host "WARNING: unknown priority '$Priority', using high (2)." -ForegroundColor Yellow }
+    }
+}
+if (-not $DryRun -and $advancedSettingsMenu -and [string]::IsNullOrWhiteSpace($Priority)) {
+    $priorityInput = Read-Host "Process priority (--prio), press Enter for high (2) [low/normal/medium/high/realtime]"
+    if (-not [string]::IsNullOrWhiteSpace($priorityInput)) {
+        $prioKey = $priorityInput.Trim().ToLower()
+        if ($priorityMap.ContainsKey($prioKey)) { $effectivePriorityValue = $priorityMap[$prioKey] }
+        else {
+            $parsedPrio = 0
+            if ([int]::TryParse($priorityInput, [ref]$parsedPrio) -and $parsedPrio -ge -1 -and $parsedPrio -le 3) { $effectivePriorityValue = $parsedPrio }
+        }
+    }
+}
+
+# Ubatch (--ubatch-size). 1024 is the recommended default with MTP (faster
+# prefill; also avoids a known MTP collapse at very large context). Resolved
+# here so the interactive prompt lives in the 詳細 settings flow; the emission
+# section below re-resolves from param/env when this stays 0.
+$effectiveUbatch = 0
+if (-not $DryRun -and $advancedSettingsMenu -and $Ubatch -le 0) {
+    $ubatchInput = Read-Host "Ubatch (--ubatch-size), press Enter for 1024"
+    if ([string]::IsNullOrWhiteSpace($ubatchInput)) { $effectiveUbatch = 1024 }
+    else {
+        $parsedUbatch = 0
+        if ([int]::TryParse($ubatchInput, [ref]$parsedUbatch) -and $parsedUbatch -gt 0) { $effectiveUbatch = $parsedUbatch }
+        else { $effectiveUbatch = 1024 }
+    }
+}
+
+if ($effectiveCacheReuse -gt 0) { $samplerSummary += "cache-reuse=$effectiveCacheReuse" }
+if ($effectivePriorityValue -ne 2) { $samplerSummary += "prio=$effectivePriorityValue" }
+if ($effectiveUbatch -gt 0) { $samplerSummary += "ubatch=$effectiveUbatch" }
+if ($samplerSummary) {
+    Write-Host "出力・速度設定: $($samplerSummary -join ' ')" -ForegroundColor Green
+    Write-Host ""
+}
+
 # Merge with user-provided chat-template-kwargs (reasoning kwargs take precedence if no custom input)
 if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
     $effectiveChatTemplateKwargs = $ChatTemplateKwargs
 }
-if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and ($requiredEngine -eq "TurboTan" -or $ClientMode -eq "LlamaAgent")) {
+if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and $ClientMode -eq "LlamaAgent") {
     $effectiveChatTemplateKwargs = '{"enable_thinking":false}'
     if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode)) {
         $effectiveReasoningMode = "off"
@@ -3132,20 +3029,6 @@ if ($FlashAttentionMode -eq "Prompt") {
 if ($FlashAttentionMode -eq "Off") { $flashAttention = "off" }
 else { $flashAttention = "on" }
 
-# ExpertsLaguna: force FA off (ROCm SWA layer crash) for non-DeepSeek models.
-# DeepSeek V4 Flash runs FA on with turbo4/Q4 KV on this fork (verified 11 tps).
-if ($requiredEngine -eq "ExpertsLaguna" -and -not $isDeepSeek) {
-    if ($flashAttention -eq "on") {
-        Write-Host "ExpertsLaguna: Flash Attention forced OFF (ROCm SWA compatibility)" -ForegroundColor Yellow
-        $flashAttention = "off"
-    }
-    # FA off requires non-quantized V cache (server validation)
-    if ($effectiveVCacheType -notin @("f16", "bf16", "f32")) {
-        Write-Host "ExpertsLaguna: V cache $effectiveVCacheType -> f16 (FA off requires non-quantized V)" -ForegroundColor Yellow
-        $effectiveVCacheType = "f16"
-    }
-}
-
 if (-not $isQuickLaunch) {
     Write-Host "Flash Attention: $flashAttention" -ForegroundColor Green
     $visionSummary = if ($visionMmprojPath) { if ($visionEnabled) { "on ($($visionMmprojPath.Name))" } else { "off (adapter found)" } } else { "n/a (no mmproj next to model)" }
@@ -3153,48 +3036,14 @@ if (-not $isQuickLaunch) {
     Write-Host ""
 }
 
-if ($requiredEngine -ne "ExpertsLaguna" -and $flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", "f32")) {
+if ($flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", "f32")) {
     Write-Host "ERROR: V cache quantization requires Flash Attention." -ForegroundColor Red
     Write-Host "Select Flash Attention On, or use V cache f16/bf16/f32." -ForegroundColor Red
     exit 1
 }
 
-# External draft model used by DSpark speculative decoding. Defined before the
-# SpecMode prompt so the prompt can suggest DSpark/DFlash2 only when the draft exists.
-$dsparkDraftModel = if ($env:LLAMADOCK_DSPARK_DRAFT) {
-    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DSPARK_DRAFT)
-}
-else {
-    Join-Path $ModelsBase "erlidev\Qwen3.8-27B-DSpark-GGUF\Qwen3.8-27B-DSpark-Q8_0.gguf"
-}
-
-# DFlash2 draft model: Qwen3.8-27B architecture (incoai Q8_0 or Q4_K_M).
-$dflash2DraftModel = if ($env:LLAMADOCK_DFLASH2_DRAFT) {
-    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_DFLASH2_DRAFT)
-}
-else {
-    Join-Path $ModelsBase "incoai\Qwen3.8-27B-DFlash2-GGUF\Qwen3.8-27B-DFlash2-Q8_0.gguf"
-}
-
-# Standalone MTP/NextN draft head for Qwen3.8-Flash-Next (qwen4exp). The
-# abliterated/regular Flash-Next GGUFs ship WITHOUT embedded MTP heads, so
-# draft-mtp needs this external head via -md (dzannotti Q4_K_M head).
-$qwenNextMtpDraftModel = if ($env:LLAMADOCK_QWENNEXT_MTP_DRAFT) {
-    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_QWENNEXT_MTP_DRAFT)
-}
-else {
-    Join-Path $ModelsBase "dzannotti\Qwen3.8-Flash-Next-MTP-GGUF\Qwen3.8-Flash-Next-MTP-Q4_K_M.gguf"
-}
-
 if ($SpecMode -eq "Prompt") {
-    # Default suggestion: MTP models -> MtpNextN, Qwen3.8-27B with an
-    # installed DSpark draft -> DSpark, DFlash2 draft -> DFlash2, everything else -> Off.
     $modelIsMtp = $selected.Name -match "(?i)MTP"
-    $modelIsQwen27B = $selected.Name -match "(?i)Qwen3\.8-27B"
-    $modelIsQwenNext = $selected.Name -match "(?i)Flash[-_ ]?Next"
-    $draftExists = Test-Path -LiteralPath $dsparkDraftModel
-    $dflash2DraftExists = Test-Path -LiteralPath $dflash2DraftModel
-    $qwenNextMtpExists = Test-Path -LiteralPath $qwenNextMtpDraftModel
 
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
     Write-Host " [1] Off - normal decoding"
@@ -3204,46 +3053,12 @@ if ($SpecMode -eq "Prompt") {
     else {
         Write-Host " [2] MTP/NextN - combined *_MTP.gguf self-draft"
     }
-    if ($draftExists -and $modelIsQwen27B) {
-        Write-Host " [3] DSpark - external draft GGUF (requires TurboTan engine; recommended for this model)" -ForegroundColor Cyan
-    }
-    elseif ($draftExists) {
-        Write-Host " [3] DSpark - external draft GGUF (requires TurboTan engine)"
-    }
-    else {
-        Write-Host " [3] DSpark - external draft GGUF (draft model not found; requires TurboTan engine)"
-    }
-    if ($dflash2DraftExists -and $modelIsQwen27B) {
-        Write-Host " [4] DFlash2 - grouped dynamic convolution (requires DFlash2 engine; recommended for this model)" -ForegroundColor Cyan
-    }
-    elseif ($dflash2DraftExists) {
-        Write-Host " [4] DFlash2 - grouped dynamic convolution (requires DFlash2 engine)"
-    }
-    else {
-        Write-Host " [4] DFlash2 - grouped dynamic convolution (draft model not found; requires DFlash2 engine)"
-    }
-    if ($modelIsQwenNext) {
-        if ($qwenNextMtpExists) {
-            # Measured 2026-08-28 on RX 7800 XT + DDR4-2666: MTP head (GPU or CPU) costs
-            # ~17ms/draft and per-step overhead eats the gain — 6.4 t/s vs 6.8 t/s plain.
-            Write-Host " [5] MTP external head - dzannotti NextN draft GGUF via -md (requires QwenNext engine; measured SLOWER on this box)"
-        }
-        else {
-            Write-Host " [5] MTP external head - draft head not found (requires QwenNext engine)"
-        }
-    }
     Write-Host ""
 
-    $maxSpecChoice = if ($modelIsQwenNext) { 5 } else { 4 }
+    $maxSpecChoice = 2
     do {
-        $defaultSpecChoice = if ($modelIsMtp) { 2 } elseif ($dflash2DraftExists -and $modelIsQwen27B) { 4 } elseif ($draftExists -and $modelIsQwen27B) { 3 } else { 1 }
-        $defaultSpecLabel = switch ($defaultSpecChoice) {
-            2 { "MTP/NextN" }
-            3 { "DSpark" }
-            4 { "DFlash2" }
-            5 { "MTP external head" }
-            default { "Off" }
-        }
+        $defaultSpecChoice = if ($modelIsMtp) { 2 } else { 1 }
+        $defaultSpecLabel = if ($defaultSpecChoice -eq 2) { "MTP/NextN" } else { "Off" }
         $specInput = Read-Host "Select speculative mode (1-$maxSpecChoice), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
             $specSelection = $defaultSpecChoice
@@ -3256,10 +3071,7 @@ if ($SpecMode -eq "Prompt") {
     } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt $maxSpecChoice)
 
     if ($specSelection -eq 1) { $SpecMode = "Off" }
-    elseif ($specSelection -eq 2) { $SpecMode = "MtpNextN" }
-    elseif ($specSelection -eq 3) { $SpecMode = "DSpark" }
-    elseif ($specSelection -eq 5) { $SpecMode = "MtpExtQwenNext" }
-    else { $SpecMode = "DFlash2" }
+    else { $SpecMode = "MtpNextN" }
 }
 
 if (-not $isQuickLaunch) {
@@ -3278,83 +3090,6 @@ if ($SpecMode -eq "MtpNextN" -and $selected.Name -notmatch "(?i)MTP") {
     Write-Host "ERROR: MTP/NextN mode expects a combined *_MTP.gguf model." -ForegroundColor Red
     Write-Host "Selected model: $($selected.Name)" -ForegroundColor Red
     exit 1
-}
-
-if ($SpecMode -eq "MtpNextN" -and $requiredEngine -eq "TurboTan") {
-    Write-Host "ERROR: TurboTan TQ3_4S engine mode is not used for MTP/NextN in this launcher." -ForegroundColor Red
-    Write-Host "Use a non-TurboTan engine with a combined *_MTP.gguf model." -ForegroundColor Red
-    exit 1
-}
-
-if ($SpecMode -eq "DSpark") {
-    if (-not (Test-Path -LiteralPath $dsparkDraftModel)) {
-        Write-Host "ERROR: DSpark draft model not found: $dsparkDraftModel" -ForegroundColor Red
-        Write-Host "Set LLAMADOCK_DSPARK_DRAFT to a DSpark draft GGUF, or install the erlidev Qwen3.8-27B-DSpark draft." -ForegroundColor Red
-        exit 1
-    }
-    # The bundled erlidev draft is Qwen3.8-27B-architecture; warn when the
-    # selected main model is something else (arch mismatch will not work).
-    if ($selected.Name -notmatch "(?i)Qwen3\.8-27B") {
-        Write-Host "WARNING: $dsparkDraftModel is a Qwen3.8-27B draft; main model arch must match." -ForegroundColor Yellow
-    }
-    # draft-dspark exists only in the TurboTan build; AtomicBot rejects it.
-    if ($requiredEngine -ne "TurboTan") {
-        Write-Host "DSpark mode requires the TurboTan engine (draft-dspark). Switching engine..." -ForegroundColor Yellow
-        $requiredEngine = "TurboTan"
-        $ServerPath = $TurboTanServerPath
-    }
-    if (-not (Test-Path -LiteralPath $ServerPath)) {
-        Write-Host "ERROR: TurboTan engine not found at $ServerPath" -ForegroundColor Red
-        Write-Host "Install the TurboTan build to use DSpark speculative decoding." -ForegroundColor Red
-        exit 1
-    }
-}
-
-if ($SpecMode -eq "DFlash2") {
-    if (-not (Test-Path -LiteralPath $dflash2DraftModel)) {
-        Write-Host "ERROR: DFlash2 draft model not found: $dflash2DraftModel" -ForegroundColor Red
-        Write-Host "Set LLAMADOCK_DFLASH2_DRAFT to a DFlash2 draft GGUF, or install incoai/Qwen3.8-27B-DFlash2-GGUF." -ForegroundColor Red
-        exit 1
-    }
-    # The DFlash2 draft is Qwen3.8-27B-architecture; warn when the
-    # selected main model is something else (arch mismatch will not work).
-    if ($selected.Name -notmatch "(?i)Qwen3\.8-27B") {
-        Write-Host "WARNING: $dflash2DraftModel is a Qwen3.8-27B DFlash2 draft; main model arch must match." -ForegroundColor Yellow
-    }
-    # DFlash2 speculative decoding requires the DFlash2 fork build.
-    if ($requiredEngine -ne "DFlash2") {
-        Write-Host "DFlash2 mode requires the DFlash2 engine (ROCm 7.1 HIP). Switching engine..." -ForegroundColor Yellow
-        $requiredEngine = "DFlash2"
-        $ServerPath = $DFlash2ServerPath
-    }
-    if (-not (Test-Path -LiteralPath $ServerPath)) {
-        Write-Host "ERROR: DFlash2 engine not found at $ServerPath" -ForegroundColor Red
-        Write-Host "Build the DFlash2 fork (z-lab/llama.cpp-fork dflash2 branch) with ROCm 7.1." -ForegroundColor Red
-        exit 1
-    }
-}
-
-if ($SpecMode -eq "MtpExtQwenNext") {
-    # External MTP/NextN draft head for qwen4exp models whose GGUF ships
-    # without embedded MTP layers (everything but combined *_MTP.gguf).
-    if (-not (Test-Path -LiteralPath $qwenNextMtpDraftModel)) {
-        Write-Host "ERROR: QwenNext MTP draft head not found: $qwenNextMtpDraftModel" -ForegroundColor Red
-        Write-Host "Download dzannotti/Qwen3.8-Flash-Next-MTP-GGUF, or set LLAMADOCK_QWENNEXT_MTP_DRAFT." -ForegroundColor Red
-        exit 1
-    }
-    if ($selected.Name -notmatch "(?i)Flash[-_ ]?Next") {
-        Write-Host "WARNING: the QwenNext MTP head only matches Qwen3.8-Flash-Next (qwen4exp) models." -ForegroundColor Yellow
-    }
-    if ($requiredEngine -ne "QwenNext") {
-        Write-Host "MTP external head requires the QwenNext engine (PR #27742). Switching engine..." -ForegroundColor Yellow
-        $requiredEngine = "QwenNext"
-        $ServerPath = $QwenNextServerPath
-    }
-    if (-not (Test-Path -LiteralPath $ServerPath)) {
-        Write-Host "ERROR: QwenNext engine not found at $ServerPath" -ForegroundColor Red
-        Write-Host "Build the qwen4exp branch (llama.cpp PR #27742), or set LLAMA_QWEN_NEXT_SERVER." -ForegroundColor Red
-        exit 1
-    }
 }
 
 # Prompt MCP helper selection
@@ -3412,7 +3147,6 @@ $modelShort = $selected.Name -replace "\.gguf$", "" -replace "-", "_"
 # Start server
 $startFilePath = $ServerPath
 $args = @()
-$disableTurboAutoAsymmetric = $false
 
 $args = @(
     "-m", $selected.FullName,
@@ -3428,10 +3162,7 @@ $args = @(
     "--jinja"
 )
 
-# The LongCat fork's server does not accept --no-ui.
-if ($requiredEngine -ne "LongCat") {
-    $args += "--no-ui"
-}
+$args += "--no-ui"
 
 # Opt-in vision: image input via the mmproj adapter picked during setup.
 if ($visionEnabled -and $visionMmprojPath) {
@@ -3440,9 +3171,12 @@ if ($visionEnabled -and $visionMmprojPath) {
 
 # Prefill micro-batch override (see param comment). VRAM headroom is tight on
 # 16 GB cards, so this stays opt-in; verify placement with the GPU probe.
-$ubatchRaw = "$env:LLAMADOCK_UBATCH".Trim()
-$envUbatch = if ($ubatchRaw -match "^\d+$") { [int]$Matches[0] } else { 0 }
-$effectiveUbatch = if ($Ubatch -gt 0) { $Ubatch } elseif ($envUbatch -gt 0) { $envUbatch } else { 0 }
+# Default 1024 (optimal with MTP); already resolved interactively above.
+if ($effectiveUbatch -le 0) {
+    $ubatchRaw = "$env:LLAMADOCK_UBATCH".Trim()
+    $envUbatch = if ($ubatchRaw -match "^\d+$") { [int]$Matches[0] } else { 0 }
+    $effectiveUbatch = if ($Ubatch -gt 0) { $Ubatch } elseif ($envUbatch -gt 0) { $envUbatch } else { 1024 }
+}
 if ($effectiveUbatch -gt 4096) {
     # llama-server rejects absurd micro-batch values; clamp so an env/param
     # typo cannot abort the whole launch.
@@ -3481,6 +3215,22 @@ if ($isDeepSeek) {
     $args += "--no-mmap"
 }
 
+# Sampler / output-quality flags (server defaults; clients like Cline and
+# h3-chat may still override temperature per request). repeat-penalty breaks
+# degenerated loops like "待待待..." (llama.cpp default = 1.0, no effect); a
+# 512-token window also covers phrase-level loops that 256 misses.
+if ($effectiveTemperature -gt 0) { $args += @("--temp", "$effectiveTemperature") }
+if ($effectiveTopK -gt 0) { $args += @("--top-k", "$effectiveTopK") }
+if ($effectiveTopP -gt 0) { $args += @("--top-p", "$effectiveTopP") }
+if ($effectiveMinP -gt 0) { $args += @("--min-p", "$effectiveMinP") }
+if (-not [string]::IsNullOrWhiteSpace($effectiveRepeatPenalty)) {
+    $args += @("--repeat-penalty", $effectiveRepeatPenalty)
+    if ($effectiveRepeatLastN -gt 0) { $args += @("--repeat-last-n", "$effectiveRepeatLastN") }
+}
+# Prompt-cache KV reuse + process priority (speed knobs; see the 詳細 settings).
+if ($effectiveCacheReuse -gt 0) { $args += @("--cache-reuse", "$effectiveCacheReuse") }
+$args += @("--prio", "$effectivePriorityValue")
+
 if ($SpecMode -eq "MtpNextN") {
     # MTP self-draft: do NOT pass -md (same model). The spec_mtp branch in
     # llama.cpp creates a lightweight draft context from model_tgt directly,
@@ -3495,28 +3245,10 @@ if ($SpecMode -eq "MtpNextN") {
     )
 }
 
-if ($SpecMode -eq "MtpExtQwenNext") {
-    # dzannotti recipe for the standalone qwen4exp MTP head: shallow drafting
-    # (n-max 3 / p-min 0.75) — deeper drafting measured SLOWER because the
-    # head runs its own 512-expert MoE per draft token. LLAMA_ATTN_ROT_DISABLE
-    # is read by the KV cache layer of the PR #27742 build; set it here so the
-    # supervisor (started later by this script) inherits it.
-    $env:LLAMA_ATTN_ROT_DISABLE = "1"
-    $args += @(
-        "--spec-type", "draft-mtp",
-        "-md", "$qwenNextMtpDraftModel",
-        "--spec-draft-n-max", "3",
-        "--spec-draft-p-min", "0.75",
-        "-ngld", "999",
-        "-ctkd", "q8_0",
-        "-ctvd", "q4_0"
-    )
-}
-
 if ($CpuFfnLayers -ne "") {
     # Dense FFN CPU offload (PR ggml-org/llama.cpp#26622). Probe the binary
-    # first: unknown flags abort llama-server at startup (see turbo3/DSpark
-    # history). Off by default — measured TG -65..-91%; the use case is
+    # first: unknown flags abort llama-server at startup.
+    # Off by default — measured TG -65..-91%; the use case is
     # freeing VRAM for longer contexts, not speed.
     # HIP builds cannot even launch --help without the ROCm DLLs on PATH,
     # which would make the probe misread "no output" as "unsupported".
@@ -3552,26 +3284,6 @@ if ($CpuFfnLayers -ne "") {
     }
 }
 
-if ($SpecMode -eq "DSpark") {
-    $args += @(
-        "--spec-type", "draft-dspark",
-        "--spec-draft-model", "$dsparkDraftModel",
-        "--spec-draft-n-max", "7",
-        "-ngld", "99"
-    )
-}
-
-if ($SpecMode -eq "DFlash2") {
-    $args += @(
-        "--spec-type", "draft-dflash",
-        "--spec-draft-model", "$dflash2DraftModel",
-        "--spec-draft-n-max", "8",
-        "-ngld", "99"
-    )
-}
-
-$disableTurboAutoAsymmetric = $effectiveKCacheType -like "turbo*"
-
 if ($selectedMcp -eq "Light") {
     $args += "--webui-mcp-proxy"
 }
@@ -3584,9 +3296,6 @@ if ($DryRun) {
     Write-Host ($args -join " ")
     if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
         Write-Host "DRY RUN: LLAMA_ARG_CHAT_TEMPLATE_KWARGS=$effectiveChatTemplateKwargs would be set." -ForegroundColor Yellow
-    }
-    if ($disableTurboAutoAsymmetric) {
-        Write-Host "DRY RUN: TURBO_AUTO_ASYMMETRIC=0 would be set so the selected K cache is not silently changed to q8_0." -ForegroundColor Yellow
     }
     Write-Host ""
     if ($ClientMode -eq "Cline") {
@@ -3788,9 +3497,6 @@ if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
 }
 else {
     Remove-Item Env:\LLAMA_ARG_CHAT_TEMPLATE_KWARGS -ErrorAction SilentlyContinue
-}
-if ($disableTurboAutoAsymmetric) {
-    $env:TURBO_AUTO_ASYMMETRIC = "0"
 }
 $proc = $null
 $serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"

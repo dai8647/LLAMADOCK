@@ -389,12 +389,8 @@ if (-not $SkipDryRun) {
             Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($joined -notmatch "--no-ui" -and $joined -notmatch "Engine: LongCat") {
+        if ($joined -notmatch "--no-ui") {
             Write-Host "llama-server UI was not disabled: $preset" -ForegroundColor Red
-            exit 1
-        }
-        if ($joined -match "--no-ui" -and $joined -match "Engine: LongCat") {
-            Write-Host "LongCat must not receive --no-ui (fork server rejects it): $preset" -ForegroundColor Red
             exit 1
         }
         if ($joined -notmatch "-ngl auto") {

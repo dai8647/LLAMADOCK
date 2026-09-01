@@ -57,18 +57,12 @@ const SUPERVISOR_STATUS_PATH = join(SUPERVISOR_DIR, "status.json");
 const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
 
 // --- Engine runtime resolution (mirrors select-model.ps1) ---
-// Same candidate lists and env overrides as the PowerShell core so the GUI
-// launcher picks the exact same binary the CLI flow would pick.
-const ENGINE_CANDIDATES = [
-  { name: "AtomicBot", env: "LLAMA_TQ3_ATOMICBOT_SERVER", paths: ["C:\\llama-tq3\\build-rocm71-fa\\bin\\llama-server.exe"] },
-  { name: "TurboTan", env: "LLAMA_TQ3_TURBOTAN_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-b10536-rocm\\llama-server.exe", "C:\\llama-tq3-turbotan\\build\\bin\\llama-server.exe"] },
-  { name: "OfficialVulkan", env: "LLAMADOCK_OFFICIAL_VULKAN_SERVER", paths: ["C:\\llama.cpp-vulkan\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-vulkan\\llama-server.exe"] },
-  { name: "OfficialHIP", env: "LLAMADOCK_OFFICIAL_HIP_SERVER", paths: ["C:\\llama.cpp-hip\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-hip\\llama-server.exe"] },
-  { name: "OfficialCPU", env: "LLAMADOCK_OFFICIAL_CPU_SERVER", paths: ["C:\\llama.cpp-cpu\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\llama.cpp-cpu\\llama-server.exe"] },
-  { name: "ExpertsLaguna", env: "LLAMA_TQ3_EXPERTS_LAGUNA_SERVER", paths: ["C:\\Users\\dai86\\llama-cpp-turboquant-experts-laguna\\build-hip\\bin\\llama-server.exe", "C:\\Users\\dai86\\llama-cpp-turboquant\\build-hip\\bin\\llama-server.exe"] },
-  { name: "LongCat", env: "LLAMA_TQ3_LONGCAT_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build-rocm71\\bin\\llama-server.exe", "C:\\Users\\dai86\\Downloads\\longcat-llama.cpp\\build\\bin\\llama-server.exe"] },
-  { name: "DFlash2", env: "LLAMA_TQ3_DFLASH2_SERVER", paths: ["C:\\Users\\dai86\\Downloads\\llama-dflash2\\build-rocm71\\bin\\llama-server.exe"] },
-];
+// Single engine since 2026-08-30: the Unsloth llama.cpp HIP build. It runs
+// every supported arch, so there is no per-model routing anymore.
+const UNSLOTH_SERVER_PATH =
+  process.env.LLAMADOCK_UNSLOTH_SERVER ||
+  "C:\\Users\\dai86\\.unsloth\\llama.cpp\\build\\bin\\Release\\llama-server.exe";
+const ENGINE_CANDIDATES = [{ name: "Unsloth", env: "LLAMADOCK_UNSLOTH_SERVER", paths: [UNSLOTH_SERVER_PATH] }];
 
 function resolveEngineBin(name) {
   const cand = ENGINE_CANDIDATES.find(
@@ -87,15 +81,10 @@ function engineHint(cand) {
   return `確認パス: ${cand.paths.join(" / ")}（env ${cand.env} で上書き可）`;
 }
 
-// Model -> required engine routing, same order as select-model.ps1's
-// Get-RequiredEngine (Ternary before DeepSeek so REAP/TQ3 mixes route right).
+// Model -> engine: always Unsloth since 2026-08-30 (single engine; the old
+// TurboTan/ExpertsLaguna/LongCat/DFlash2 forks were retired).
 function requiredEngineForModel(modelName) {
-  const m = String(modelName || "");
-  if (/deepseek|ds4-compact|reap[-_ ]?k128|laguna/i.test(m)) return "ExpertsLaguna";
-  if (/tq3_4s|tq3/i.test(m)) return "TurboTan";
-  if (/longcat/i.test(m)) return "LongCat";
-  if (/dflash2/i.test(m)) return "DFlash2";
-  return "AtomicBot";
+  return "Unsloth";
 }
 
 let rocmBinCache;
@@ -637,24 +626,6 @@ export function createAppServer() {
               setFlag(next, "-ngld", "auto");
               const explicitDraft = String(body.specDraftModel || "").trim();
               if (explicitDraft) setFlag(next, "-md", explicitDraft);
-            } else if (body.specType === "draft-dflash") {
-              const draft = String(body.specDraftModel || "").trim();
-              if (!draft) {
-                sendJson(res, 400, { ok: false, error: "draft_model_required", message: "DFlash にはドラフトモデル（GGUF）のパスが必要です。" });
-                return;
-              }
-              setFlag(next, "--spec-type", "draft-dflash");
-              setFlag(next, "--spec-draft-model", draft);
-              setFlag(next, "--spec-draft-n-max", String(clampInt(body.specDraftNMax, 1, 32, 15)));
-            } else if (body.specType === "draft-dflash2") {
-              const draft = String(body.specDraftModel || "").trim();
-              if (!draft) {
-                sendJson(res, 400, { ok: false, error: "draft_model_required", message: "DFlash2 にはドラフトモデル（GGUF）のパスが必要です。" });
-                return;
-              }
-              setFlag(next, "--spec-type", "draft-dflash");
-              setFlag(next, "--spec-draft-model", draft);
-              setFlag(next, "--spec-draft-n-max", String(clampInt(body.specDraftNMax, 1, 32, 8)));
             }
             // "off": nothing to add.
           }
