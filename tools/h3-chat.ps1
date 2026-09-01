@@ -104,28 +104,22 @@ if ($rocmBin -and (Test-Path -LiteralPath $rocmBin) -and ($env:PATH -notlike "*$
     $env:PATH = "$rocmBin;$env:PATH"
 }
 
-$planServer = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"
-if (-not (Test-Path -LiteralPath $planServer)) {
-    $planServer = "C:\llama-tq3\build-rocm71-fa\bin\llama-server.exe"
-}
-if (-not (Test-Path -LiteralPath $planServer)) {
-    $planServer = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"
+# 単一エンジン (Unsloth llama.cpp HIP ビルド) を企画 LLM にも使う。
+# 従来の AtomicBot/TurboTan チェーンは 2026-08-30 に削除（h3-chat と同一エンジンに統一）。
+$planServer = "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
+if (-not (Test-Path -LiteralPath $planServer) -and $env:LLAMADOCK_UNSLOTH_SERVER) {
+    $planServer = [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
 }
 
 function Get-PlanEngineName {
     # 企画 LLM の llama-server 実体からエンジン名を判定（コーダー側のエンジン表記と揃える）。
     param([string]$ServerPath)
-    if ($ServerPath -like "C:\llama-tq3\build-rocm71*") { return "AtomicBot (ROCm 7.1 HIP)" }
-    if ($ServerPath -like "*llama.cpp-openPangu*") { return "openPangu (native CPU)" }
-    if ($ServerPath -like "*turbo-tan*") { return "TurboTan (HIP)" }
-    if ($ServerPath -like "*llama.cpp-vulkan*") { return "Official Vulkan" }
-    if ($ServerPath -like "*llama.cpp-hip*") { return "Official HIP" }
-    if ($ServerPath -like "*llama.cpp-cpu*") { return "Official CPU" }
+    if ($ServerPath -like "*\.unsloth\*") { return "Unsloth (ROCm 7.1 HIP)" }
     return "Unknown"
 }
 $planEngine = Get-PlanEngineName $planServer
-# GPU 企画 LLM は h3-chat.py が起動する（PLAN_SERVER_BIN = AtomicBot rocm71）。
-$planGpuEngine = "AtomicBot (ROCm 7.1 HIP)"
+# GPU 企画 LLM は h3-chat.py が起動する（PLAN_SERVER_BIN = Unsloth）。
+$planGpuEngine = "Unsloth (ROCm 7.1 HIP)"
 
 if (-not (Test-Path -LiteralPath $chatPy)) {
     Write-Host "ERROR: $chatPy not found" -ForegroundColor Red

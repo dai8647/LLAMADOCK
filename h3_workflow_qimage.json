@@ -32,7 +32,7 @@
   "5": {
    "class_type": "CLIPTextEncode",
    "inputs": {
-    "text": "a serene scene, high quality, detailed",
+    "text": "1girl, solo, nude, full body, detailed genitalia, vulva with visible labia majora and minora, natural skin texture, high quality, best quality",
     "clip": [
      "2",
      0
@@ -42,7 +42,7 @@
   "6": {
    "class_type": "CLIPTextEncode",
    "inputs": {
-    "text": "lowres, blurry, deformed, extra fingers, watermark, text",
+    "text": "lowres, blurry, deformed genitalia, extra fingers, watermark, text, clothed, underwear, modest",
     "clip": [
      "2",
      0
@@ -54,7 +54,7 @@
    "inputs": {
     "width": 1344,
     "height": 768,
-    "batch_size": 4
+    "batch_size": 1
    }
   },
   "8": {
@@ -100,7 +100,7 @@
     ],
     "seed": 42,
     "steps": 4,
-    "cfg": 1,
+    "cfg": 2,
     "sampler_name": "euler",
     "scheduler": "simple",
     "denoise": 1

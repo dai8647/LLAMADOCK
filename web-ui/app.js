@@ -68,17 +68,11 @@
 
   function engineForModel(name) {
     const n = name.toLowerCase();
-    // MiniMax H3 is a ComfyUI diffusion model (video/audio DiT), not a
-    // llama-server text model — never guess a llama.cpp engine for it.
+    // Single engine since 2026-08-30: Unsloth llama.cpp HIP build runs every
+    // supported arch. MiniMax H3 stays ComfyUI-only (diffusion, not a
+    // llama-server text model).
     if (/minimax.?h3|minimax_h3|fl2va|ref2va/.test(n)) return "ComfyUI (DiT)";
-    // Same routing order as select-model.ps1's Get-RequiredEngine:
-    // Ternary before DeepSeek so REAP/TQ3-mixed names route correctly.
-    if (/ternary|bonsai/.test(n)) return "PrismBonsai";
-    if (/deepseek|ds4-compact|reap[-_ ]?k128|laguna/.test(n)) return "ExpertsLaguna";
-    if (/tq3_4s|tq3/.test(n)) return "TurboTan";
-    if (/longcat/.test(n)) return "LongCat";
-    if (/dflash2/.test(n)) return "DFlash2";
-    return "AtomicBot";
+    return "Unsloth";
   }
 
   // model-notes.json patterns carry PowerShell-style "(?i)" inline flags,
@@ -801,7 +795,7 @@
 
   function toggleEsDraftRow() {
     const row = $("#es-draft-row");
-    if (row) row.classList.toggle("hidden", !["draft-dflash", "draft-dflash2"].includes($("#es-spec").value));
+    if (row) row.classList.add("hidden");
   }
 
   async function loadEngineSettings() {
@@ -843,15 +837,6 @@
       cacheRam: Number($("#es-cacheram").value),
       specType: $("#es-spec").value,
     };
-    if (["draft-dflash", "draft-dflash2"].includes(body.specType)) {
-      body.specDraftModel = $("#es-draft").value.trim();
-      if (!body.specDraftModel) {
-        const label = body.specType === "draft-dflash2" ? "DFlash2" : "DFlash";
-        setEsStatus(`${label} にはドラフトモデルのパスが必要です`, "err");
-        btn.disabled = false;
-        return;
-      }
-    }
     try {
       const r = await fetch("/api/engine-settings", {
         method: "POST",

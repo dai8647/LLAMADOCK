@@ -8,11 +8,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $root "mcp-data\runtime-inventory.json"
 }
 $candidates = @(
-    @{ name = "AtomicBot HIP/ROCm"; path = "C:\llama-tq3\build-rocm71\bin\llama-server.exe"; backend = "HIP" },
-    @{ name = "TurboTan HIP/ROCm"; path = "C:\Users\dai86\Downloads\llama-b10536-rocm\llama-server.exe"; backend = "HIP" },
-    @{ name = "Official HIP"; path = "C:\llama.cpp-hip\llama-server.exe"; backend = "HIP" },
-    @{ name = "Official Vulkan"; path = "C:\llama.cpp-vulkan\llama-server.exe"; backend = "Vulkan" },
-    @{ name = "Official CPU"; path = "C:\llama.cpp-cpu\llama-server.exe"; backend = "CPU" }
+    @{ name = "Unsloth HIP/ROCm"; path = "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"; backend = "HIP" }
 )
 
 $rows = foreach ($candidate in $candidates) {

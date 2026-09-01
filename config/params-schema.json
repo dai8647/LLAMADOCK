@@ -24,12 +24,12 @@
           "id": "engine",
           "label": "Runtime engine",
           "type": "select",
-          "allowed": ["Auto", "AtomicBot", "TurboTan", "PrismBonsai", "ExpertsLaguna", "OfficialVulkan", "OfficialHIP", "OfficialCPU"],
+          "allowed": ["Auto", "Unsloth"],
           "default": "Auto",
           "flags": [],
           "per_model": true,
           "advanced": false,
-          "help": "Which llama.cpp fork launches the model. Auto infers from model name (TQ3->TurboTan, Ternary/Bonsai->PrismBonsai, Laguna/Expert->ExpertsLaguna, etc.)."
+          "help": "Single engine since 2026-08-30: the Unsloth llama.cpp HIP build (b10687, gfx110X). Auto and Unsloth both resolve to it."
         },
         {
           "id": "preset",
