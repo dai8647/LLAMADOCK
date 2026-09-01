@@ -1581,6 +1581,13 @@ function Select-PlanModel {
     } while ($true)
 }
 
+function Test-H3ChatTabOpen {
+    # h3-chat (8189) にブラウザが接続中なら True。確立済み接続が無ければ
+    # タブは閉じていると判断し、False を返す。
+    $conns = Get-NetTCPConnection -LocalPort 8189 -State Established -ErrorAction SilentlyContinue
+    return ($null -ne $conns -and @($conns).Count -gt 0)
+}
+
 function Start-H3Chat {
     # Starts the text-to-video chat UI (tools\h3-chat.py, port 8189) if it is
     # not already running, then opens it in the default browser. This is what
@@ -1654,6 +1661,9 @@ function Start-H3Chat {
             if ($SkipOpenBrowser) {
                 Write-Host "SKIP: Browser would open the h3-chat UI at $chatUrl (planning mode)" -ForegroundColor Yellow
             }
+            elseif ($chatUpNow -and (Test-H3ChatTabOpen)) {
+                Write-Host "h3-chat UI は既に開いているため新しいタブは開きません: $chatUrl (planning mode)" -ForegroundColor DarkGray
+            }
             else {
                 Write-Host "h3-chat UI: $chatUrl (planning mode)  (ComfyUI graph: http://127.0.0.1:8188)" -ForegroundColor Cyan
                 Start-Process $chatUrl
@@ -1679,6 +1689,9 @@ function Start-H3Chat {
     }
     if ($SkipOpenBrowser) {
         Write-Host "SKIP: Browser would open the h3-chat UI at $chatUrl" -ForegroundColor Yellow
+    }
+    elseif ($chatUp -and (Test-H3ChatTabOpen)) {
+        Write-Host "h3-chat UI は既に開いているため新しいタブは開きません: $chatUrl" -ForegroundColor DarkGray
     }
     else {
         Write-Host "h3-chat UI: $chatUrl  (ComfyUI graph: http://127.0.0.1:8188)" -ForegroundColor Cyan
