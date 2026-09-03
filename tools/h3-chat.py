@@ -66,7 +66,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 1250, "upscale": 180}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 420, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -95,7 +95,8 @@ NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
 NODE_ZIMG_SEED = "8"     # KSampler: seed
 
 # Qwen-Image 2512 (key-image, high quality): GGUF Q4_K_S + Lightning 4step +
-# tumblrasia NSFW LoRA. batch_size=4 so the UI can pick the best candidate.
+# tumblrasia NSFW LoRA. batch_size=1: per user request (2026-09-03) — 旧 4候補は
+# 1枚約7分×4=28分+VRAM競合で辛いため廃止。がっかりしたら再生成ボタンで。
 QIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_qimage.json")
 NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
@@ -115,7 +116,7 @@ IMG_ENGINES = {
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
         "label": "Qwen-Image 2512",
-        "batch_size": 4,
+        "batch_size": 1,
     },
 }
 
@@ -1542,7 +1543,7 @@ HTML = """<!doctype html>
       </div>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
-        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・4候補）</label>
+        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・1枚）</label>
         <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
       </div>
       <div class="advgroup" id="planmodelset">
@@ -1995,7 +1996,7 @@ async function plan(text, refStart) {
       }
       html += '<details class="thinkbox"><summary>📝 英語プロンプト（原文・クリックで表示）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.img_prompt) + '</pre></details>';
       // 修正時も自動で再生成せず、必ずボタンを出す（ユーザーが確認してから
-      // 生成を始める）。自動 genImage は qimg（約20分）を勝手に回して
+      // 生成を始める）。自動 genImage は qimg（約7分）を勝手に回して
       // 「再生成します…」のまま固まる原因になっていた。
       html += '<button class="genplan" onclick="genImage()">' +
         (revising ? "🖼 このプロンプトで再生成 ▶" : "🖼 キー画像を生成 ▶") + "</button>";
@@ -2050,7 +2051,7 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const label = eng === "qimg" ? "Qwen-Image 2512（4候補・約20分）" : "Z-Image Turbo（数秒）";
+  const label = eng === "qimg" ? "Qwen-Image 2512（約7分）" : "Z-Image Turbo（数秒）";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
   try {
