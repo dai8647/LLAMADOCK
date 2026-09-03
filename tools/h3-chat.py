@@ -963,6 +963,39 @@ def _strip_gen_params(text):
     return GEN_PARAM_RE.sub("", text or "").strip()
 
 
+# GenatomyFixer (Zaytron40k/Qwen-Image-GenatomyFixer) のグローバルトリガー。
+# tumblrasia (画風) は問答無用で効くが、GenatomyFixer は `n5fw` が入ってないと
+# 居眠りする。NSFW 系プロンプトのときだけ IMG_PROMPT 先頭に自動 prepend して
+# 起動させる。NSFW 検出は英語キーワード一致 (大文字小文字無視)。
+# 未成年ガード (MINOR_RE) とは独立: ガードが先に効いて企画が破棄される場合は
+# そもそも _inject_n5fw まで到達しないので安全。
+N5FW_TRIGGERS = (
+    "nude", "naked", "nipple", "breast", "pussy", "penis", "vulva", "vagina",
+    "vaginal", "cum", "creampie", "orgasm", "climax", "masturbat", "blowjob",
+    "fellatio", "thrusting", "missionary", "doggy", "cowgirl", "reverse cowgirl",
+    "spreading", "spread legs", "anus", "anal", "erection", "erect", "aroused",
+    "explicit", "nsfw", "sex ", "fucking", "riding", "penetration", "horny",
+)
+
+
+def _needs_n5fw(text):
+    low = (text or "").lower()
+    return any(k in low for k in N5FW_TRIGGERS)
+
+
+def _inject_n5fw(text):
+    """NSFW な IMG_PROMPT 先頭に `n5fw, ` を 1回だけ付ける。"""
+    if not text:
+        return text
+    stripped = text.lstrip()
+    if stripped.lower().startswith("n5fw"):
+        return text
+    if not _needs_n5fw(text):
+        return text
+    return "n5fw, " + text.lstrip()
+
+
+
 
 
 # ---- 企画セッションの永続化（サイドバー履歴） ------------------------
@@ -3706,6 +3739,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 final_prompt = None
             if img_prompt:
                 img_prompt = _strip_gen_params(img_prompt)
+                # GenatomyFixer 用に NSFW プロンプトの先頭に n5fw, を自動付与
+                img_prompt = _inject_n5fw(img_prompt)
             if final_prompt:
                 final_prompt = _strip_gen_params(final_prompt)
             # 動画プロンプトの日本語説明（[FINAL_PROMPT_JA]、[FINAL_PROMPT] と対）を

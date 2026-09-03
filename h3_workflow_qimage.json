@@ -23,7 +23,7 @@
    "class_type": "ModelSamplingAuraFlow",
    "inputs": {
     "model": [
-     "9",
+     "13",
      0
     ],
     "shift": 3.1
@@ -127,6 +127,17 @@
      0
     ],
     "filename_prefix": "qimg"
+   }
+  },
+  "13": {
+   "class_type": "LoraLoaderModelOnly",
+   "inputs": {
+    "model": [
+     "9",
+     0
+    ],
+    "lora_name": "GenatomyFixer_epoch-7.safetensors",
+    "strength_model": 0.3
    }
   }
  }
