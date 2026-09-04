@@ -26,10 +26,25 @@ if (-not $npm) {
     $npm = $npm.Source
 }
 
+# Never replace the npm package while a dsh web server is running from it:
+# a live instance can keep serving a stale boot page after the update or hit
+# a half-replaced tree. dsh web listens on 3080 (same process check as
+# select-model.ps1's Stop-StaleDeepSeekHarness); skip when it is up.
+$running = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
+foreach ($ownerPid in @($running | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })) {
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+    if ($cim -and [string]$cim.CommandLine -match "dsh" -and [string]$cim.CommandLine -match "web") {
+        Write-Host "dsh-update: dsh web is running on port 3080; skipping update until it is stopped" -ForegroundColor DarkGray
+        exit 0
+    }
+}
+
 # Check currently installed version
 $installed = & $npm list -g @deepseek-ai/dsh --depth=0 2>&1 | Select-String "@deepseek-ai/dsh"
 $currentVersion = ""
-if ($installed -match "(@deepseek-ai/dsh@)([\d.]+)") {
+# Capture the full version incl. prerelease (0.1.2-rc.1); matching only the
+# numeric prefix would reinstall on every launch and race the live server.
+if ($installed -match "(@deepseek-ai/dsh@)([0-9][0-9A-Za-z.\-]+)") {
     $currentVersion = $Matches[2]
 }
 
