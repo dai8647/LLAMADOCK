@@ -13,7 +13,7 @@
 // is exercised end-to-end here without pretending a client was opened.
 // ---------------------------------------------------------------------------
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -43,6 +43,27 @@ export const CLIENTS = [
   // llama-server that is already up").
   { id: "ComfyUI", label: "ComfyUI", desc: "動画 / 音声生成（単独起動）", kind: "web", port: 8188, standalone: true, health: { path: "/system_stats" } },
 ];
+
+// DeepSeek Harness (dsh web) must be a single fresh instance per launch:
+// each launch prints a new one-time ?token= URL, and an instance left over
+// from an older dsh version (tools/dsh-update.ps1 swaps the npm package
+// beneath it) keeps serving the stale boot page (boot-manifest mismatch).
+// Mirror select-model.ps1's Stop-StaleDeepSeekHarness on win32: kill any
+// dsh listener on 3080; unrelated processes on the port are left alone.
+function stopStaleDsh() {
+  if (process.platform !== "win32") return;
+  const ps = [
+    "$listeners = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue",
+    "foreach ($ownerPid in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })) {",
+    "  $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue",
+    "  if (-not $proc) { continue }",
+    "  $cmd = \"\"",
+    "  try { $cim = Get-CimInstance Win32_Process -Filter \"ProcessId=$ownerPid\" -ErrorAction SilentlyContinue; if ($cim) { $cmd = [string]$cim.CommandLine } } catch { }",
+    "  if ($cmd -match \"dsh\" -and $cmd -match \"web\") { Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue }",
+    "}",
+  ].join("; ");
+  spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], { timeout: 15000, windowsHide: true });
+}
 
 // Effective port for a client, honouring LLAMADOCK_<ID>_PORT (e.g.
 // LLAMADOCK_COMFYUI_PORT=8190) over the schema default.
@@ -219,6 +240,9 @@ export function createClientManager({ upstream = () => null } = {}) {
     const guardNote = vramGuardNote(spec.id, runtime);
 
     if (process.platform === "win32") {
+      // Start the harness only after clearing any stale instance on 3080, so
+      // the freshly updated CLI serves the UI (see stopStaleDsh above).
+      if (spec.id === "DeepSeekHarness") stopStaleDsh();
       try {
         const child = spawn(plan.exe, plan.args, {
           cwd: plan.cwd,

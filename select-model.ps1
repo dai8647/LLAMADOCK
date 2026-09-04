@@ -1782,6 +1782,41 @@ function Open-ComfyUIClient {
 }
 
 
+function Stop-StaleDeepSeekHarness {
+    # DeepSeek Harness (dsh web) owns port 3080 and must be a single fresh
+    # instance: every launch prints a new one-time ?token= URL, and an instance
+    # left over from an older dsh version (tools/dsh-update.ps1 swaps the npm
+    # package beneath it) keeps serving the stale boot page ("Failed to load
+    # plugins" / "client-modules: boot manifest batches must be an array").
+    # Kill any dsh listener on 3080 before (re)starting the harness; unrelated
+    # processes on the port are left alone (same pattern as Stop-H3Stack).
+    $listeners = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue
+    foreach ($ownerPid in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -and $_ -ne 0 })) {
+        $proc = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
+        $cmd = ""
+        try {
+            $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+            if ($cim) { $cmd = [string]$cim.CommandLine }
+        }
+        catch { }
+        if ($cmd -match "dsh" -and $cmd -match "web") {
+            Write-Host " Stop stale DeepSeek Harness PID $ownerPid ($($proc.ProcessName)) [port 3080]" -ForegroundColor Yellow
+            Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Host " Skip PID $ownerPid ($($proc.ProcessName)) on port 3080: not the DeepSeek Harness." -ForegroundColor Yellow
+        }
+    }
+
+    # Wait for the port to free so the fresh instance can bind it.
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host "WARNING: port 3080 is still in use; the new DeepSeek Harness may not start." -ForegroundColor Yellow
+}
+
 function Open-DeepSeekHarnessClient {
     # DeepSeek Harness — agent harness framework (npx auto-install + auto-update).
     # https://deepseek.com/harness/en/
@@ -1790,6 +1825,11 @@ function Open-DeepSeekHarnessClient {
     # harness run on the local llama.cpp model instead of the DeepSeek cloud API,
     # and the env key also satisfies the web UI's "Add an API key" onboarding gate
     # (credentials-local reports source:env as configured).
+
+    # Clear any stale dsh on 3080 (old version / leftover session) first, so
+    # the freshly updated CLI actually serves the UI instead of a stale boot page.
+    Stop-StaleDeepSeekHarness
+
     $dshCheck = Join-Path $PSScriptRoot "tools\dsh-update.ps1"
     if (Test-Path -LiteralPath $dshCheck) {
         # Run update check in background (non-blocking)
@@ -3665,6 +3705,8 @@ while ($true) {
         "stop" {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
             if ($lastClientProcess -and -not $lastClientProcess.HasExited) { Stop-Process -Id $lastClientProcess.Id -Force -ErrorAction SilentlyContinue }
+            # Killing the launcher shim can orphan the dsh web node child; stop it by port.
+            Stop-StaleDeepSeekHarness
             if ($script:StopAllOnExit) { Stop-H3Stack }
             exit 0
         }
