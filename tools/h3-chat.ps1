@@ -122,7 +122,7 @@ $planEngine = Get-PlanEngineName $planServer
 $planGpuEngine = "Unsloth (ROCm 7.1 HIP)"
 
 if (-not (Test-Path -LiteralPath $chatPy)) {
-    Write-Host "ERROR: $chatPy not found" -ForegroundColor Red
+    Write-Host "エラー: $chatPy が見つかりません" -ForegroundColor Red
     exit 1
 }
 
@@ -134,21 +134,21 @@ try {
 } catch { }
 
 if (-not $comfyUp) {
-    Write-Host "WARNING: ComfyUI (127.0.0.1:8188) is not running." -ForegroundColor Yellow
-    $startComfy = Read-Host "Start ComfyUI now? (Y/n)"
+    Write-Host "警告: ComfyUI (127.0.0.1:8188) が起動していません。" -ForegroundColor Yellow
+    $startComfy = Read-Host "ComfyUI を今すぐ起動しますか？ (Y/n)"
     if ($startComfy -notmatch "^(n|no)$") {
         $repoRoot = Split-Path -Parent $here
         $comfyBat = Join-Path $repoRoot "comfyui.bat"
         if (Test-Path -LiteralPath $comfyBat) {
             # comfyui.bat opens its own console (tuning menu -> server). The
             # menu is answered there; this script only waits for :8188.
-            Write-Host "Launching comfyui.bat (tuning menu opens in a new window) ..." -ForegroundColor Cyan
+            Write-Host "comfyui.bat を起動しています（チューニングメニューは新しいウィンドウで開きます）…" -ForegroundColor Cyan
             Start-Process -FilePath $comfyBat -WorkingDirectory $repoRoot
         }
         else {
-            Write-Host "comfyui.bat not found; please start ComfyUI manually." -ForegroundColor Yellow
+            Write-Host "comfyui.bat が見つかりません。手動で ComfyUI を起動してください。" -ForegroundColor Yellow
         }
-        Write-Host "Waiting for ComfyUI on 127.0.0.1:8188 (up to 150s) ..." -ForegroundColor Cyan
+        Write-Host "ComfyUI の起動を待っています (127.0.0.1:8188、最大150秒) …" -ForegroundColor Cyan
         for ($i = 0; $i -lt 50; $i++) {
             Start-Sleep -Seconds 3
             try {
@@ -158,14 +158,14 @@ if (-not $comfyUp) {
             catch { }
         }
         if ($comfyUp) {
-            Write-Host "ComfyUI is up." -ForegroundColor Green
+            Write-Host "ComfyUI が起動しました。" -ForegroundColor Green
         }
         else {
-            Write-Host "ComfyUI is still not ready; continuing anyway (generation will fail until it starts)." -ForegroundColor Yellow
+            Write-Host "ComfyUI がまだ準備できていません。このまま続行します（起動するまで生成は失敗します）。" -ForegroundColor Yellow
         }
     }
     else {
-        Write-Host "Continuing without ComfyUI: chat works, but generation returns 503 until you start it (comfyui.bat)." -ForegroundColor Yellow
+        Write-Host "ComfyUI なしで続行します: チャットは使えますが、生成は ComfyUI を起動するまで 503 になります (comfyui.bat)。" -ForegroundColor Yellow
     }
 }
 
@@ -186,14 +186,14 @@ if ($already -and -not $planIsGpuModel -and $PlanModel -ne "Off") {
     try {
         $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
         if ($r.StatusCode -eq 200) {
-            Write-Host "h3-chat and planning LLM are already running; nothing to start." -ForegroundColor Green
+            Write-Host "h3-chat と企画 LLM は既に起動しています。新しく起動するものはありません。" -ForegroundColor Green
             if (-not $NoBrowser) { Start-Process $url }
             exit 0
         }
     } catch { }
 }
 elseif ($already -and $planIsGpuModel) {
-    Write-Host "h3-chat is already running; nothing to start." -ForegroundColor Green
+    Write-Host "h3-chat は既に起動しています。新しく起動するものはありません。" -ForegroundColor Green
     if (-not $NoBrowser) { Start-Process $url }
     exit 0
 }
@@ -209,13 +209,13 @@ $planDisabled = $false
 if ($planGpu) {
     $model = $planModels[$PlanModel]
     if (-not (Test-Path -LiteralPath $model.Path)) {
-        Write-Host "WARNING: planning model not found: $($model.Path)" -ForegroundColor Yellow
-        Write-Host "         Planning mode will be disabled. (Download it first in LM Studio.)" -ForegroundColor Yellow
+        Write-Host "警告: 企画 LLM のモデルが見つかりません: $($model.Path)" -ForegroundColor Yellow
+        Write-Host "         企画モードは無効になります。（先に LM Studio でダウンロードしてください）" -ForegroundColor Yellow
         $planGpu = $false
         $planDisabled = $true
     }
     else {
-        Write-Host "Planning LLM: $($model.Label) - started on demand by h3-chat.py (port $planPort, engine: $planGpuEngine)." -ForegroundColor Cyan
+        Write-Host "企画 LLM: $($model.Label) - h3-chat.py が必要時に起動します (ポート $planPort、エンジン: $planGpuEngine)。" -ForegroundColor Cyan
         $env:LLAMADOCK_PLAN_GPU = "1"
         # Pass the chosen model + mmproj to h3-chat.py so it launches THIS
         # model (without the env vars h3-chat.py auto-selects from the
@@ -228,18 +228,18 @@ if ($planGpu) {
 if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
     $model = $planModels[$PlanModel]
     if (-not (Test-Path -LiteralPath $model.Path)) {
-        Write-Host "WARNING: planning model not found: $($model.Path)" -ForegroundColor Yellow
-        Write-Host "         Planning mode will be disabled. (Download it first in LM Studio.)" -ForegroundColor Yellow
+        Write-Host "警告: 企画 LLM のモデルが見つかりません: $($model.Path)" -ForegroundColor Yellow
+        Write-Host "         企画モードは無効になります。（先に LM Studio でダウンロードしてください）" -ForegroundColor Yellow
         $planArgs = @()
     } elseif (-not (Test-Path -LiteralPath $planServer)) {
-        Write-Host "WARNING: llama-server not found ($planServer); planning mode disabled." -ForegroundColor Yellow
+        Write-Host "警告: llama-server が見つかりません ($planServer)。企画モードを無効化します。" -ForegroundColor Yellow
     } else {
         # Reuse an already-running planning LLM instead of stacking a second
         # llama-server on the same port (double-instance guard).
         try {
             $planHealth = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
             if ($planHealth.StatusCode -eq 200) {
-                Write-Host "Planning LLM already running on $planUrl; reusing it." -ForegroundColor Green
+                Write-Host "企画 LLM は $planUrl で既に起動中です。これを再利用します。" -ForegroundColor Green
                 $planArgs = @("--plan-url", $planUrl)
                 $planReady = $true
                 $skipPlanStart = $true
@@ -254,7 +254,7 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
         # directly (this build maps --reasoning off to enable_thinking=false;
         # the older --chat-template-kwargs form is deprecated).
         if (-not $skipPlanStart) {
-        Write-Host "Starting planning LLM ($($model.Label)) on $planUrl (engine: $planEngine, $planServer) ..." -ForegroundColor Cyan
+        Write-Host "企画 LLM を起動しています ($($model.Label)) → $planUrl (エンジン: $planEngine、$planServer) …" -ForegroundColor Cyan
         $serverArgs = @(
             "-m", $model.Path,
             "--port", "$planPort",
@@ -288,9 +288,9 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
         }
         if ($planReady) {
             $planArgs = @("--plan-url", $planUrl)
-            Write-Host "Planning LLM ready." -ForegroundColor Green
+            Write-Host "企画 LLM の準備ができました。" -ForegroundColor Green
         } else {
-            Write-Host "WARNING: planning LLM did not become ready; planning mode disabled." -ForegroundColor Yellow
+            Write-Host "警告: 企画 LLM が準備できませんでした。企画モードを無効化します。" -ForegroundColor Yellow
         }
         }
     }
@@ -300,12 +300,12 @@ if (-not $already) {
     $comfyRoot = if ($env:LLAMADOCK_COMFY_ROOT) { $env:LLAMADOCK_COMFY_ROOT } else { "C:\Users\dai86\Documents\ComfyUI" }
     $python = Join-Path $comfyRoot ".venv\Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $python)) { $python = "python" }
-    Write-Host "Starting h3-chat on $url ..." -ForegroundColor Cyan
+    Write-Host "h3-chat を起動しています → $url …" -ForegroundColor Cyan
     Start-Process -FilePath $python -ArgumentList (@($chatPy) + $planArgs) -WindowStyle Hidden
     Start-Sleep -Seconds 2
 }
 
 if (-not $NoBrowser) {
-    Write-Host "Opening $url" -ForegroundColor Green
+    Write-Host "ブラウザで開いています → $url" -ForegroundColor Green
     Start-Process $url
 }

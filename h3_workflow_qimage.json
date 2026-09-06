@@ -100,7 +100,7 @@
     ],
     "seed": 42,
     "steps": 4,
-    "cfg": 2,
+    "cfg": 1.0,
     "sampler_name": "euler",
     "scheduler": "simple",
     "denoise": 1

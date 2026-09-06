@@ -1,0 +1,136 @@
+{
+ "prompt": {
+  "1": {
+   "class_type": "UnetLoaderGGUF",
+   "inputs": {
+    "unet_name": "pornmasterFlux2Klein_v4TurboBf16-Q8_0.gguf"
+   }
+  },
+  "2": {
+   "class_type": "CLIPLoader",
+   "inputs": {
+    "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+    "type": "flux2"
+   }
+  },
+  "3": {
+   "class_type": "VAELoader",
+   "inputs": {
+    "vae_name": "flux2-vae.safetensors"
+   }
+  },
+  "4": {
+   "class_type": "ModelSamplingFlux",
+   "inputs": {
+    "model": [
+     "12",
+     0
+    ],
+    "width": 1024,
+    "height": 1024,
+    "max_shift": 1.15,
+    "base_shift": 0.5
+   }
+  },
+  "5": {
+   "class_type": "CLIPTextEncode",
+   "inputs": {
+    "text": "1girl, solo, nude, full body, detailed genitalia, vulva with visible labia majora and minora, natural skin texture, high quality, best quality",
+    "clip": [
+     "2",
+     0
+    ]
+   }
+  },
+  "6": {
+   "class_type": "CLIPTextEncode",
+   "inputs": {
+    "text": "lowres, blurry, deformed genitalia, extra fingers, watermark, text, clothed, underwear, modest",
+    "clip": [
+     "2",
+     0
+    ]
+   }
+  },
+  "7": {
+   "class_type": "EmptySD3LatentImage",
+   "inputs": {
+    "width": 1024,
+    "height": 1024,
+    "batch_size": 1
+   }
+  },
+  "8": {
+   "class_type": "LoraLoaderModelOnly",
+   "inputs": {
+    "model": [
+     "1",
+     0
+    ],
+    "lora_name": "flux_klein_9b_nsfw_v2.safetensors",
+    "strength_model": 0.85
+   }
+  },
+  "9": {
+   "class_type": "KSampler",
+   "inputs": {
+    "model": [
+     "4",
+     0
+    ],
+    "positive": [
+     "5",
+     0
+    ],
+    "negative": [
+     "6",
+     0
+    ],
+    "latent_image": [
+     "7",
+     0
+    ],
+    "seed": 42,
+    "steps": 4,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1
+   }
+  },
+  "10": {
+   "class_type": "VAEDecode",
+   "inputs": {
+    "samples": [
+     "9",
+     0
+    ],
+    "vae": [
+     "3",
+     0
+    ]
+   }
+  },
+  "11": {
+   "class_type": "SaveImage",
+   "inputs": {
+    "images": [
+     "10",
+     0
+    ],
+    "filename_prefix": "kimg"
+   }
+  },
+  "12": {
+   "class_type": "LoraLoaderModelOnly",
+   "inputs": {
+    "model": [
+     "8",
+     0
+    ],
+    "lora_name": "Phone_Photography_2025_KL_9B.safetensors",
+    "strength_model": 1.0
+   }
+  }
+ }
+}

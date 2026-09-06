@@ -8,7 +8,7 @@ param(
     [int]$KCacheIndex = 0,
     [int]$VCacheIndex = 0,
     [int]$CacheRamMiB = -1,
-    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness")]
     [string]$PresetMode = "Prompt",
     [ValidateSet("Auto", "Light", "Standard", "Heavy")]
     [string]$ResearchMode = "Auto",
@@ -50,7 +50,7 @@ param(
     [int]$Ubatch = 0,
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
-    [ValidateSet("Prompt", "WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
     [ValidateSet("Auto", "Unsloth")]
     [string]$EngineMode = "Auto",
@@ -143,10 +143,6 @@ $GatewayBaseUrl = "http://127.0.0.1:$GatewayPort"
 # Clients use the recovery gateway when a native server is managed by
 # LlamaDock.  Existing unmanaged servers fall back to the direct endpoint.
 $ClientBaseUrl = $GatewayBaseUrl
-$OpenWebUIPort = 3000
-$OpenWebUIUrl = "http://127.0.0.1:$OpenWebUIPort"
-$ComputerPort = 8000
-$ComputerUrl = "http://127.0.0.1:$ComputerPort"
 $ModelNotesPath = Join-Path $PSScriptRoot "model-notes.json"
 $RunResultsPath = Join-Path $PSScriptRoot "mcp-data\run-results.json"
 $script:ClineDataDir = if ($env:LLAMADOCK_CLINE_DATA_DIR) {
@@ -403,22 +399,22 @@ function Get-VramRiskLabel {
 function Write-HardwareSummary {
     param([object]$Hardware)
 
-    Write-Host "Hardware estimate:" -ForegroundColor Green
+    Write-Host "ハードウェア構成:" -ForegroundColor Green
     if ($Hardware.RamGB -gt 0) {
         Write-Host (" RAM  {0}GB" -f $Hardware.RamGB) -ForegroundColor DarkGray
     }
     else {
-        Write-Host " RAM  unknown" -ForegroundColor DarkGray
+        Write-Host " RAM  不明" -ForegroundColor DarkGray
     }
 
     if ($Hardware.PrimaryGpu) {
-        $vramText = if ($Hardware.PrimaryGpu.VramGB -gt 0) { "~$($Hardware.PrimaryGpu.VramGB)GB" } else { "unknown" }
+        $vramText = if ($Hardware.PrimaryGpu.VramGB -gt 0) { "~$($Hardware.PrimaryGpu.VramGB)GB" } else { "不明" }
         Write-Host (" GPU  {0}" -f $Hardware.PrimaryGpu.Name) -ForegroundColor DarkGray
-        Write-Host (" VRAM {0} ({1}, {2} confidence)" -f $vramText, $Hardware.PrimaryGpu.Source, $Hardware.PrimaryGpu.Confidence) -ForegroundColor DarkGray
+        Write-Host (" VRAM {0} ({1}, 信頼度 {2})" -f $vramText, $Hardware.PrimaryGpu.Source, $Hardware.PrimaryGpu.Confidence) -ForegroundColor DarkGray
     }
     else {
-        Write-Host " GPU  not detected" -ForegroundColor DarkGray
-        Write-Host " VRAM unknown" -ForegroundColor DarkGray
+        Write-Host " GPU  未検出" -ForegroundColor DarkGray
+        Write-Host " VRAM 不明" -ForegroundColor DarkGray
     }
     Write-Host ""
 }
@@ -426,9 +422,9 @@ function Write-HardwareSummary {
 function Write-RuntimeAvailability {
     param([array]$Runtimes)
 
-    Write-Host "Runtime availability:" -ForegroundColor Green
+    Write-Host "ランタイム状態:" -ForegroundColor Green
     foreach ($runtime in $Runtimes) {
-        $state = if (Test-Path $runtime.Path) { "found" } else { "not installed" }
+        $state = if (Test-Path $runtime.Path) { "あり" } else { "未インストール" }
         Write-Host (" {0,-15} {1}" -f $runtime.Name, $state) -ForegroundColor DarkGray
     }
     Write-Host ""
@@ -504,7 +500,7 @@ function Show-LastRunResult {
     }
 
     $r = $last[-1]
-    Write-Host "Last run for this model:" -ForegroundColor Green
+    Write-Host "このモデルの前回の起動:" -ForegroundColor Green
     Write-Host (" {0} / {1} / ctx={2} / K={3} / V={4} / {5}" -f $r.status, $r.engine, $r.context_tokens, $r.k_cache, $r.v_cache, $r.timestamp) -ForegroundColor DarkGray
     if ($r.message) {
         Write-Host (" {0}" -f $r.message) -ForegroundColor DarkGray
@@ -944,8 +940,28 @@ function Open-ClineClient {
     )
 }
 
+function Get-LiveContextTokens {
+    # Read the running llama-server's actual n_ctx from /props so client
+    # configs (OpenCode limit) match the real server instead of a guess.
+    # The gateway is tried second: it proxies the OpenAI paths but may not
+    # forward the native /props endpoint.
+    foreach ($base in @($ServerBaseUrl, $GatewayBaseUrl)) {
+        try {
+            $props = Invoke-RestMethod -Uri "$base/props" -TimeoutSec 3 -ErrorAction Stop
+            $n = [int]$props.default_generation_settings.n_ctx
+            if ($n -gt 0) { return $n }
+        }
+        catch {
+        }
+    }
+    return 0
+}
+
 function New-LocalOpenCodeConfig {
-    param([string]$ModelName)
+    param(
+        [string]$ModelName,
+        [int]$ContextTokens = 0
+    )
 
     $configDir = Join-Path $PSScriptRoot "mcp-data"
     if (-not (Test-Path $configDir)) {
@@ -953,9 +969,22 @@ function New-LocalOpenCodeConfig {
     }
 
     $configPath = Join-Path $configDir "opencode-local.json"
+    # Model limit metadata: OpenCode reads limit.context/output to decide when
+    # to compact or cap output. Without it the client assumes 128K-class
+    # windows and overruns the real server context mid-conversation.
+    $contextTokens = if ($ContextTokens -gt 0) { $ContextTokens } else { Get-LiveContextTokens }
+    if ($contextTokens -le 0) { $contextTokens = 32768 }
+    # Output cap mirrors the recovery gateway's max_tokens default so a long
+    # turn cannot blow past the server window (thinking tokens count against
+    # it). Never larger than the context itself.
+    $outputTokens = [math]::Max(1024, [math]::Min(16384, $contextTokens))
     $models = [ordered]@{}
     $models[$ModelName] = [ordered]@{
-        name = $ModelName
+        name  = $ModelName
+        limit = [ordered]@{
+            context = $contextTokens
+            output  = $outputTokens
+        }
     }
 
     $config = [ordered]@{
@@ -1193,72 +1222,27 @@ if (`$agentExit -ne 0) {
     )
 }
 
-function Open-OpenWebUIClient {
-    # WebUI mode now points to native Open WebUI Computer. The legacy Python
-    # Open WebUI launcher remains available as a rollback path, but is no
-    # longer the visible front door.
-    $launcher = Join-Path $PSScriptRoot "tools\computer-start.ps1"
-    if (-not (Test-Path -LiteralPath $launcher)) {
-        Write-Host "ERROR: Computer launcher was not found: $launcher" -ForegroundColor Red
-        return $null
-    }
+function Open-PiClient {
+    param([string]$ModelName = "")
 
-    # Avoid leaving a new -NoExit PowerShell wrapper behind when the Computer
-    # service is already healthy.  The child launcher also reuses the service,
-    # but it cannot remove the wrapper that started it.
-    try {
-        $existingComputerHealth = Invoke-WebRequest -Uri "$ComputerUrl/api/config" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        if ($existingComputerHealth.StatusCode -eq 200) {
-            Write-Host "Computer UI is already running on $ComputerUrl; reusing the existing instance." -ForegroundColor Green
-            if ($SkipOpenBrowser) {
-                Write-Host "SKIP: Browser would open $ComputerUrl" -ForegroundColor Yellow
-            }
-            else {
-                Start-Process $ComputerUrl
-            }
-            return $null
-        }
-    }
-    catch {
-    }
+    # Pi (pi.dev) is a terminal coding agent, so it reuses the same client
+    # shell as Cline / OpenCode. The shell registers the running model under
+    # the 'llamadock' provider in ~/.pi/agent/models.json (OpenAI-compatible
+    # base URL pointing at the LlamaDock recovery gateway) and starts pi with
+    # that model preselected.
+    if ([string]::IsNullOrWhiteSpace($ModelName)) { $ModelName = $modelShort }
+    $clientShell = Join-Path $PSScriptRoot "tools\llamadock-client-shell.ps1"
 
-    Write-Host "Starting native Open WebUI Computer on $ComputerUrl..." -ForegroundColor Cyan
-    $computerArgs = @(
+    Write-Host "Opening Pi (pi.dev) in PowerShell..." -ForegroundColor Cyan
+    return Start-Process -FilePath "powershell.exe" -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @(
         "-NoExit",
         "-ExecutionPolicy", "Bypass",
-        "-File", $launcher,
-        "-Port", $ComputerPort,
-        "-LlamaServerUrl", "$ClientBaseUrl/v1"
+        "-File", $clientShell,
+        "-Client", "Pi",
+        "-ModelName", $ModelName,
+        "-BaseUrl", $ClientBaseUrl,
+        "-Workspace", $PSScriptRoot
     )
-    if ($SkipOpenBrowser) {
-        # Forward this switch.  Without it the child opens a token URL and
-        # the parent opens a second unauthenticated root URL.
-        $computerArgs += "-SkipOpenBrowser"
-    }
-    $process = Start-Process -FilePath "powershell.exe" -PassThru -ArgumentList $computerArgs
-    $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        Start-Sleep -Seconds 1
-        try {
-            $health = Invoke-WebRequest -Uri "$ComputerUrl/api/config" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-            if ($health.StatusCode -eq 200) {
-                $ready = $true
-                break
-            }
-        }
-        catch {
-        }
-    }
-    if (-not $ready) {
-        Write-Host "WARNING: Computer did not become ready within 30s; opening the browser anyway." -ForegroundColor Yellow
-    }
-    if ($SkipOpenBrowser) {
-        Write-Host "SKIP: Browser would open $ComputerUrl" -ForegroundColor Yellow
-    }
-    else {
-        Start-Process $ComputerUrl
-    }
-    return $process
 }
 
 $script:ComfyProfileChoice = $null
@@ -1349,12 +1333,12 @@ function Get-ComfyUILaunchArgs {
         $profile = $script:ComfyProfileChoice
     }
     switch ($profile.ToLowerInvariant()) {
-        "fast" { $extra = @("--reserve-vram", "1.0", "--fast", "fp16_accumulation", "--force-non-blocking") }
-        "triton" { $extra = @("--reserve-vram", "1.0") + (Get-TritonBackendFlags) }
-        "super" { $extra = @("--reserve-vram", "1.0", "--use-ck-attention") + (Get-TritonBackendFlags) }
-        "ck" { $extra = @("--reserve-vram", "1.0", "--use-ck-attention") }
+        "fast" { $extra = @("--reserve-vram", "6.0", "--fast", "fp16_accumulation", "--force-non-blocking") }
+        "triton" { $extra = @("--reserve-vram", "6.0") + (Get-TritonBackendFlags) }
+        "super" { $extra = @("--reserve-vram", "6.0", "--use-ck-attention") + (Get-TritonBackendFlags) }
+        "ck" { $extra = @("--reserve-vram", "6.0", "--use-ck-attention") }
         "bench" { $extra = @() }
-        default { $extra = @("--reserve-vram", "1.0") }
+        default { $extra = @("--reserve-vram", "6.0") }
     }
     $override = ""
     if (-not [string]::IsNullOrWhiteSpace($ComfyUIFlags)) {
@@ -1865,7 +1849,7 @@ function Open-WorkspaceClient {
     param([string]$Mode, [string]$ModelPath, [string]$ModelName)
 
     switch ($Mode) {
-        "WebUI" { return Open-OpenWebUIClient }
+        "Pi" { return Open-PiClient -ModelName $ModelName }
         "ComfyUI" { return Open-ComfyUIClient }
         "LlamaAgent" { return Open-LlamaAgentClient -ModelPath $ModelPath }
         "OpenCode" { return Open-OpenCodeClient -ModelName $ModelName }
@@ -1927,9 +1911,9 @@ function Select-WorkspaceForSession {
     } while ($choice -notin @("1", "2", "3", "4", "5"))
     if ($choice -eq "1") { return @("relaunch", "") }
     if ($choice -eq "2") {
-        Write-Host " [1] Computer  [2] Cline  [3] OpenCode  [4] Llama Agent  [5] ComfyUI  [6] DeepSeek Harness"
+        Write-Host " [1] Pi  [2] Cline  [3] OpenCode  [4] Llama Agent  [5] ComfyUI  [6] DeepSeek Harness"
         $workspace = Read-Host "Select workspace"
-        $modes = @("WebUI", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
+        $modes = @("Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
@@ -1966,7 +1950,7 @@ if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
     Write-Host " [3] Web GUI - ブラウザで起動/停止/計測"
     Write-Host ""
     do {
-        $targetInput = Read-Host "Select launch target (1-3), or press Enter for LLM"
+        $targetInput = Read-Host "起動するワークスペースを選択 (1-3、Enter=LLM)"
         if ([string]::IsNullOrWhiteSpace($targetInput)) {
             $targetSelection = 1
             $targetValid = $true
@@ -2038,8 +2022,8 @@ $models = @($models | Sort-Object -Property @{ Expression = "IsTQ3"; Descending 
 # choices are part of the launch contract and must not be hidden behind a
 # secondary menu.
 $tq3Count = @($models | Where-Object { $_.IsTQ3 }).Count
-Write-Host "Models" -ForegroundColor Green
-Write-Host "Detected $($models.Count) GGUF model(s); $($tq3Count) TQ3 model(s)." -ForegroundColor DarkGray
+Write-Host "モデル一覧" -ForegroundColor Green
+Write-Host "GGUF $($models.Count)件 / TQ3 $($tq3Count)件 を検出" -ForegroundColor DarkGray
 Write-Host ""
 for ($i = 0; $i -lt $models.Count; $i++) {
     $m = $models[$i]
@@ -2058,7 +2042,7 @@ if ($ModelIndex -gt 0) {
 }
 else {
     do {
-        $modelInput = Read-Host "Select model (1-$($models.Count)), or 'q' to quit"
+        $modelInput = Read-Host "モデルを選択 (1-$($models.Count))、または q で終了"
         if ($modelInput -eq 'q') { exit 0 }
         $selection = 0
         $valid = [int]::TryParse($modelInput, [ref]$selection)
@@ -2090,7 +2074,7 @@ if ($PresetMode -eq "Prompt") {
     Write-Host " [2] Code - Cline 向けの安定設定"
     Write-Host " [3] Code - OpenCode 向けの安定設定"
     Write-Host " [4] Agent Research - llama-agent と反復Web証拠収集"
-    Write-Host " [5] Chat - Open WebUI（Web検索・会話圧縮）"
+    Write-Host " [5] Pi - pi.dev コーディングエージェント（ローカルLLM接続）"
     Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続・APIキー不要）"
     Write-Host ""
 
@@ -2106,11 +2090,11 @@ if ($PresetMode -eq "Prompt") {
         }
     } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 6)
 
-    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "WebUIChat", "DeepSeekHarness")
+    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness")
     $PresetMode = $presetValues[$presetSelection - 1]
 }
 
-$isQuickLaunch = $PresetMode -in @("WebUIChat", "OpenCodeCoding")
+$isQuickLaunch = $PresetMode -in @("PiCoding", "OpenCodeCoding")
 if ($isQuickLaunch) {
     if ($KCacheIndex -eq 0) { $KCacheIndex = 1 }
     if ($VCacheIndex -eq 0) {
@@ -2146,8 +2130,8 @@ elseif ($PresetMode -eq "LlamaAgentResearch") {
     if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
 }
-elseif ($PresetMode -eq "WebUIChat") {
-    if ($ClientMode -eq "Prompt") { $ClientMode = "WebUI" }
+elseif ($PresetMode -eq "PiCoding") {
+    if ($ClientMode -eq "Prompt") { $ClientMode = "Pi" }
     if ($ContextIndex -eq 0) { $ContextIndex = 2 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
@@ -2192,7 +2176,7 @@ if (-not $isQuickLaunch) {
 
 Write-Host ""
 if ($isQuickLaunch) {
-    $launchLabel = if ($PresetMode -eq "WebUIChat") { "Chat + Web -> Computer" } elseif ($PresetMode -eq "OpenCodeCoding") { "Coding -> OpenCode" } else { "Manual" }
+    $launchLabel = if ($PresetMode -eq "PiCoding") { "Coding -> Pi (pi.dev)" } elseif ($PresetMode -eq "OpenCodeCoding") { "Coding -> OpenCode" } else { "Manual" }
 }
 else {
     Write-Host "Selected: $($selected.Name)" -ForegroundColor Green
@@ -2202,9 +2186,9 @@ else {
 Write-Host ""
 
 if (-not (Test-Path $ServerPath)) {
-    Write-Host "ERROR: Unsloth llama-server is not installed:" -ForegroundColor Red
+    Write-Host "エラー: Unsloth llama-server が見つかりません:" -ForegroundColor Red
     Write-Host $ServerPath -ForegroundColor Red
-    Write-Host "Install Unsloth Desktop (bundles this build), or set LLAMADOCK_UNSLOTH_SERVER to its llama-server.exe." -ForegroundColor Red
+    Write-Host "Unsloth Desktop をインストールするか、LLAMADOCK_UNSLOTH_SERVER に llama-server.exe のパスを設定してください。" -ForegroundColor Red
     exit 1
 }
 
@@ -2278,7 +2262,7 @@ $contextOptions = @(
 if (-not $isQuickLaunch) {
     Write-Host "Context size:" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
-        Write-Host ("Detected RAM: {0}GB; selected model: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
+        Write-Host ("検出 RAM: {0}GB / 選択モデル: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
         Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
     }
     for ($i = 0; $i -lt $contextOptions.Count; $i++) {
@@ -2496,7 +2480,7 @@ if ($ClientMode -eq "Prompt") {
     Write-Host "Workspace:" -ForegroundColor Green
     Write-Host " [1] Cline - コーディングエージェント"
     Write-Host " [2] OpenCode - ターミナルコーディングエージェント"
-    Write-Host " [3] Computer - チャット・Web検索・会話圧縮"
+    Write-Host " [3] Pi - pi.dev コーディングエージェント"
     Write-Host " [4] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
     Write-Host " [5] ComfyUI - MiniMax H3 動画・音声生成"
     Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続）"
@@ -2516,7 +2500,7 @@ if ($ClientMode -eq "Prompt") {
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
-    elseif ($clientSelection -eq 3) { $ClientMode = "WebUI" }
+    elseif ($clientSelection -eq 3) { $ClientMode = "Pi" }
     elseif ($clientSelection -eq 4) { $ClientMode = "LlamaAgent" }
     elseif ($clientSelection -eq 5) { $ClientMode = "ComfyUI" }
     else { $ClientMode = "DeepSeekHarness" }
@@ -2797,11 +2781,15 @@ elseif (-not $DryRun -and -not $isQuickLaunch) {
         Write-Host " [$($i+1)] $($reasoningOptions[$i].Label)"
     }
     Write-Host ""
-    $defaultReasoning = "low"
+    # Coding clients default to thinking off: the Cline CLI already forces
+    # --thinking none and agentic tool loops only slow down when the model
+    # spends tokens reasoning first. Pick any other option to override.
+    $defaultReasoning = if ($ClientMode -in @("Cline", "OpenCode")) { "off" } else { "low" }
+    $defaultReasoningIndex = [array]::IndexOf(@($reasoningOptions.Value), $defaultReasoning) + 1
     do {
         $reasoningInput = Read-Host "Select reasoning mode (1-$($reasoningOptions.Count)), or press Enter for $defaultReasoning"
         if ([string]::IsNullOrWhiteSpace($reasoningInput)) {
-            $reasoningSelection = 2
+            $reasoningSelection = $defaultReasoningIndex
             $reasoningValid = $true
         }
         else {
@@ -3025,6 +3013,19 @@ if (-not [string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and [string]::IsNull
     }
 }
 
+# Coding clients (Cline / OpenCode / Pi) default to server-side thinking OFF
+# when no reasoning mode was resolved above (quick-launch OpenCode / PiCoding
+# skip the menu, and DryRun never prompts). The clients force thinking off
+# client-side, so leaving the server default means thought tokens can still
+# eat the gateway's max_tokens cap and slow every turn down.
+if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode) -and $ClientMode -in @("Cline", "OpenCode", "Pi")) {
+    $effectiveReasoningMode = "off"
+    if (-not $DryRun) {
+        Write-Host "Reasoning mode: off (coding default)" -ForegroundColor Green
+        Write-Host ""
+    }
+}
+
 $effectiveKCacheType = $selectedKCache.Type
 $effectiveVCacheType = $selectedVCache.Type
 
@@ -3151,7 +3152,7 @@ $mcpOptions = @(
     [PSCustomObject]@{ Label = "Light"; Value = "Light"; Note = "web search, filesystem, memory" }
 )
 
-if ($ClientMode -notin @("Cline", "WebUI")) {
+if ($ClientMode -notin @("Cline", "Pi")) {
     $selectedMcp = "None"
 }
 elseif ($McpMode -eq "Prompt") {
@@ -3163,10 +3164,10 @@ elseif ($McpMode -eq "Prompt") {
     Write-Host ""
 
     do {
-        $defaultMcpLabel = if ($ClientMode -eq "WebUI") { "Light" } else { "None" }
+        $defaultMcpLabel = "None"
         $mcpInput = Read-Host "Select MCP mode (1-2), or press Enter for $defaultMcpLabel"
         if ([string]::IsNullOrWhiteSpace($mcpInput)) {
-            $mcpSelection = if ($ClientMode -eq "WebUI") { 2 } else { 1 }
+            $mcpSelection = 1
             $mcpValid = $true
         }
         else {
@@ -3251,10 +3252,6 @@ if ($effectiveReasoningBudget -gt 0) {
 }
 
 $args += @("--cache-ram", "$effectiveCacheRamMiB")
-
-if ($ClientMode -eq "WebUI") {
-    $args += @("--tools", "all")
-}
 
 if (-not [string]::IsNullOrWhiteSpace($selectedMoeExperts)) {
     $args += @("--override-kv", "llama.expert_used_count=int:$selectedMoeExperts")
@@ -3375,8 +3372,9 @@ if ($DryRun) {
         Write-Host "DRY RUN: http://127.0.0.1:3080 (dsh web)" -ForegroundColor Yellow
     }
     else {
-        Write-Host "DRY RUN: native Computer would open:" -ForegroundColor Yellow
-        Write-Host $ComputerUrl
+        Write-Host "DRY RUN: Pi (pi.dev) would open with model:" -ForegroundColor Yellow
+        Write-Host $modelShort
+        Write-Host "DRY RUN: Pi would connect to $ClientBaseUrl/v1" -ForegroundColor Yellow
     }
     exit 0
 }
@@ -3439,7 +3437,7 @@ if (-not $DryRun) {
                 $lastClientProcess = Open-ComfyUIClient
             }
             else {
-                Open-OpenWebUIClient
+                Open-PiClient -ModelName $existingModel
             }
             Write-Host "Using existing server at $ClientBaseUrl (upstream $ServerBaseUrl)" -ForegroundColor Green
             exit 0
@@ -3658,31 +3656,31 @@ Write-Host ""
 $lastClientProcess = Open-WorkspaceClient -Mode $ClientMode -ModelPath $selected.FullName -ModelName $modelShort
 
 Write-Host ""
-Write-Host "Launch summary" -ForegroundColor Cyan
-Write-Host "--------------" -ForegroundColor Cyan
-Write-Host " Endpoint     $ClientBaseUrl" -ForegroundColor Green
+Write-Host "起動設定" -ForegroundColor Cyan
+Write-Host "--------" -ForegroundColor Cyan
+Write-Host " エンドポイント     $ClientBaseUrl" -ForegroundColor Green
 if ($ClientBaseUrl -ne $ServerBaseUrl) {
-    Write-Host " Upstream      $ServerBaseUrl" -ForegroundColor DarkGray
+    Write-Host " 上流サーバー       $ServerBaseUrl" -ForegroundColor DarkGray
 }
-Write-Host " Workspace    $ClientMode" -ForegroundColor Green
-Write-Host " Model        $($selected.Name)" -ForegroundColor Green
-Write-Host " Runtime      $requiredEngine" -ForegroundColor Green
-Write-Host " Context      $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
-Write-Host " Cache        K=$effectiveKCacheType, V=$effectiveVCacheType" -ForegroundColor Green
-Write-Host " Prompt cache $effectiveCacheRamMiB MiB" -ForegroundColor Green
-Write-Host " Flash Attn   $flashAttention" -ForegroundColor Green
-Write-Host " Speculative  $SpecMode" -ForegroundColor Green
-Write-Host " Offload      $selectedOffload" -ForegroundColor Green
-Write-Host " MCP          $selectedMcp" -ForegroundColor Green
+Write-Host " ワークスペース     $ClientMode" -ForegroundColor Green
+Write-Host " モデル             $($selected.Name)" -ForegroundColor Green
+Write-Host " エンジン           $requiredEngine" -ForegroundColor Green
+Write-Host " コンテキスト       $($selectedContext.Label) ($($selectedContext.Tokens) トークン)" -ForegroundColor Green
+Write-Host " KVキャッシュ       K=$effectiveKCacheType, V=$effectiveVCacheType" -ForegroundColor Green
+Write-Host " プロンプトキャッシュ $effectiveCacheRamMiB MiB" -ForegroundColor Green
+Write-Host " Flash Attention    $flashAttention" -ForegroundColor Green
+Write-Host " 推測デコード       $SpecMode" -ForegroundColor Green
+Write-Host " GPUオフロード      $selectedOffload" -ForegroundColor Green
+Write-Host " MCP                $selectedMcp" -ForegroundColor Green
 Write-Host ""
 
 while ($true) {
     if ($lastClientProcess) {
-        Write-Host "Waiting for the workspace window to close..." -ForegroundColor DarkGray
+        Write-Host "ワークスペースのウィンドウが閉じるのを待っています…" -ForegroundColor DarkGray
         Wait-Process -Id $lastClientProcess.Id -ErrorAction SilentlyContinue
     }
     else {
-        Read-Host "Press Enter when you are ready to return to LlamaDock" | Out-Null
+        Read-Host "Enter を押すと LlamaDock に戻ります" | Out-Null
     }
 
     $sessionAction = Select-WorkspaceForSession

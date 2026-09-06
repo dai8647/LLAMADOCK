@@ -30,12 +30,12 @@
  {
   "pattern": "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert",
   "note": "MoE model: keep MoE experts on Auto first. Try 2 or 3 manually after the model boots cleanly.",
-  "recommended_preset": "WebUIChat"
+  "recommended_preset": "PiCoding"
  },
  {
   "pattern": "(?i)Gemma",
   "note": "Gemma-family model: good lightweight fallback. Use Flash Attention on and keep context modest.",
-  "recommended_preset": "WebUIChat"
+  "recommended_preset": "PiCoding"
  },
  {
   "pattern": "(?i)Qwen.*Coder|Coder.*Qwen",
@@ -57,6 +57,6 @@
  {
   "pattern": "(?i)HauhauCS",
   "note": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive MTP 搭載（vision mmproj 同梱リポジトリ）。2026-08-21 統一実測 RX 7800 XT（ctx16K/fa/KV q8_0+q4_0/draft-mtp n2）: **IQ3_M = 実効 28.32 t/s・acceptance 0.782 で速度の王**、IQ4_XS = 19.27 t/s（部分オフロード）だが品質最良。日常は IQ3_M、品質優先なら IQ4_XS。draft-mtp 前提なので SpecMode は MTP/NextN を選ぶこと。",
-  "recommended_preset": "WebUIChat"
+  "recommended_preset": "PiCoding"
  }
 ]

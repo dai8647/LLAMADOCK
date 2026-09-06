@@ -19,13 +19,13 @@
 //                                    into config/run-results.json (Phase 4)
 //     GET  /api/results          -> qualification summary of run-results.json
 //     POST /api/connect          -> launch a workspace client (Cline / OpenCode /
-//                                    WebUI /
-//                                    LlamaAgent / ComfyUI). Windows: detached spawn
+//                                    Pi / LlamaAgent / ComfyUI). Windows: detached
+//                                    spawn
 //                                    of the real launcher; elsewhere: simulated
 //                                    with the exact Windows command.
 //     GET  /api/status           -> server + platform + runtime + clients state
-//     GET  /api/clients/health   -> live probe of WebUI /
-//                                    ComfyUI (own-server clients, env-port aware)
+//     GET  /api/clients/health   -> live probe of ComfyUI (own-server clients,
+//                                    env-port aware)
 //
 // The real machine binds to 127.0.0.1 per the design doc; the sandbox preview
 // overrides HOST/PORT (0.0.0.0 + the injected port) from the environment.
@@ -550,8 +550,8 @@ export function createAppServer() {
 
     if (pathname === "/api/clients/health") {
       // Live probe of every client that runs its own HTTP server
-      // (WebUI :8000 / ComfyUI :8188 + LLAMADOCK_<ID>_PORT
-      // overrides). Separate from /api/status so the GUI can poll it less
+      // (ComfyUI :8188 + LLAMADOCK_<ID>_PORT overrides). Separate from
+      // /api/status so the GUI can poll it less
       // often without adding latency to the 3s runtime status poll.
       if (req.method === "GET") {
         const clients = await clientManager.checkHealth();

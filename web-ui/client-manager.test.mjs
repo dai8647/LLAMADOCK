@@ -26,5 +26,5 @@ test("LLAMADOCK_COMFY_FLAGS overrides extras like the CLI launcher", () => {
 test("vramGuardNote fires only for ComfyUI while llama-server runs", () => {
   assert.match(vramGuardNote("ComfyUI", { status: "running", model: "m.gguf" }), /VRAM 競合/);
   assert.equal(vramGuardNote("ComfyUI", { status: "idle" }), "");
-  assert.equal(vramGuardNote("WebUI", { status: "running" }), "");
+  assert.equal(vramGuardNote("Pi", { status: "running" }), "");
 });

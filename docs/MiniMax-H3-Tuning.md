@@ -166,14 +166,15 @@ uv pip uninstall --python "C:\Users\dai86\Documents\ComfyUI\.venv\Scripts\python
 - **モード**: クイック（`h3_workflow_super_short_audio.json`・512x320・16f・音声あり・約1分）/
   フル（`h3_workflow_super_audio.json`・1344x768・48f・音声あり・約9分、新規追加）。
   seed は毎回ランダム。完了後はページ内で再生＋保存先パス表示。
-- **✎ 企画モード**（2026-08-16 追加・同日 Z-Image 連携化）: チェックを入れると、
+- **✎ 企画モード**（2026-08-16 追加・2026-09-04 Klein 9B に置換）: チェックを入れると、
   **「キー画像 → 動画」の2段階**で企画できます。
   ① ローカル企画 LLM（llama-server・CPU 推論・VRAM 不使用・`http://127.0.0.1:8190`）と日本語で
      「打ち返しながら」アイデアを固め、`[IMG_PROMPT]` / ツール呼び出しの形で英語の**画像プロンプト**に仕上げる。
-  ② **Z-Image Turbo**（`h3_workflow_zimage.json`・`lesliemore/z-image-turbo-nsfw-v2` GGUF Q8_0 7.2GB）
-     でキー画像を高速生成（この機で 8step 約15秒）。UnetLoaderGGUF は `ComfyUI-GGUF` カスタムノードが必要。
+  ② **FLUX.2 [klein] 9B NSFW**（`h3_workflow_klein.json`・`xPhoenix777/Flux-Klein-9b-GGUF-Conversions-NSFW`
+     の `pornmasterFlux2Klein_v4TurboBf16` GGUF Q8_0 9.5GB + `diroverflo/FLux_Klein_9B_NSFW` LoRA 165MB）
+     でキー画像を高速生成。NSFW ネイティブなので anatomy 修正 LoRA 不要。
   ③ 画像を確認 → 必要なら日本語で修正指示（再生成）→ **✅ この画像で確定**。
-     確定時に ComfyUI へ `POST /free` を送り Z-Image をアンロード（VRAM 解放 =「Z-Image を落とす」）。
+     確定時に ComfyUI へ `POST /free` を送り Klein 9B をアンロード（VRAM 解放 =「Klein を落とす」）。
   ④ 確定した画像プロンプトをもとに企画 LLM が `[FINAL_PROMPT]` の英語**動画プロンプト**を作成
      （画像の内容・構図を保ちつつ動き・カメラ・時間経過を追加）→「🎬 この企画で生成 ▶」で生成。
   ⑤ 動画完成後は**自動停止**: ブラウザ側 90 秒カウントダウン（即停止/ComfyUI のみ/キャンセル可）、
