@@ -21,7 +21,7 @@ EASYCACHE_NODE = {
     },
 }
 
-SKIP_PREFIXES = ("h3_workflow_qimage", "h3_workflow_zimage", "h3_workflow_src")
+SKIP_PREFIXES = ("h3_workflow_qimage", "h3_workflow_klein", "h3_workflow_src")
 SPECTRUM_PATTERN = "SpectrumApplyMiniMaxH3"
 
 

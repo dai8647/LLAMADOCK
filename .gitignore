@@ -29,6 +29,10 @@ logs/
 .freebuff/
 local-deep-research-test/
 
+# --- Downloaded model binaries (sd.cpp runtime downloads, multi-GB) ---
+tools/sd.cpp/models/
+tools/sd.cpp/old/
+
 # --- Test output ---
 test-*.log
 test-*.out.log

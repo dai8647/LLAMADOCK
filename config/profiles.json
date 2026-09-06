@@ -4,9 +4,9 @@
  "default_profile": "coding-balanced",
  "profiles": {
   "chat-fast": {
-   "label": "Chat / Web research (fast)",
-   "preset": "WebUIChat",
-   "client": "WebUI",
+   "label": "Pi coding (fast)",
+   "preset": "PiCoding",
+   "client": "Pi",
    "context_tokens": 16384,
    "kv": {
     "k": "q8_0",
@@ -14,8 +14,8 @@
    },
    "gpu_offload": "auto",
    "flash_attention": "On",
-   "mcp": "Light",
-   "notes": "Fast first response; use for browsing and short chats."
+   "mcp": "None",
+   "notes": "Fast first response; short context fits the 27B on 16 GB VRAM."
   },
   "coding-balanced": {
    "label": "OpenCode coding (balanced)",

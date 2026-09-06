@@ -2,8 +2,7 @@
 // ---------------------------------------------------------------------------
 // POST /api/connect maps a workspace client id to its real Windows launch,
 // mirroring select-model.ps1's Open-*Client functions:
-//   - Cline / OpenCode -> tools/llamadock-client-shell.ps1
-//   - WebUI                          -> tools/computer-start.ps1 (Computer 0.9.9)
+//   - Cline / OpenCode / Pi   -> tools/llamadock-client-shell.ps1
 //   - LlamaAgent                     -> llama-agent.exe (MCP web-search auto-start)
 //   - ComfyUI                        -> ComfyUI .venv python main.py (port 8188)
 //
@@ -29,12 +28,11 @@ export const CLIENT_BASE_URL =
 // Web-kind clients that run their own HTTP server get a health check. The
 // probe target is env-overridable (LLAMADOCK_<ID>_PORT) so a ComfyUI on a
 // non-default port — or a sandbox test server — is monitored correctly.
-//   WebUI        -> Open WebUI / Computer UI on :8000
 //   ComfyUI      -> /system_stats on :8188 (its own server, standalone)
 export const CLIENTS = [
   { id: "Cline", label: "Cline", desc: "コーディング", kind: "cli" },
   { id: "OpenCode", label: "OpenCode", desc: "ターミナルコーディング", kind: "cli" },
-  { id: "WebUI", label: "Open WebUI / Computer", desc: "チャット・検索", kind: "web", port: 8000, health: { path: "/" } },
+  { id: "Pi", label: "Pi (pi.dev)", desc: "コーディングエージェント", kind: "cli" },
   { id: "LlamaAgent", label: "Llama Agent", desc: "反復調査", kind: "cli" },
   { id: "DeepSeekHarness", label: "DeepSeek Harness", desc: "エージェントハーネス", kind: "web", port: 3080, standalone: true, health: { path: "/" } },
   // standalone: the client runs its own server and does not need a running
@@ -137,8 +135,12 @@ function windowsPlan(spec, { model, workspace, prompt }) {
       ];
       return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
     }
-    case "WebUI": {
-      const args = [...shellArgs, "-File", join(root, "tools", "computer-start.ps1")];
+    case "Pi": {
+      const args = [
+        ...shellArgs, "-File", clientShell,
+        "-Client", "Pi", "-ModelName", String(model || ""),
+        "-BaseUrl", baseUrl, "-Workspace", ws,
+      ];
       return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
     }
     case "LlamaAgent": {

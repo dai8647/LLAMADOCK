@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-08-12",
+  "updated": "2026-09-04",
   "based_on": "config/params-schema.json",
   "target_engine": "llama-cpp-turboquant-experts-laguna",
   "purpose": "Named memory-preset profiles. Each 'overrides' maps params-schema ids -> values and is applied on top of the base config before launch. The GUI offers these as one-click presets next to the parameter panel; the core applies them by rendering each param's 'flags'. Add new presets as one row here - no code change.",
@@ -11,9 +11,13 @@
   "presets": [
     {
       "id": "very-light",
-      "label": "Very light (tiny VRAM)",
-      "description": "Extreme memory saving: asymmetric KV, short context, hot-expert frequency placement at 20%, minimal prompt cache.",
-      "tags": ["light", "low-vram", "moE"],
+      "label": "超軽量 (最小VRAM)",
+      "description": "省メモリ最優先: 非対称KV・短いコンテキスト・ホットエキスパート削減",
+      "tags": [
+        "light",
+        "low-vram",
+        "moE"
+      ],
       "overrides": {
         "context_tokens": 16384,
         "cache_ram_mib": 2048,
@@ -28,9 +32,12 @@
     },
     {
       "id": "light",
-      "label": "Light (balanced saving)",
-      "description": "Moderate memory saving: asymmetric KV, hot-expert ratio 50%, medium context.",
-      "tags": ["light", "balanced"],
+      "label": "軽量 (バランス重視)",
+      "description": "中程度の省メモリ: 非対称KV・ホットエキスパート比率50%",
+      "tags": [
+        "light",
+        "balanced"
+      ],
       "overrides": {
         "context_tokens": 32768,
         "cache_ram_mib": 4096,
@@ -44,9 +51,12 @@
     },
     {
       "id": "balanced",
-      "label": "Balanced (default)",
-      "description": "Good default: q8_0 KV, all experts on GPU, auto offload, standard context.",
-      "tags": ["default", "balanced"],
+      "label": "バランス (既定)",
+      "description": "おすすめの既定値: q8_0 KV・エキスパート全載せ・自動オフロード",
+      "tags": [
+        "default",
+        "balanced"
+      ],
       "overrides": {
         "context_tokens": 32768,
         "cache_ram_mib": 8192,
@@ -59,9 +69,12 @@
     },
     {
       "id": "full",
-      "label": "Full quality",
-      "description": "Maximum quality: high-precision KV, all experts on GPU, larger context, flash attention on.",
-      "tags": ["quality", "high-vram"],
+      "label": "フル画質",
+      "description": "最高品質: 高精度KV・エキスパート全部GPU載せ・大きめのコンテキスト",
+      "tags": [
+        "quality",
+        "high-vram"
+      ],
       "overrides": {
         "context_tokens": 65536,
         "cache_ram_mib": 8192,
@@ -74,9 +87,13 @@
     },
     {
       "id": "moe-cpu-first",
-      "label": "MoE on CPU (big model)",
-      "description": "For very large MoE models: keep MoE weights in CPU and use routing-aware slots to limit GPU memory.",
-      "tags": ["light", "moE", "big-model"],
+      "label": "MoE を CPU に置く (巨大モデル)",
+      "description": "非常に大きい MoE モデル向け: MoE の重みは CPU に置いて GPU は注意機構に専念",
+      "tags": [
+        "light",
+        "moE",
+        "big-model"
+      ],
       "overrides": {
         "context_tokens": 16384,
         "cache_ram_mib": 2048,
@@ -91,9 +108,12 @@
     },
     {
       "id": "spec-mtp",
-      "label": "Spec decode: MTP",
-      "description": "Enable speculative decoding with the model's built-in MTP head (needs a combined *_MTP.gguf).",
-      "tags": ["speed", "spec"],
+      "label": "推測デコード: MTP",
+      "description": "モデル内蔵の MTP ヘッドで推測デコードを有効化",
+      "tags": [
+        "speed",
+        "spec"
+      ],
       "overrides": {
         "spec_type": "mtp",
         "spec_draft_n_max": 2,
@@ -104,9 +124,12 @@
     },
     {
       "id": "spec-eagle3",
-      "label": "Spec decode: Eagle3",
-      "description": "Enable Eagle3 speculative decoding with an external draft model.",
-      "tags": ["speed", "spec"],
+      "label": "推測デコード: Eagle3",
+      "description": "外部ドラフトモデルを使う Eagle3 推測デコードを有効化",
+      "tags": [
+        "speed",
+        "spec"
+      ],
       "overrides": {
         "spec_type": "eagle3",
         "spec_draft_n_max": 2,
@@ -115,11 +138,59 @@
     },
     {
       "id": "spec-off",
-      "label": "Spec decode: Off",
-      "description": "Disable speculative decoding (lowest memory, simplest).",
-      "tags": ["light", "spec"],
+      "label": "推測デコード: オフ",
+      "description": "推測デコードを無効化 (最も省メモリ・最もシンプル)",
+      "tags": [
+        "light",
+        "spec"
+      ],
       "overrides": {
         "spec_type": "off"
+      }
+    },
+    {
+      "id": "sampler-qwen-code",
+      "label": "Sampler: qwen-code（コーディング）",
+      "description": "Qwen3 公式コーディング推奨: temp 0.6 / top-k 20 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)。select-model.ps1 のコーディング既定と同じ値。",
+      "tags": [
+        "sampler",
+        "coding"
+      ],
+      "overrides": {
+        "temperature": 0.6,
+        "top_k": 20,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "repeat_penalty": 1.1,
+        "repeat_last_n": 512
+      }
+    },
+    {
+      "id": "sampler-chat",
+      "label": "Sampler: chat（チャット向け）",
+      "description": "ソフトな汎用チャット: temp 0.8 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)。",
+      "tags": [
+        "sampler",
+        "chat"
+      ],
+      "overrides": {
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "repeat_penalty": 1.1,
+        "repeat_last_n": 512
+      }
+    },
+    {
+      "id": "sampler-repeat-only",
+      "label": "Sampler: repeat対策のみ",
+      "description": "llama.cpp 既定のサンプリングのまま repeat 1.1 (window 512) だけ適用（「待待待…」等の退化ループ対策）。",
+      "tags": [
+        "sampler"
+      ],
+      "overrides": {
+        "repeat_penalty": 1.1,
+        "repeat_last_n": 512
       }
     }
   ]

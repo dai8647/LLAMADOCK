@@ -66,7 +66,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "zimg": 40, "qimg": 420, "upscale": 180}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "krea2": 20, "qimg": 420, "upscale": 180, "sdcpp": 60}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -88,11 +88,13 @@ DITS = {
 }
 NODE_UNET = "1"
 
-# Z-Image Turbo (key-image) workflow: 企画 → キー画像 → 確認 → 動画
-ZIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_zimage.json")
-NODE_ZIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
-NODE_ZIMG_LATENT = "7"   # EmptySD3LatentImage: size
-NODE_ZIMG_SEED = "8"     # KSampler: seed
+# FLUX.2 [klein] 9B (key-image, quality-first): pornmasterFlux2Klein_v4TurboBf16
+# Q8_0 GGUF + flux_klein_9b_nsfw_v2 LoRA. 4 step / 1秒台想定、9.5GB VRAM。
+# Z-Image Turbo (約40秒・品質微妙) は 2026-09-04 に廃止。
+KIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_klein.json")
+NODE_KIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
+NODE_KIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
+NODE_KIMG_SEED = "9"     # KSampler: seed
 
 # Qwen-Image 2512 (key-image, high quality): GGUF Q4_K_S + Lightning 4step +
 # tumblrasia NSFW LoRA. batch_size=1: per user request (2026-09-03) — 旧 4候補は
@@ -102,13 +104,29 @@ NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_QIMG_SEED = "10"    # KSampler: seed
 
+# Krea 2 Turbo (key-image, speed-first): 12.9B INT4 W4A4 native, qwen3vl_4b
+# text encoder + qwen_image_vae. WMMA 直接乗算で Klein 9B より速い (igpu-forge
+# 計測: 780M 12CU で 128s, 俺たちの 16GB VRAM で 50-70s 想定)。steps=8, cfg=1。
+# 注意: FLUX 系じゃないので Klein の NSFW LoRA は使えない、reference も非対応。
+KREA2_WORKFLOW = os.path.join(REPO, "h3_workflow_krea2.json")
+NODE_KREA2_PROMPT = "4"  # CLIPTextEncode: image prompt
+NODE_KREA2_LATENT = "6"  # EmptySD3LatentImage: size + batch
+NODE_KREA2_SEED = "7"    # KSampler: seed
+
 # Key-image engines selectable in the UI
 IMG_ENGINES = {
-    "zimg": {
-        "workflow": ZIMG_WORKFLOW,
-        "prompt": NODE_ZIMG_PROMPT, "latent": NODE_ZIMG_LATENT, "seed": NODE_ZIMG_SEED,
-        "default_size": (512, 320),
-        "label": "Z-Image Turbo",
+    "kimg": {
+        "workflow": KIMG_WORKFLOW,
+        "prompt": NODE_KIMG_PROMPT, "latent": NODE_KIMG_LATENT, "seed": NODE_KIMG_SEED,
+        "default_size": (1024, 1024),
+        "label": "Klein 9B (高品質・爆速)",
+        "batch_size": 1,
+    },
+    "krea2": {
+        "workflow": KREA2_WORKFLOW,
+        "prompt": NODE_KREA2_PROMPT, "latent": NODE_KREA2_LATENT, "seed": NODE_KREA2_SEED,
+        "default_size": (1024, 1024),
+        "label": "Krea 2 Turbo (超爆速・12.9B INT4)",
         "batch_size": 1,
     },
     "qimg": {
@@ -116,6 +134,13 @@ IMG_ENGINES = {
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
         "label": "Qwen-Image 2512",
+        "batch_size": 1,
+    },
+    "sdcpp": {
+        "backend": "sdcpp",
+        "script": os.path.join(REPO, "tools", "sd.cpp", "test_run_4b.ps1"),
+        "default_size": (1024, 1024),
+        "label": "sd.cpp Klein 4B (超爆速・36秒・Q4_0 GGUF)",
         "batch_size": 1,
     },
 }
@@ -471,6 +496,68 @@ def _plan_alive():
         return False
 
 
+def _gpu_used_mib():
+    """Dedicated VRAM currently in use, in MiB. 0 when it cannot be measured."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -ErrorAction Stop)"
+             ".CounterSamples | Where-Object CookedValue -gt 0 | "
+             "Measure-Object CookedValue -Sum | Select-Object -ExpandProperty Sum"],
+            capture_output=True, text=True, timeout=20)
+        used = float(out.stdout.strip())
+        return int(used / (1024 * 1024))
+    except Exception:
+        return 0
+
+
+def _other_llama_servers():
+    """Other running llama-server.exe instances as (pid, port) — they are the
+    likely VRAM competitors when the GPU planner fit-offloads to CPU."""
+    out = []
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | "
+             "Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=20)
+        data = json.loads(r.stdout or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        for p in data or []:
+            cl = p.get("CommandLine") or ""
+            m = re.search(r"--port[= ](\d+)", cl)
+            out.append((p.get("ProcessId"), m.group(1) if m else "?"))
+    except Exception:
+        pass
+    return out
+
+
+def _warn_if_vram_tight():
+    """Print a loud warning when something still holds VRAM before a GPU
+    planner load — llama.cpp --fit would silently offload layers to CPU
+    (12 t/s instead of ~25 t/s measured on the 27B)."""
+    try:
+        used = _gpu_used_mib()
+        model_gb = os.path.getsize(PLAN_MODEL_PATH) / (1024 ** 3) if os.path.isfile(PLAN_MODEL_PATH) else 0
+        mm_gb = os.path.getsize(PLAN_MMPROJ_PATH) / (1024 ** 3) if PLAN_MMPROJ_PATH and os.path.isfile(PLAN_MMPROJ_PATH) else 0
+        need_gb = model_gb + mm_gb + 1.5   # +KV cache / compute buffers
+        total_gb = 16.0
+        free_gb = total_gb - used / 1024
+        if need_gb > free_gb - 0.5:
+            msg = (f"h3-chat: WARNING: VRAM {used} MiB 使用中 / 空き {free_gb:.1f}GB — "
+                   f"企画モデル {need_gb:.1f}GB が入り切らず auto-fit で CPU オフロードされます")
+            others = _other_llama_servers()
+            if others:
+                peers = ", ".join(f"pid={pid} port={port}" for pid, port in others)
+                msg += f" — 競合相手: 他の llama-server ({peers})。先に終了するか企画側を小さいモデルに"
+            else:
+                msg += " (ComfyUI のモデル残り・他アプリの VRAM 占有を確認)"
+            print(msg)
+    except Exception:
+        pass
+
+
 def _spawn_plan_llm():
     """Launch the planning llama-server detached on PLAN_PORT.
 
@@ -501,6 +588,11 @@ def _spawn_plan_llm():
         "-c", "8192", "--no-webui",
         "-np", "1",
         "--temp", "0.8", "--top-p", "0.95", "--min-p", "0.05",
+        # 毎メッセージで巨大な PLAN_SYSTEM + 履歴を再送するため、prefix の
+        # KV キャッシュ再利用で 2 ターン目以降の prefill を大幅短縮する。
+        # コーディング起動と同じ組（b10715 で動作確認済み）。
+        "--cache-reuse", "512",
+        "--prio", "2",
     ]
     if PLAN_GPU:
         # GPU planner: full offload, jinja template, medium reasoning effort.
@@ -511,6 +603,7 @@ def _spawn_plan_llm():
         # safety net against runaway thinking (Qwen3.8-27B defaults to xhigh).
         args += [
             "-ngl", "all", "--jinja",
+            "-ub", "1024",
             "--chat-template-kwargs", json.dumps({"reasoning_effort": PLAN_SETTINGS["reasoning_effort"]}),
             "--reasoning-budget", str(PLAN_SETTINGS["reasoning_budget"]),
         ]
@@ -522,6 +615,13 @@ def _spawn_plan_llm():
             args += ["-ctk", PLAN_SETTINGS["ctk"]]
         if PLAN_SETTINGS["ctv"] and PLAN_SETTINGS["ctv"] != "none":
             args += ["-ctv", PLAN_SETTINGS["ctv"]]
+        # llama.cpp の --fit (デフォルト on) は入り切らない分を黙って CPU に落とす
+        # (2026-09-05 実測: 27B Q3_K_XL が 12 t/s まで低下)。headroom を env で調整
+        # できるようにしておく (MiB 単位。デフォルト 1024 — 狭めたい時は 256 等)。
+        fit_target = os.environ.get("LLAMADOCK_PLAN_FIT_TARGET", "").strip()
+        if fit_target:
+            args += ["--fit-target", fit_target]
+        _warn_if_vram_tight()
         if PLAN_MMPROJ_PATH and os.path.isfile(PLAN_MMPROJ_PATH):
             # Vision-capable planner: attach the mmproj shipped next to the
             # model so the planner can see the confirmed key image.
@@ -540,6 +640,9 @@ def _spawn_plan_llm():
             # the UI reasoning controls only apply to the GPU planner.
             "--reasoning", "off",
             "--repeat-penalty", "1.05",
+            # CPU prefill: 大きめのバッチ + 分割処理でトークン生成と prefill を
+            # 両立させる（4B Q4_K_M で実用域）。
+            "-b", "2048", "-ub", "512",
         ]
         # KV cache compression + Flash Attention from the UI (same contract as
         # the GPU branch). V quantization requires Flash Attention.
@@ -868,15 +971,30 @@ PLAN_SYSTEM = (
     "[FINAL_PROMPT] には性行為の動き（thrusting, bouncing, grinding）、リズム、カメラアングル、喘ぎ声・息遣い・愛液などの音響を時系列で書く。"
     "ユーザー指定の性的ディテールは一字一句尊重し、勝手に薄めない。"
     "【服装・小物の整合性】キー画像と動画で衣服・下着・小物の状態が矛盾しないよう一貫させる。"
-    "ヌードシーンなら [IMG_PROMPT] と [FINAL_PROMPT] の両方に explicitly fully nude, no clothing, no underwear と明記し、"
+    "ヌードシーンなら [IMG_PROMPT] と [FINAL_PROMPT] の両方に explicitly fully nude, completely bare skin と明記し(否定形より肯定形が Flux 系には効く)、"
     "下着・衣服が途中で出現しないよう釘を刺す。着衣シーンならその衣服を両プロンプトで同じ単語で繰り返す。"
     "【表情・感情の多様性】表情は「気持ちよさそう」一辺倒にしない。シーンに合わせて"
     "イヤイヤながら（reluctant, protesting but yielding）、泣きながら（tears streaming, crying face）、"
-    "無邪気に楽しむ（playful, innocent giggle）、照れる（blushing, shy smile）、恍惚（ecstatic, eyes rolling back）など"
+    "無邪気に楽しむ（playful, innocent giggle）、照れる（light blush on cheeks, shy smile）、恍惚（ecstatic, eyes rolling back）など"
     "具体的な感情を1つ選んで英語で明記する。ユーザーが感情を指定したらそれを最優先で反映する。"
-    "【リアルさ・素人感】AI っぽさを消すため、素人撮影・アマチュア動画風の質感を積極的に取り入れる: "
-    "handheld camera with slight shake, amateur home-video look, natural imperfect skin texture, candid unposed feel。"
-    "完璧すぎる肌・左右対称すぎる顔・不自然な光沢は避ける。"
+    "【リアルさ・素人感・最重要】基本の画は「素人がスマホで撮った1枚」。[IMG_PROMPT] は必ず This is a candid photograph taken with a smartphone of で始める（Klein に導入済みのスマホ写真 LoRA のトリガー句）。質感タグは candid, natural imperfect skin texture, slightly grainy を基本に、"
+    "シーンに合わせて harsh direct flash, blown highlights on skin（暗所） / slightly overexposed, warm indoor color cast（日中室内） / mirror selfie, arm extended into frame edge, slightly tilted horizon（自撮り）を足す。"
+    "low quality, compressed, potato quality のような画質を下げる言葉も積極的に使ってよい。完璧すぎる肌・スタジオ照明・左右対称の顔・不自然な光沢は禁止。"
+    "【日本的官能】基本は「見せる」より「ハズす・隠す」。ユーザーが全裸を指定しない限り、着衣・半脱ぎを基本とし、"
+    "衣服は脱がずにずらす(shirt lifted, skirt pulled up, panties pulled aside, bra still worn)、部位だけちらっと見せる。"
+    "全裸シーンでも直視させない: 顔をフレームから切る(cropped out of frame, face hidden by hair)、視線を逸らす(looking down, looking away)、"
+    "鏡越し(mirror reflection)、隙間越し、後ろ姿から振り返る(over-the-shoulder glance)で遠回しに見せる。"
+    "被写体は japanese woman, petite, slender, fair skin を基本とし、ヌードでは natural pubic hair を指定する(剃毛は洋物っぽくなる)。"
+    "表情の主軸は羞恥: light blush on cheeks, gaze down, biting lip, embarrassed smile。"
+    "誇張した展示ポーズより、日常の動作の途中を撮った空気(undressing mid-motion, after-bath towel, checking phone on bed)が日本的官能の核。"
+    "【画像プロンプトの書式・最重要】[IMG_PROMPT] は物語の散文ではなく、拡散モデルが直接解釈する英語タグ列で書く。"
+    "順序は固定: ①被写体と人数(1girl, solo 等) → ②体型・胸・尻・肌の特徴 → ③ポーズと体の向き(spread legs, lying on back, looking at viewer 等) → "
+    "④行為・露出の具体部 → ⑤カメラ(距離・アングル: close-up, from above, low angle, wide shot, pov) → ⑥背景を1語レベルで(bedroom, shower room, park 等) → "
+    "⑦照明(natural window light, dim warm lamp light, harsh direct flash 等) → ⑧質感タグ(smartphone photo, candid, natural skin texture, slight grain)。"
+    "長さは60〜100語。she is や the scene shows のような完全文・接続詞は書かない。日本語は1語も入れない。"
+    "「〜している場面」のような物語説明は禁止。動画ではなく静止画として固まる一瞬のポーズを選ぶ。複数人なら人数を明記する(1boy 1girl 等)。"
+    "照れ・赤面は light blush on cheeks / faint blush と書く。blushing 単独・red face・flushed face・deep blush は顔全体が真っ赤に発色するので禁止。blush を入れるのは照れシーンだけで、他の感情には書かない。"
+    "強度は誇張ではなく具体で出す: 形容詞を積むほど模型っぽくなるので、行為・部位・角度を実名で書き、肌や表情には red, deep, perfect のような色の強調語を使わない。"
     "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
     "固まったら英語の画像プロンプトを [IMG_PROMPT] と [/IMG_PROMPT] で囲んで返す（例: [IMG_PROMPT]A shiba inu running along the shoreline at sunset, warm golden light, low-angle cinematic composition[/IMG_PROMPT]）。"
     "タグは必ず1組だけ。固まるまでは日本語で会話を続ける。"
@@ -950,7 +1068,7 @@ def _best_tag_match(regex, text):
 
 # Midjourney / SD-style generation flags the model sometimes appends
 # (--ar 16:9 --v 6.0 --style raw --q 2 ...). They are meaningless to
-# Qwen-Image / Z-Image and pollute the prompt, so strip them. Leading
+# Qwen-Image / Klein-9B and pollute the prompt, so strip them. Leading
 # whitespace is optional because the model sometimes glues them on
 # ("8k--v 6.0--q 2").
 GEN_PARAM_RE = re.compile(
@@ -1493,7 +1611,7 @@ HTML = """<!doctype html>
 <header>
   <button id="btn-sidebar" onclick="toggleSidebar()" title="履歴サイドバーを表示/非表示">☰</button>
   <h1>🎬 MiniMax H3 チャット動画生成</h1>
-  <span class="sub">企画モード: キー画像（Z-Image Turbo）→ 確認 → 動画（H3・32B/4B）</span>
+  <span class="sub">企画モード: キー画像（Klein 9B / Qwen-Image）→ 確認 → 動画（H3・32B/4B）</span>
   <span id="status-dot" title="ComfyUI 接続状態"></span>
 </header>
 <div id="app">
@@ -1576,8 +1694,10 @@ HTML = """<!doctype html>
       </div>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
-        <label><input type="radio" name="imgengine" value="qimg" checked> Qwen-Image 2512（高画質・1枚）</label>
-        <label><input type="radio" name="imgengine" value="zimg"> Z-Image Turbo（最速）</label>
+        <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（高品質・爆速）</label>
+        <label><input type="radio" name="imgengine" value="krea2"> Krea 2 Turbo（超爆速・12.9B INT4）</label>
+        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2512（高画質）</label>
+        <label><input type="radio" name="imgengine" value="sdcpp"> sd.cpp Klein 4B（超爆速・36秒・Q4_0 GGUF）</label>
       </div>
       <div class="advgroup" id="planmodelset">
         <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
@@ -2029,7 +2149,7 @@ async function plan(text, refStart) {
       }
       html += '<details class="thinkbox"><summary>📝 英語プロンプト（原文・クリックで表示）</summary><pre style="white-space:pre-wrap;margin:6px 0 0;font-size:12px;">' + esc(j.img_prompt) + '</pre></details>';
       // 修正時も自動で再生成せず、必ずボタンを出す（ユーザーが確認してから
-      // 生成を始める）。自動 genImage は qimg（約7分）を勝手に回して
+      // 生成を始める）。自動 genImage は kimg（約1分）を勝手に回して
       // 「再生成します…」のまま固まる原因になっていた。
       html += '<button class="genplan" onclick="genImage()">' +
         (revising ? "🖼 このプロンプトで再生成 ▶" : "🖼 キー画像を生成 ▶") + "</button>";
@@ -2070,7 +2190,7 @@ async function plan(text, refStart) {
 
 function imgEngine() {
   const el = document.querySelector('input[name="imgengine"]:checked');
-  return el ? el.value : "qimg";
+  return el ? el.value : "kimg";
 }
 
 async function genImage(prevBot) {
@@ -2084,11 +2204,11 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const label = eng === "qimg" ? "Qwen-Image 2512（約7分）" : "Z-Image Turbo（数秒）";
+  const label = eng === "qimg" ? "Qwen-Image 2512（約7分）" : "Klein 9B（約1分）";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
   try {
-    const r = await fetch("/api/zimg", {
+    const r = await fetch("/api/kimg", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({text: lastImgPrompt, engine: eng})
@@ -2186,7 +2306,7 @@ function confirmImage() {
   // 既定の使い方を先頭フレーム固定 (I2V) にする（参照にしたければ UI で切替可）。
   $("#imguse").value = "first";
   setBusy(true);
-  const bot = addMsg("bot", '<div class="meta">企画 LLM と動画の内容を相談中…（Z-Image はアンロード済み）</div>');
+  const bot = addMsg("bot", '<div class="meta">企画 LLM と動画の内容を相談中…（Klein 9B はアンロード済み）</div>');
   (async () => {
     try {
       const r = await fetch("/api/plan", {
@@ -2939,8 +3059,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/generate":
             self._generate(parsed)
-        elif parsed.path == "/api/zimg":
-            self._zimg(parsed)
+        elif parsed.path == "/api/kimg":
+            self._kimg(parsed)
         elif parsed.path == "/api/plan":
             self._plan(parsed)
         elif parsed.path == "/api/audio":
@@ -3302,7 +3422,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         # gpu27b planner: kill it so its 14GB leaves VRAM before the video
         # model loads (no-op for the CPU 4B planner).
         stop_plan_llm()
-        # Free stale models (e.g. Z-Image Turbo) first so the H3 model has the
+        if not self._ensure_comfy():
+            self._json(502, {"error": "ComfyUI が起動していません（自動起動も失敗。詳細は %TEMP%\\h3_comfyui.log）"})
+            return
+        # Free stale models (e.g. Klein 9B) first so the H3 model has the
         # full VRAM - but only when nothing else is running, so we never
         # unload a model mid-generation.
         try:
@@ -3343,13 +3466,16 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         endpoint = self._plan_endpoint()
         if not endpoint:
-            self._json(503, {"error": "企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）"})
+            if PLAN_GPU and self._comfy_busy():
+                self._json(503, {"error": "ComfyUI が生成中のため GPU 企画 LLM を起動できません。生成完了後に再度お送りください。"})
+            else:
+                self._json(503, {"error": "企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）"})
             return
         self.server.autostop.poke()
         image = req.get("image") or None   # 確定したキー画像のファイル名（視覚入力）
         ref_start = bool(req.get("ref_start"))  # 参照モードからの動画相談開始フラグ
         if stage == "video" and text == "__CONFIRM_IMAGE__":
-            # キー画像が確定: Z-Image Turbo をアンロードして VRAM を解放してから
+            # キー画像が確定: Klein 9B をアンロードして VRAM を解放してから
             # 企画 LLM に動画プロンプトを作らせる。
             self._free_comfy()
         tweak_note = ""
@@ -3516,7 +3642,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         endpoint = self._plan_endpoint()
         if not endpoint:
-            self._json(503, {"error": "企画 LLM を起動できませんでした"})
+            if PLAN_GPU and self._comfy_busy():
+                self._json(503, {"error": "ComfyUI が生成中のため GPU 企画 LLM を起動できません。生成完了後に再度お送りください。"})
+            else:
+                self._json(503, {"error": "企画 LLM を起動できませんでした"})
             return
         self.server.autostop.poke()
         body = json.dumps({
@@ -3553,8 +3682,13 @@ class ChatHandler(BaseHTTPRequestHandler):
             return self.server.plan_url
         if probe:
             # The gpu27b planner needs ~14GB: make sure ComfyUI is not holding
-            # it before the load starts.
+            # it before the load starts. When a generation is in flight we can
+            # neither unload its models (it would break the run) nor fit the
+            # planner beside them, so refuse until the queue drains.
             if PLAN_GPU and not _plan_alive():
+                if self._comfy_busy():
+                    print("h3-chat: ComfyUI 生成中のため GPU 企画 LLM の起動を延期します")
+                    return None
                 self._free_comfy()
             # Give a first-request spawn a short window to come up. The gpu27b
             # planner cold-loads in ~10s but gets a longer window for safety.
@@ -3906,6 +4040,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[NODE_UP_SCALE]["inputs"]["height"] = h * scale
         self.server.autostop.poke()
         stop_plan_llm()
+        if not self._ensure_comfy():
+            self._json(502, {"error": "ComfyUI が起動していません（自動起動も失敗。詳細は %TEMP%\\h3_comfyui.log）"})
+            return
         try:
             _, raw, _ = self._comfy("GET", "/queue", timeout=10)
             q = json.loads(raw)
@@ -3984,9 +4121,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    # ---- Z-Image key image ------------------------------------------
+    # ---- Key image (kimg / qimg) -----------------------------------
 
-    def _zimg(self, parsed):
+    def _kimg(self, parsed):
         try:
             req = self._read_json_body()
         except Exception:
@@ -3997,10 +4134,16 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "画像プロンプトが空です"})
             return
 
-        engine = req.get("engine") or "zimg"
+        engine = req.get("engine") or "kimg"
         eng = IMG_ENGINES.get(engine)
         if not eng:
             self._json(400, {"error": "unknown image engine: " + engine})
+            return
+        # sd.cpp backend: skip ComfyUI workflow entirely. Run sd-cli via PowerShell
+        # wrapper and poll the resulting PNG into job_meta so the frontend can
+        # surface the same "image" completion it uses for ComfyUI outputs.
+        if eng.get("backend") == "sdcpp":
+            self._kimg_sdcpp(parsed, req, text, eng)
             return
         dw, dh = eng["default_size"]
         try:
@@ -4022,6 +4165,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.server.autostop.poke()
         # gpu27b planner: free its VRAM before the image model loads.
         stop_plan_llm()
+        if not self._ensure_comfy():
+            self._json(502, {"error": "ComfyUI が起動していません（自動起動も失敗。詳細は %TEMP%\\h3_comfyui.log）"})
+            return
         self._free_comfy()
         try:
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
@@ -4031,14 +4177,137 @@ class ChatHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
+    def _kimg_sdcpp(self, parsed, req, text, eng):
+        """stable-diffusion.cpp パス: ComfyUI を一旦停止して sd-cli を直接起動する。
+
+        出力 PNG は ComfyUI output/ に置かれるので既存の画像配信エンドポイントで
+        そのまま配信できる。job_meta に 'sdcpp_<timestamp>' をキーに進捗・完了を
+        記録し、/status の kind='image' 経由でフロントに通知される。
+        """
+        if not os.path.isfile(eng["script"]):
+            self._json(500, {"error": f"sd.cpp スクリプトが見つかりません: {eng['script']}"})
+            return
+        # prompt を一時ファイルに書き出す (test_run_4b.ps1 は --prompt-file を読む)
+        prompt_file = os.path.join(os.path.dirname(eng["script"]), "prompt_runtime.txt")
+        try:
+            with open(prompt_file, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as e:
+            self._json(500, {"error": f"プロンプト書き出し失敗: {e}"})
+            return
+        # ComfyUI は sd.cpp と VRAM 競合するので一旦落とす (起動は sd.cpp 側で完結)。
+        # 企画 LLM (port PLAN_PORT) も VRAM 1GB+ 食ってるので sd.cpp 起動中は
+        # 確実に kill。sd.cpp 完了後に ensure_plan_llm() で再 spawn させる。
+        self.server.autostop.poke()
+        stop_plan_llm()
+        ChatHandler._kill_port(self._comfy_port())
+        ChatHandler._kill_port(PLAN_PORT)
+        job_id = f"sdcpp_{int(time.time() * 1000) % 10**13}"
+        out_png = os.path.join(_comfy_root(), "output", f"{job_id}.png")
+        # ps1 内の出力パスを job 用にコピーする仕組みは ps1 側に OutDir 環境変数を
+        # 見る改修を入れるのが本来だが、まずは既存出力を job_id 名に rename する
+        # 簡易方式でいく。
+        def _runner():
+            try:
+                # 出力パスを環境変数で上書き (ps1 側で対応するならここを読む)
+                env = os.environ.copy()
+                env["SDCPP_OUT"] = out_png
+                env["SDCPP_PROMPT"] = prompt_file
+                # ps1 は固定の sdcpp_klein_4b.png を出力するので、終わったら job_id に rename
+                proc = subprocess.run(
+                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", eng["script"]],
+                    env=env, cwd=os.path.dirname(eng["script"]),
+                    capture_output=True, text=True, timeout=600,
+                )
+                if proc.returncode == 0:
+                    src = os.path.join(_comfy_root(), "output", "sdcpp_klein_4b.png")
+                    if os.path.isfile(src):
+                        try:
+                            os.replace(src, out_png)
+                        except Exception:
+                            pass
+                self.server.job_meta[job_id] = {
+                    "mode": "sdcpp", "start": self.server.job_meta.get(job_id, {}).get("start", time.time()),
+                    "kind": "image", "done": True, "ok": proc.returncode == 0,
+                    "returncode": proc.returncode,
+                    "stderr_tail": (proc.stderr or "")[-500:],
+                }
+            except Exception as e:
+                self.server.job_meta[job_id] = {
+                    "mode": "sdcpp", "kind": "image", "done": True, "ok": False,
+                    "error": str(e),
+                }
+        # 進捗を即時見えるよう先に job_meta を仕込む
+        self.server.job_meta[job_id] = {"mode": "sdcpp", "start": time.time(), "kind": "image", "done": False}
+        threading.Thread(target=_runner, daemon=True).start()
+        self._json(200, {"prompt_id": job_id})
+
     # ---- shutdown / VRAM ---------------------------------------------
 
     def _free_comfy(self):
-        """Unload every model from VRAM (used between Z-Image and H3)."""
+        """Unload every model from VRAM (used between key-image engine and H3)."""
         try:
             self._comfy("POST", "/free", {"unload_models": True, "free_memory": True}, timeout=15)
         except Exception:
             pass
+
+    def _comfy_busy(self):
+        """True when a ComfyUI generation is queued or running."""
+        try:
+            _, raw, _ = self._comfy("GET", "/queue", timeout=10)
+            q = json.loads(raw)
+            return bool(q.get("queue_running") or q.get("queue_pending"))
+        except Exception:
+            return False
+
+    def _ensure_comfy(self, wait_seconds=120):
+        r"""ComfyUI が落ちていたら自動起動して応答を待つ（WinError 10061 の根絶）。
+
+        Web GUI (client-manager.js) と同一の起動引数（main.py --port --listen
+        127.0.0.1 + LLAMADOCK_COMFY_FLAGS or --reserve-vram 1.0）を使うので、
+        どの経路から起動しても同じ設定になる。ログは %TEMP%\h3_comfyui.log。
+        Returns True when /system_stats answers.
+        """
+        try:
+            self._comfy("GET", "/system_stats", timeout=2)
+            return True
+        except Exception:
+            pass
+        root = _comfy_root()
+        py = os.path.join(root, ".venv", "Scripts", "python.exe")
+        main_py = os.path.join(root, "main.py")
+        if not os.path.isfile(py) or not os.path.isfile(main_py):
+            print(f"h3-chat: ComfyUI の自動起動に失敗（{root} に .venv/main.py がありません）")
+            return False
+        port = ChatHandler._comfy_port_of(self.server)
+        args = [py, "main.py", "--port", str(port), "--listen", "127.0.0.1"]
+        flags = os.environ.get("LLAMADOCK_COMFY_FLAGS", "").strip()
+        args += flags.split() if flags else ["--reserve-vram", "1.0"]
+        log_path = os.path.join(os.environ.get("TEMP", REPO), "h3_comfyui.log")
+        logf = open(log_path, "a", encoding="utf-8", errors="replace")
+        print(f"h3-chat: ComfyUI が停止していたため自動起動します (port {port}, log: {log_path})")
+        try:
+            if os.name == "nt":
+                subprocess.Popen(
+                    args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+                    cwd=root,
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            else:
+                subprocess.Popen(args, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=root, start_new_session=True)
+        except Exception as e:
+            print(f"h3-chat: ComfyUI の自動起動に失敗: {e}")
+            return False
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            try:
+                self._comfy("GET", "/system_stats", timeout=2)
+                print("h3-chat: ComfyUI の起動を確認しました")
+                return True
+            except Exception:
+                time.sleep(2)
+        print(f"h3-chat: ComfyUI が {wait_seconds} 秒以内に起動しませんでした（ログ: {log_path}）")
+        return False
 
     def _shutdown(self, parsed):
         try:
@@ -4103,11 +4372,55 @@ class ChatHandler(BaseHTTPRequestHandler):
             return s[len(s) // 2]
         return ETA_DEFAULTS.get(mode, 300)
 
+    def _status_sdcpp(self, pid, meta, elapsed, eta):
+        """sd.cpp job の進捗/完了を返す。ComfyUI が落ちていても job_meta だけで判定。"""
+        if not meta.get("done"):
+            self._json(200, {"status": "running", "extra": "sd.cpp 実行中", "pending": 0, "elapsed_sec": elapsed, "eta_sec": max(0, eta - elapsed)})
+            return
+        if not meta.get("ok"):
+            err = meta.get("error") or meta.get("stderr_tail") or "sd.cpp 生成に失敗しました"
+            self.server.job_meta.pop(pid, None)
+            self._json(200, {"status": "error", "error": err[-400:]})
+            return
+        # 出力 PNG を ComfyUI output/ から拾って videos 形式に詰める
+        out_png = os.path.join(_comfy_root(), "output", f"{pid}.png")
+        if not os.path.isfile(out_png):
+            self.server.job_meta.pop(pid, None)
+            self._json(200, {"status": "error", "error": f"出力が見つかりません: {out_png}"})
+            return
+        fn = os.path.basename(out_png)
+        self.server.local_files[fn] = out_png
+        # 実測時間を記録して ETA を賢くする
+        if elapsed > 5:
+            self.server.run_times.setdefault("sdcpp", []).append(elapsed)
+            self.server.run_times["sdcpp"] = self.server.run_times["sdcpp"][-20:]
+        self.server.job_meta.pop(pid, None)
+        # sd.cpp 画像生成も autostop の起点にする。動画同様アイドルで
+        # ComfyUI + 企画 LLM + h3-chat.py をまとめて解放 (AUTO_STOP_SECONDS)。
+        try:
+            self.server.autostop.mark_done()
+        except Exception:
+            pass
+        self._json(200, {
+            "status": "success",
+            "videos": [{
+                "filename": fn,
+                "type": "output",
+                "subfolder": "",
+                "kind": "image",
+                "path": out_png,
+            }],
+        })
+
     def _status(self, pid):
         meta = self.server.job_meta.get(pid) or {}
         mode = meta.get("mode") or "video"
         elapsed = int(time.time() - meta["start"]) if meta.get("start") else 0
         eta = self._eta_base(mode)
+        # sd.cpp job は ComfyUI を使わず job_meta だけで完結する。
+        if mode == "sdcpp" or pid.startswith("sdcpp_"):
+            self._status_sdcpp(pid, meta, elapsed, eta)
+            return
         try:
             # running or queued?
             _, raw, _ = self._comfy("GET", "/queue", timeout=10)
@@ -4248,7 +4561,8 @@ def main():
     print(f"h3-chat: {url}")
     print(f"h3-chat: ComfyUI = {server.comfy_base}  (fast={WORKFLOWS['fast']} high={WORKFLOWS['high']} quick={WORKFLOWS['quick']} lite={WORKFLOWS['lite']})")
     print(f"h3-chat: DITs = default / 10eros ({DITS['10eros']})")
-    print(f"h3-chat: Z-Image = {ZIMG_WORKFLOW}")
+    print(f"h3-chat: Klein 9B = {KIMG_WORKFLOW}")
+    print(f"h3-chat: Qwen    = {QIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['fast']} など（キー画像→参照 LoRA）")
     print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')} (engine: {PLAN_ENGINE})")
     # Bring up the planning LLM in the background so the first plan-mode

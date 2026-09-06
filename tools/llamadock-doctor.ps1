@@ -4,8 +4,6 @@ $checks = @(
     @{ Label="Profiles"; Path=(Join-Path $root "config\profiles.json") },
     @{ Label="Selector"; Path=(Join-Path $root "select-model.ps1") },
     @{ Label="MCP server"; Path=(Join-Path $root "mcp-server.js") },
-    @{ Label="Computer launcher"; Path=(Join-Path $root "tools\computer-start.ps1") },
-    @{ Label="Computer local connection"; Path=(Join-Path $root "tools\computer-configure-local.ps1") },
     @{ Label="Shared UTF-8 helper"; Path=(Join-Path $root "tools\llamadock-utf8.ps1") },
     @{ Label="UTF-8 client shell"; Path=(Join-Path $root "tools\llamadock-client-shell.ps1") },
     @{ Label="PowerShell UTF-8 smoke"; Path=(Join-Path $root "tools\utf8-powershell-smoke.ps1") },

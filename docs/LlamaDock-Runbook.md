@@ -4,15 +4,15 @@
 
 デスクトップの `LlamaDock.lnk` は `llamadock.bat` から `select-model.ps1` を直接起動する。通常の動線は「モデルを選ぶ → 用途を選ぶ → 起動」の2段階だけ。用途は Chat + Web、Coding、Deep Research、Advanced の4つで、通常3モードは推奨設定を自動適用し、追加質問なしで起動する。細かな設定変更と診断表示は Advanced にまとめる。旧プリセットはコマンドライン互換用に残す。
 
-すべて localhost バインドで、Docker/WSLは既定経路に使わない。ComputerのデータはOneDrive外の `C:\Users\dai86\AppData\Local\LlamaDock\Computer\data` に置く。
+すべて localhost バインドで、Docker/WSLは既定経路に使わない。Pi (pi.dev) の設定はユーザー配下の `~/.pi/agent/models.json` に置く（LlamaDock は起動時に `llamadock` プロバイダを登録・更新する）。
 
-LlamaDockから起動した場合、通常のクライアント接続先は `http://127.0.0.1:8090/v1`（回復ゲートウェイ）で、実サーバーは8090から8080へ転送される。クライアント切断時に8080の単一スロットが解放されない場合だけ、監督プロセスがllama-serverを再起動する。8080は診断用とし、通常のCline/OpenCode/Computerは8090を使う。
+LlamaDockから起動した場合、通常のクライアント接続先は `http://127.0.0.1:8090/v1`（回復ゲートウェイ）で、実サーバーは8090から8080へ転送される。クライアント切断時に8080の単一スロットが解放されない場合だけ、監督プロセスがllama-serverを再起動する。8080は診断用とし、通常のCline/OpenCode/Piは8090を使う。
 
 ## 推奨プロファイル
 
 通常3モードの既定値は `select-model.ps1` がモデル形式とサイズに合わせて決める。`config\profiles.json` は方針を確認するためのプロファイル資料として残す。
 
-- `chat-fast`: 16K、K/V q8（TQ3モデルのVはtq3_0）、KV-aware Auto、Computer
+- `chat-fast`: 16K、K/V q8（TQ3モデルのVはtq3_0）、KV-aware Auto、Pi（pi.dev コーディング）
 - `coding-balanced`: 32K、K/V q8、AutoFit、OpenCode
 - `research-standard`: 32K、K/V q8、AutoFit、読み取り中心のMCP
 - 20GB以上のモデル: K q8 / V q4、AutoFit。用途に応じてChatは16K、Coding/Researchは32K
@@ -29,7 +29,7 @@ Prompt cacheのRAM上限はランタイムの起動引数に明示する。既�
 
 ## 回答停止とUTF-8の再発防止
 
-短い日本語回答が空になる主因は、Qwen/TQ3系でthinkingが有効なままになり、短い`max_tokens`を思考出力だけで使い切ることだった。TurboTanは既定で`chat_template_kwargs={"enable_thinking":false}`と`--reasoning off`を両方渡す。Computerのグローバルチャット設定もtemperature 0、max_tokens 512、seed 42、thinking無効にそろえる。GGUFのEOS/chat-template警告は無視せず、短文・停止文字列・SSE終了の実測を合格条件にする。
+短い日本語回答が空になる主因は、Qwen/TQ3系でthinkingが有効なままになり、短い`max_tokens`を思考出力だけで使い切ることだった。TurboTanは既定で`chat_template_kwargs={"enable_thinking":false}`と`--reasoning off`を両方渡す。コーディング系クライアント（Cline / OpenCode / Pi）はサーバー側 `--reasoning off` を既定にする。GGUFのEOS/chat-template警告は無視せず、短文・停止文字列・SSE終了の実測を合格条件にする。
 
 PowerShell 5.1のJSON POSTは文字列Bodyを使わず、`tools\llamadock-utf8.ps1`でUTF-8バイト列と`application/json; charset=utf-8`を明示する。Cline/OpenCodeは`tools\llamadock-client-shell.ps1`を共通の起動境界にし、コンソール、Python、Clineのデータディレクトリ、MCP設定パスをそろえる。起動中のモデルを検査するときは次を実行する。
 
@@ -57,11 +57,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -RunUtf8Smo
 
 この結果から、TQ3モデルはTurboTan、一般GGUFはAtomic HIPを初期候補にする。ただし、最終採用は実タスクのTTFT・prompt処理速度・品質・長文脈で再測定する。
 
-## Computer初回セットアップ
+## Pi (pi.dev) ワークスペース
 
-`tools\computer-start.ps1` は専用venv `venv-0.9.9` を作成し、Open WebUI Computer 0.9.9をlocalhost:8000で起動する。初回はブラウザでローカル管理者とワークスペースを作成する。LlamaDock経由のLLM接続はComputer側でOpenAI互換、Base URL `http://127.0.0.1:8090/v1`、ダミーAPIキー、Chat Completionsを選ぶ（直接起動の診断時だけ8080）。
+Open WebUI Computer（cptr / :8000）は 2026-09 に廃止し、LlamaDock の WebUI ワークスペースは pi.dev のコーディングエージェント（`@earendil-works/pi-coding-agent`、CLI `pi`）に置き換えた。起動時、`tools\llamadock-client-shell.ps1` が `~/.pi/agent/models.json` の `llamadock` プロバイダ（baseUrl `http://127.0.0.1:8090/v1`、`api: openai-completions`、モデルの `contextWindow` は稼働中 llama-server の実 n_ctx と同期）を登録し、`pi --provider llamadock --model <model>` を新規ターミナルで開く。既存の他のプロバイダ設定は保持される。
 
-既存Open WebUI（port 3000、`mcp-data\open-webui`）はロールバック用に残す。新UIを標準入口にした後も、問題があれば旧 `tools\open-webui-start.ps1` を直接実行できる。
+既存Open WebUI（port 3000、`mcp-data\open-webui`）はロールバック用に残す。問題があれば旧 `tools\open-webui-start.ps1` を直接実行できる。
 
 ## ClineのMCPと初期プロンプト
 

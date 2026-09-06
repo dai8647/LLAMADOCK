@@ -12,7 +12,7 @@
 | --- | --- |
 | **Cline** | コーディング用エージェント |
 | **OpenCode** | ローカル OpenAI 互換 API に接続するターミナル型コーディングエージェント |
-| **Open WebUI (Computer)** | 会話・Web 検索・コンパクション対応のブラウザ UI |
+| **Pi (pi.dev)** | pi.dev のターミナル型コーディングエージェント（ローカル LLM 接続） |
 | **Llama Agent** | ターミナル型エージェント + 反復 Web 調査ハーネス |
 | **ComfyUI** | MiniMax H3 ビデオ / オーディオ生成 |
 | **DeepSeek Harness** | エージェントハーネス（npx 自動インストール＋自動アップデート） |
@@ -53,8 +53,8 @@ ComfyUI 起動後に **`tools\h3-chat.ps1`** を実行すると、ノード UI �
 
 チャット欄の **✎ 企画モード** にチェックを入れると、**「キー画像 → 動画」の2段階**で企画できます。
 ① ローカル LLM（CPU 推論・VRAM 不使用）と日本語で「打ち返しながら」アイデアを固め、英語の画像プロンプトを生成
-② **Z-Image Turbo**（GGUF Q8・`lesliemore/z-image-turbo-nsfw-v2`）でキー画像を高速生成（約15秒）
-③ 画像を確認 → 必要なら日本語で修正指示 → 確定すると Z-Image をアンロード（VRAM 解放）
+② **FLUX.2 [klein] 9B NSFW**（GGUF Q8_0・`xPhoenix777/pornmasterFlux2Klein_v4TurboBf16`）でキー画像を高速生成（約1分）
+③ 画像を確認 → 必要なら日本語で修正指示 → 確定すると Klein 9B をアンロード（VRAM 解放）
 ④ 確定した画像をもとに企画 LLM が英語の動画プロンプト（動き・カメラ・時間経過を追加）を作成 → 生成
 動画が完成すると **自動停止のカウントダウン**が始まり、放置すれば ComfyUI・企画 LLM を停止して
 GPU・メモリを解放します（ブラウザが閉じていてもサーバー側で 180 秒後に確実に停止）。
@@ -95,7 +95,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 4. コンテキスト / KV cache / GPU offload などを確認
 5. LlamaDock が `llama-server` と選択したワークスペースを起動
 
-`select-model.ps1` は引数でモード／値を直接指定することもできます（例: `-PresetMode WebUIChat -ClientMode WebUI`）。スクリプト冒頭の `param()` を参照してください。
+`select-model.ps1` は引数でモード／値を直接指定することもできます（例: `-PresetMode PiCoding -ClientMode Pi`）。スクリプト冒頭の `param()` を参照してください。
 
 ---
 
@@ -107,7 +107,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 | **Code - Cline** | Cline 向けの安定設定 |
 | **Code - OpenCode** | OpenCode 向けの安定設定 |
 | **Agent Research** | llama-agent + 反復 Web 調査ハーネス |
-| **Chat** | Open WebUI（Web 検索・会話コンパクション） |
+| **Pi** | pi.dev コーディングエージェント（ローカル LLM 接続） |
 | **DeepSeek Harness** | エージェントハーネス（ローカル llama.cpp 接続・API キー不要、npx 自動インストール＋自動アップデート） |
 
 ---
@@ -209,12 +209,12 @@ npm run start:mcp    # MCP ウェブ検索サーバー（http://127.0.0.1:3100/m
 
 ### ワークスペース接続（`POST /api/connect`）
 
-起動中のサーバーに対して Cline / OpenCode / Open WebUI /
+起動中のサーバーに対して Cline / OpenCode / Pi /
 Llama Agent / DeepSeek Harness / ComfyUI を接続します（右カラムの「ワークスペース接続」）。
 
 - **Windows**: `web-ui/client-manager.js` が `select-model.ps1` の `Open-*Client` と同じ起動経路を
-  （detached で）実行します。Cline / OpenCode は `tools/llamadock-client-shell.ps1`、
-  WebUI は `tools/computer-start.ps1`、
+  （detached で）実行します。Cline / OpenCode / Pi は `tools/llamadock-client-shell.ps1`
+  （Pi は起動時に `~/.pi/agent/models.json` へ `llamadock` プロバイダを登録）、
   LlamaAgent は `llama-agent.exe`、ComfyUI は `main.py --port 8188`。接続先は回復ゲートウェイ
   `http://127.0.0.1:8090/v1` です。
 - **その他（プレビュー等）**: リクエスト全体を検証した上で、Windows が実行する正確なコマンドを
@@ -226,11 +226,10 @@ Llama Agent / DeepSeek Harness / ComfyUI を接続します（右カラムの「
 
 ### クライアント稼働モニタ（`GET /api/clients/health`）
 
-独自の HTTP サーバーを持つワークスペース（Open WebUI :8000 / ComfyUI :8188）は、
+独自の HTTP サーバーを持つワークスペース（ComfyUI :8188）は、
 接続状態とは別に**実際に稼働しているか**を 10 秒間隔でプローブします。
 
-- プローブ先: WebUI `http://127.0.0.1:8000/`、ComfyUI
-  `http://127.0.0.1:8188/system_stats`。ポートは `LLAMADOCK_<ID>_PORT`（例 `LLAMADOCK_COMFYUI_PORT=8190`）で
+- プローブ先: ComfyUI `http://127.0.0.1:8188/system_stats`。ポートは `LLAMADOCK_<ID>_PORT`（例 `LLAMADOCK_COMFYUI_PORT=8190`）で
   変更でき、起動コマンド（ComfyUI の `--port`）と監視が同じ値を使うためずれません。
 - UI: 各クライアントの説明の横に稼働ドット（緑 = 応答あり・赤 = 停止/接続拒否）。応答中は「開く ↗」が
   出てブラウザで直接開けます。CLI クライアント（Cline 等）は HTTP サーバーを持たないためドットなし。

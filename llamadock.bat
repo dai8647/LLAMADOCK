@@ -18,6 +18,6 @@ powershell.exe -ExecutionPolicy Bypass -NoProfile -File "%~dp0select-model.ps1" 
 
 echo.
 if %ERRORLEVEL% neq 0 (
-    echo LlamaDock exited with error
+    echo LlamaDock がエラーで終了しました
     pause
 )

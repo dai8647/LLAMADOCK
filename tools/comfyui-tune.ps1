@@ -200,7 +200,7 @@ elseif ($isRocm) {
 }
 
 Write-Section "Recommended launch flags (llamadock default already applies these)"
-Write-Result "  main.py --port 8188 --listen 127.0.0.1 --reserve-vram 1.0"
+Write-Result "  main.py --port 8188 --listen 127.0.0.1 --reserve-vram 6.0"
 if ($ckFlagSupported -and $info.ck_attn -eq $true) {
     Write-Result "  Best on this stack: add --use-ck-attention (LLAMADOCK_COMFY_PROFILE=ck) -> Comfy Kitchen attention."
 }

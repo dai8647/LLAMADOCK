@@ -19,7 +19,7 @@
 | 系統 | モデル | いつ動く | どこで切る |
 |---|---|---|---|
 | 企画 LLM | Qwen3.5-4B NSFW Literotica i1-Q6_K（3.3GB）+ mmproj 視覚（675MB） | 企画モードの会話・画像認識・プロンプト作成 | 自動停止 or セッション [4] |
-| キー画像 | Z-Image NSFW GGUF Q8（7.2GB） | 企画モードでキー画像生成（15〜35 秒） | 動画生成直前にアンロード（VRAM 解放） |
+| キー画像 | Klein 9B NSFW GGUF Q8_0（9.5GB・pornmasterFlux2Klein_v4TurboBf16） | 企画モードでキー画像生成（約1分） | 動画生成直前にアンロード（VRAM 解放） |
 | 動画 DiT | PinkCherry int8（21GB）/ **10Eros NVFP4（12.5GB）** | 動画生成時（数分） | 自動停止 or [4] |
 | 動画付属 | turbo LoRA / 参照 LoRA（R2V）・テキストエンコーダ（4B fp8 / 32B NVFP4） | 動画生成時に DiT に重ねる | DiT と一緒 |
 
@@ -46,11 +46,11 @@ llamadock（select-model.ps1）
      ↓ h3-chat(8189) → 企画LLM(8190)
 ② 企画 LLM が日本語で打ち返して具体化（何度でも）
      ↓
-③ キー画像プロンプト確定 → Z-Image がキー画像を生成（GPU・15〜35秒）
+③ キー画像プロンプト確定 → Klein 9B がキー画像を生成（GPU・約1分）
      ↓
 ④ 画像を確認 → 必要なら修正指示（企画 LLM が再考）
      ↓
-⑤ 確定 → Z-Image をアンロード（VRAM 解放）
+⑤ 確定 → Klein 9B をアンロード（VRAM 解放）
      → 企画 LLM が英語の動画プロンプトを作成（Qwen3.5 CPU モードはキー画像を【視覚で見て】。
        GPU 27B は視覚なしのため画像プロンプト文面ベース）
      ↓
@@ -75,7 +75,7 @@ llamadock（select-model.ps1）
 
 ```
 企画 LLM ─── CPU 推論 → VRAM 使わない
-キー画像 ─── Z-Image ≈7GB → 動画の前にアンロード
+キー画像 ─── Klein 9B ≈9.5GB → 動画の前にアンロード
 動画 ─────── H3 DiT ≈13.3GB（10Eros は NVFP4 エミュレーション）+ R2V なら +0.2GB
 ```
 → キー画像と動画は**同時に載せない**設計（h3-chat が生成前に `_free_comfy()` でアンロード）。

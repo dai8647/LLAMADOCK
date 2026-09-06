@@ -8,9 +8,6 @@ $launcher = Join-Path $root "select-model.ps1"
 $notes = Join-Path $root "model-notes.json"
 $openWebUIBootstrap = Join-Path $root "tools\open-webui-bootstrap.py"
 $openWebUIStart = Join-Path $root "tools\open-webui-start.ps1"
-$computerStart = Join-Path $root "tools\computer-start.ps1"
-$computerConfigure = Join-Path $root "tools\computer-configure-local.ps1"
-$computerConfigurePy = Join-Path $root "tools\computer-configure-local.py"
 $runtimeInventory = Join-Path $root "tools\runtime-inventory.ps1"
 $benchScript = Join-Path $root "tools\llamadock-bench.ps1"
 $utf8Helper = Join-Path $root "tools\llamadock-utf8.ps1"
@@ -36,7 +33,7 @@ $validPresets = @(
     "ClineCoding",
     "OpenCodeCoding",
     "LlamaAgentResearch",
-    "WebUIChat",
+    "PiCoding",
     "DeepSeekHarness"
 )
 foreach ($note in $modelNotes) {
@@ -118,9 +115,9 @@ if ($secretHits.Count -gt 0) {
 }
 Write-Host "Secret scan OK"
 
-foreach ($path in @($openWebUIBootstrap, $openWebUIStart, $computerStart, $computerConfigure, $computerConfigurePy, $runtimeInventory, $benchScript, $utf8Helper, $utf8Smoke, $utf8PowerShellSmoke, $clientShell, $gateway, $supervisor, $profiles)) {
+foreach ($path in @($openWebUIBootstrap, $openWebUIStart, $runtimeInventory, $benchScript, $utf8Helper, $utf8Smoke, $utf8PowerShellSmoke, $clientShell, $gateway, $supervisor, $profiles)) {
     if (-not (Test-Path -LiteralPath $path)) {
-        Write-Host "Open WebUI launcher file missing: $path" -ForegroundColor Red
+        Write-Host "Required launcher file missing: $path" -ForegroundColor Red
         exit 1
     }
 }
@@ -135,10 +132,10 @@ if (Test-Path (Join-Path $openWebUISite "open_webui\__init__.py")) {
     Write-Host "Open WebUI files/package OK"
 }
 else {
-    # The Python Open WebUI venv is a rollback-only path (the standard WebUI
-    # entry is native Computer). A clean machine may not have it; warn instead
-    # of blocking the whole suite.
-    Write-Host "WARNING: Open WebUI package is not installed: $openWebUISite (rollback UI only; standard entry is Computer)." -ForegroundColor Yellow
+    # The Python Open WebUI venv is a rollback-only path (Open WebUI Computer
+    # was retired and replaced by the Pi agent workspace). A clean machine may
+    # not have it; warn instead of blocking the whole suite.
+    Write-Host "WARNING: Open WebUI package is not installed: $openWebUISite (legacy rollback only)." -ForegroundColor Yellow
 }
 $openWebUISource = Get-Content -LiteralPath $openWebUIBootstrap -Raw -Encoding UTF8
 foreach ($check in @("OPENAI_API_BASE_URLS", "openai.api_base_urls", "recovery gateway")) {
@@ -174,13 +171,6 @@ if ($utf8Source -notmatch "PYTHONUTF8" -or $utf8Source -notmatch "PYTHONIOENCODI
     exit 1
 }
 Write-Host "UTF-8 transport files OK"
-$computerPythonCheck = & py -3.11 -c "compile(open(r'$computerConfigurePy', encoding='utf-8').read(), r'$computerConfigurePy', 'exec')" 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Computer configuration Python syntax check failed" -ForegroundColor Red
-    $computerPythonCheck
-    exit 1
-}
-Write-Host "Computer configuration files OK"
 $utf8PowerShellSource = Get-Content -LiteralPath $utf8PowerShellSmoke -Raw -Encoding UTF8
 try {
     [scriptblock]::Create($utf8PowerShellSource) | Out-Null
@@ -355,7 +345,7 @@ if (-not $SkipDryRun) {
         $extra = @()
         if ($preset -eq "Manual") {
             $extra = @(
-                "-ClientMode", "WebUI",
+                "-ClientMode", "Pi",
                 "-ContextIndex", "1",
                 "-OffloadMode", "Auto",
                 "-MoeExpertsMode", "Auto",
@@ -377,15 +367,15 @@ if (-not $SkipDryRun) {
             Write-Host "Dry run did not produce command: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -eq "Manual" -and ($joined -notmatch "Hardware estimate:" -or $joined -notmatch "Runtime availability:")) {
+        if ($preset -eq "Manual" -and ($joined -notmatch "ハードウェア構成:" -or $joined -notmatch "ランタイム状態:")) {
             Write-Host "Advanced dry run did not show hardware/runtime diagnostics: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -in @("WebUIChat", "OpenCodeCoding") -and $joined -notmatch "READY TO LAUNCH") {
+        if ($preset -in @("PiCoding", "OpenCodeCoding") -and $joined -notmatch "READY TO LAUNCH") {
             Write-Host "Quick launch did not show the compact launch card: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -notin @("WebUIChat", "OpenCodeCoding") -and $joined -notmatch "GPU offload estimate:") {
+        if ($preset -notin @("PiCoding", "OpenCodeCoding") -and $joined -notmatch "GPU offload estimate:") {
             Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
             exit 1
         }
@@ -405,8 +395,8 @@ if (-not $SkipDryRun) {
             Write-Host "Explicit prompt-cache RAM flag missing: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -eq "WebUIChat" -and $joined -notmatch "native Computer") {
-            Write-Host "WebUI preset did not identify native Computer: $preset" -ForegroundColor Red
+        if ($preset -eq "PiCoding" -and $joined -notmatch "Coding -> Pi") {
+            Write-Host "Pi preset did not show the quick-launch label: $preset" -ForegroundColor Red
             exit 1
         }
         if ($preset -eq "LlamaAgentResearch" -and $joined -notmatch 'LLAMA_ARG_CHAT_TEMPLATE_KWARGS=\{"enable_thinking":false\}') {

@@ -3,30 +3,33 @@
   "1": {
    "class_type": "UnetLoaderGGUF",
    "inputs": {
-    "unet_name": "qwen-image-2512-Q4_K_S.gguf"
+    "unet_name": "pornmasterFlux2Klein_v4TurboBf16-Q8_0.gguf"
    }
   },
   "2": {
    "class_type": "CLIPLoader",
    "inputs": {
-    "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-    "type": "qwen_image"
+    "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+    "type": "flux2"
    }
   },
   "3": {
    "class_type": "VAELoader",
    "inputs": {
-    "vae_name": "qwen_image_vae.safetensors"
+    "vae_name": "flux2-vae.safetensors"
    }
   },
   "4": {
-   "class_type": "ModelSamplingAuraFlow",
+   "class_type": "ModelSamplingFlux",
    "inputs": {
     "model": [
-     "13",
+     "12",
      0
     ],
-    "shift": 3.1
+    "width": 1024,
+    "height": 1024,
+    "max_shift": 1.15,
+    "base_shift": 0.5
    }
   },
   "5": {
@@ -52,8 +55,8 @@
   "7": {
    "class_type": "EmptySD3LatentImage",
    "inputs": {
-    "width": 1344,
-    "height": 768,
+    "width": 1024,
+    "height": 1024,
     "batch_size": 1
    }
   },
@@ -64,22 +67,11 @@
      "1",
      0
     ],
-    "lora_name": "Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
-    "strength_model": 1
+    "lora_name": "flux_klein_9b_nsfw_v2.safetensors",
+    "strength_model": 0.85
    }
   },
   "9": {
-   "class_type": "LoraLoaderModelOnly",
-   "inputs": {
-    "model": [
-     "8",
-     0
-    ],
-    "lora_name": "tumblrasia.safetensors",
-    "strength_model": 1
-   }
-  },
-  "10": {
    "class_type": "KSampler",
    "inputs": {
     "model": [
@@ -106,11 +98,11 @@
     "denoise": 1
    }
   },
-  "11": {
+  "10": {
    "class_type": "VAEDecode",
    "inputs": {
     "samples": [
-     "10",
+     "9",
      0
     ],
     "vae": [
@@ -119,25 +111,25 @@
     ]
    }
   },
-  "12": {
+  "11": {
    "class_type": "SaveImage",
    "inputs": {
     "images": [
-     "11",
+     "10",
      0
     ],
-    "filename_prefix": "qimg"
+    "filename_prefix": "kimg"
    }
   },
-  "13": {
+  "12": {
    "class_type": "LoraLoaderModelOnly",
    "inputs": {
     "model": [
-     "9",
+     "8",
      0
     ],
-    "lora_name": "GenatomyFixer_epoch-7.safetensors",
-    "strength_model": 0.3
+    "lora_name": "Phone_Photography_2025_KL_9B.safetensors",
+    "strength_model": 1.0
    }
   }
  }

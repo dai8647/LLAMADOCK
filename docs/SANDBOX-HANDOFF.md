@@ -1,7 +1,7 @@
 # LlamaDock サンドボックス・ハンドオフ（2026-08-16・更新版）
 
 この文書は「GitHub 上の最新状態（`HANDOFF.md`）+ この作業サンドボックスで追加した未コミット作業」の
-両方を引き継ぐための補足資料です。**Windows 機の動画生成スタック（ComfyUI / MiniMax-H3 / Z-Image / 企画 LLM）は
+両方を引き継ぐための補足資料です。**Windows 機の動画生成スタック（ComfyUI / MiniMax-H3 / Klein 9B / 企画 LLM）は
 GitHub ルートの `HANDOFF.md` を参照**してください。ここでは **GitHub にまだ載っていない作業**を扱います。
 
 ---
@@ -49,7 +49,7 @@ GitHub ルートの `HANDOFF.md` を参照**してください。ここでは **
 | `arg-builder.js` | スキーマ駆動の llama-server 引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready 待ち・health ポーリング・ログリング） |
 | `results-store.js` | 計測結果を `config/run-results.json` にモデル別・設定指紋別で蓄積、実測成功 minRuns（既定 3）以上で「推奨（実測）」認定 |
-| `client-manager.js` | クライアント起動（Cline/OpenCode/WebUI/LlamaAgent/ComfyUI）。ComfyUI は standalone（llama-server 不要） |
+| `client-manager.js` | クライアント起動（Cline/OpenCode/Pi/LlamaAgent/ComfyUI）。ComfyUI は standalone（llama-server 不要） |
 | `mock-llama-server.mjs` | 非 Windows 用のシミュレーション llama-server（起動→計測→停止ループの検証用） |
 | `app.js` / `index.html` / `style.css` | フロントエンド（3 カラム・ダークテーマ・プリセット適用・計測ボタン・クライアント稼働ドット） |
 
@@ -60,7 +60,7 @@ GitHub ルートの `HANDOFF.md` を参照**してください。ここでは **
 - `POST /api/launch` / `stop` / `benchmark` — 起動 / 停止 / 計測実行
 - `GET /api/results` — 計測結果（`config/run-results.json`）
 - `POST /api/connect` — クライアント起動（Windows 以外では `simulated: true` で契約を返す）
-- `GET /api/clients/health` — WebUI :8000 / ComfyUI :8188 をプローブ
+- `GET /api/clients/health` — ComfyUI :8188 をプローブ（Web 系クライアント用）
 
 ### サンドボックスで実測済み（検証済み事項）
 - MCP スモーク: 起動 → initialize → 4 ツール（`search_web` / `search_and_fetch` / `fetch_url` / `deep_research`）→ **実検索成功**

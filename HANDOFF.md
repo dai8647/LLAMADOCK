@@ -11,7 +11,7 @@
 
 - **ハーネス**: `llama-tq3`（LlamaDock 系 PS1 ランチャー群）
 - **動画生成**: ComfyUI 0.33 + MiniMax H3（DiT 動画モデル）
-- **キー画像生成**: Z-Image Turbo（NSFW 版 GGUF）
+- **キー画像生成**: FLUX.2 [klein] 9B（NSFW マージ GGUF・2026-09-04 Z-Image から置換）
 - **企画 LLM**: Qwen3.5-4B Uncensored（NSFW・視覚対応・CPU 推論）
 - フロー: ユーザーが日本語でアイデア → 企画 LLM が打ち返しながら企画を固める → キー画像生成 → 企画 LLM が**画像を見て**英語動画プロンプトを作る → 動画生成 → **自動シャットダウン**
 
@@ -57,12 +57,14 @@ cd C:\Users\dai86\Documents\ComfyUI
 | **参照 LoRA** | （ComfyUI）`models\loras\minimax_h3_ref_lora_rank_256_bf16.safetensors` | 約 1.9GB | **R2V 用**（Kijai/MiniMax-H3-experimental の loras/）。fl2va モデルに重ねるだけで参照条件付き生成（ref2va モデル不要）。h3-chat の 🔗 参照モードで使用 |
 | ClipProj | （ComfyUI）`models\clip_projections\mmh3-4b-ClipProj-celeb-mlp.safetensors` | 304MB | clipproj 系 WF で使用 |
 
-### キー画像（Z-Image Turbo NSFW）— ComfyUI `models\`
+### キー画像（FLUX.2 [klein] 9B NSFW）— ComfyUI `models\` （2026-09-04 置換）
 | 種類 | ファイル | サイズ | 備考 |
 |---|---|---|---|
-| DiT（GGUF） | `unet\z_image_nsfw_v2-Q8_0.gguf` | 7.2GB | `ComfyUI-GGUF` の UnetLoaderGGUF でロード |
-| テキストエンコーダ | `text_encoders\qwen_3_4b_fp8_mixed.safetensors` | 5.6GB | CLIPLoader type=`lumina2` |
-| VAE | `vae\ae.safetensors` | 335MB | |
+| DiT（GGUF） | `unet\pornmasterFlux2Klein_v4TurboBf16-Q8_0.gguf` | 9.5GB | `ComfyUI-GGUF` の UnetLoaderGGUF でロード。Z-Image Turbo の代替 |
+| テキストエンコーダ | `text_encoders\qwen_3_8b_fp8mixed.safetensors` | 約 4.5GB | CLIPLoader type=`flux2` |
+| VAE | `vae\flux2-vae.safetensors` | 約 320MB | |
+| NSFW LoRA | `loras\flux_klein_9b_nsfw_v2.safetensors` | 165MB | `diroverflo/FLux_Klein_9B_NSFW` v2（Klein 9B 用） |
+| VAE（兼用） | `vae\ae.safetensors` | 335MB | FLUX 系共通 AE |
 
 ### 企画 LLM — `C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\`
 | ファイル | サイズ | 備考 |
@@ -74,13 +76,13 @@ cd C:\Users\dai86\Documents\ComfyUI
 
 - 企画 LLM は **CPU 推論**（`-ngl 0`・`--reasoning off`）で VRAM を ComfyUI に全残し
 - llama-server は **openPangu フォーク**（Qwen3.5 = Gated DeltaNet 対応が必要、`llama.cpp-openPangu-2.0-*`）。vanilla 版では Qwen3.5 が動かない
-- **削除済み**: LFM2.5-2.6B-Heretic / Dirty-Muse-Writer（旧企画 LLM）、Z-Image int8 版、triton バックエンド
+- **削除済み**: LFM2.5-2.6B-Heretic / Dirty-Muse-Writer（旧企画 LLM）、Z-Image int8 版 / Q8 NSFW Turbo（2026-09-04・Klein 9B に置換）、triton バックエンド
 
 ---
 
 ## 4. ワークフロー JSON（`h3_workflow_*.json`、API 形式）
 
-- `h3_workflow_zimage.json`: キー画像生成（UnetLoaderGGUF + CLIPLoader lumina2 + VAE + ModelSamplingAuraFlow shift=3 + KSampler 8step/cfg1/res_multistep + ConditioningZeroOut）
+- `h3_workflow_klein.json`: キー画像生成（UnetLoaderGGUF + CLIPLoader type=flux2 + VAE flux2-vae + LoraLoaderModelOnly NSFW + ModelSamplingFlux + KSampler 4step/cfg1.0。2026-09-06: cfg4→1.0 修正。turbo 系は CFG1 正レシピ、cfg4 は飽和・焼き付きの原因）
 - 動画ワークフローは全て node `1`=UNETLoader。h3-chat の `/api/generate` が `dit` パラメータ（`default` / `10eros`）で `unet_name` を差し替える（`tools/h3-chat.py` の `DITS` 辞書）
 - `super_*`: 4B エンコーダ + ck（+triton）向け / `turbo_*`: 32B エンコーダ + Turbo LoRA / `clipproj_*`: 4B + ClipProj / `fast_*`: **spectrum + 20step（ターボLoRAなし・最高画質）** / `bench` / `src`
 - `_short` は短尺、`_audio` は音声付き（音声 VAE 使用）
@@ -184,7 +186,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 | `arg-builder.js` | スキーマ駆動の引数生成（解決順: 上書き → モデル別記憶 → `_profiles` → 既定） |
 | `launch-manager.js` | 起動/停止/計測の状態機械（spawn・ready待ち・healthポーリング） |
 | `results-store.js` | 実測 tok/s・VRAM を `config/run-results.json`（gitignore）に蓄積、成功 3 回以上で「推奨（実測）」認定 |
-| `client-manager.js` | Cline/OpenCode/WebUI/LlamaAgent/ComfyUI/DeepSeekHarness の起動契約（ComfyUI は standalone） |
+| `client-manager.js` | Cline/OpenCode/Pi/LlamaAgent/ComfyUI/DeepSeekHarness の起動契約（ComfyUI は standalone） |
 | `mock-llama-server.mjs` | 非 Windows 用シミュレーション llama-server（計測ループ検証用） |
 | `app.js` / `index.html` / `style.css` | 3カラム・ダークテーマ UI |
 
@@ -236,12 +238,12 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
    品質・`ref_image_size`（match/max）・LoRA strength の A/B を `docs/MiniMax-H3-Tuning.md` に追記
 2. **Windows 実機での web-ui 検証** — Phase 1 コア配線（`LLAMADOCK_ENGINE_BIN`・GGUF 実パス解決）、
    `/api/launch` で実 llama-server 起動、`/api/connect` の Windows 実起動（現状 `simulated`）
-3. **全体ベンチのやり直し** — Z-Image + Qwen3.5 導入後、super/ck プロファイルの実測（旧実測: ck 17m19s vs default 19m26s）
+3. **全体ベンチのやり直し** — Klein 9B + Qwen3.5 導入後、super/ck プロファイルの実測（旧実測: ck 17m19s vs default 19m26s）
 4. **fast プロファイルの検証** — `--fast fp16_accumulation` の画質劣化リスクを短尺・粗画質で確認（OK なら super より速い可能性）
 5. **32B vs 4B エンコーダの画質比較** — turbo（32B・NVFP4）と super（4B・fp8）を同じ複雑な日本語プロンプトで比較、意図反映度を確認
 6. **GitHub クラウド移行準備** — 絶対パスの抽象化（環境変数 or 設定ファイル化）、Windows 固有コマンドの分離、CI での test.ps1 / test-plan-vision.py 実行
 7. **企画モード UX 改善** — キー画像の複数案生成と比較選択、生成プロンプトのプレビュー編集
-8. **新モデル調査** — 「拒否無しでもっと軽い MiniMax」「より軽量な Z-Image / テキストエンコーダ」の Reddit/GitHub 調査（必要時のみ）
+8. **新モデル調査** — 「拒否無しでもっと軽い MiniMax」「より軽量な Klein 4B 派生 / テキストエンコーダ」の Reddit/GitHub 調査（必要時のみ）
 
 ---
 
@@ -257,7 +259,7 @@ npm start          # http://127.0.0.1:3000（node web-ui/server.js）
 
 品質比較テスト:
 - 10Eros NVFP4: 1940s (~32分) — int8 との比較用
-- Qwen-Image 2512: 1143s (~19分) — Z-Image との比較用
+- Qwen-Image 2512: 1143s (~19分) — Klein 9B との比較用
 
 FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 音声 RMS 分析（tmp-audio-analyze.py）で R2/R3 の喘ぎ声品質を評価済み。
