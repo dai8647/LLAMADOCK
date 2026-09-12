@@ -88,11 +88,9 @@ if ($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu) {
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
-# llama-server（ROCm/HIP ビルド）は amdhip64_7.dll 等の ROCm ランタイム DLL が
-# PATH に無いと STATUS_DLL_NOT_FOUND でサイレントに終了する。select-model.ps1
-# 経由の起動では PATH が継承されるが、このスクリプトを普通のシェルから単独
-# 実行すると企画 LLM が死ぬため、ここで必ず補強する（h3-chat.py 側の
-# _spawn_plan_llm も同じ補強を持つ）。
+# ROCm PATH 注入は GPU 切り替え（2026-09-11, RTX 3080 / CUDA）後は不要。
+# 残していても ROCm が無い限り何もしない。CUDA DLL は llama-server.exe 隣に
+# select-model.ps1 の Ensure-UnslothCudaRuntime が配置する。
 $rocmBin = if ($env:LLAMADOCK_ROCM_BIN) { $env:LLAMADOCK_ROCM_BIN } else {
     $amdRoot = "C:\Program Files\AMD\ROCm"
     if (Test-Path -LiteralPath $amdRoot) {
@@ -104,8 +102,7 @@ if ($rocmBin -and (Test-Path -LiteralPath $rocmBin) -and ($env:PATH -notlike "*$
     $env:PATH = "$rocmBin;$env:PATH"
 }
 
-# 単一エンジン (Unsloth llama.cpp HIP ビルド) を企画 LLM にも使う。
-# 従来の AtomicBot/TurboTan チェーンは 2026-08-30 に削除（h3-chat と同一エンジンに統一）。
+# 単一エンジン (Unsloth llama.cpp CUDA ビルド / RTX 3080) を企画 LLM にも使う。
 $planServer = "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 if (-not (Test-Path -LiteralPath $planServer) -and $env:LLAMADOCK_UNSLOTH_SERVER) {
     $planServer = [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
@@ -114,12 +111,71 @@ if (-not (Test-Path -LiteralPath $planServer) -and $env:LLAMADOCK_UNSLOTH_SERVER
 function Get-PlanEngineName {
     # 企画 LLM の llama-server 実体からエンジン名を判定（コーダー側のエンジン表記と揃える）。
     param([string]$ServerPath)
-    if ($ServerPath -like "*\.unsloth\*") { return "Unsloth (ROCm 7.1 HIP)" }
+    if ($ServerPath -like "*\.unsloth\*") { return "Unsloth (CUDA)" }
     return "Unknown"
 }
 $planEngine = Get-PlanEngineName $planServer
-# GPU 企画 LLM は h3-chat.py が起動する（PLAN_SERVER_BIN = Unsloth）。
-$planGpuEngine = "Unsloth (ROCm 7.1 HIP)"
+# GPU 企画 LLM も h3-chat.py が PLAN_SERVER_BIN（Unsloth CUDA ビルド）で起動する。
+$planGpuEngine = "Unsloth (CUDA)"
+
+function Get-LivePlanStatus {
+    # 稼働中 h3-chat (8189) の企画 LLM 設定（GPU/CPU + モデルパス）を取得する。
+    # リポジトリ世代で API が異なるため /api/plan-status → /api/plan-models の順に試す。
+    try {
+        $s = Invoke-RestMethod -Uri "http://127.0.0.1:8189/api/plan-status" -TimeoutSec 5 -ErrorAction Stop
+        if ($null -ne $s) { return @{ Gpu = [bool]$s.gpu; Model = [string]$s.model } }
+    }
+    catch { }
+    try {
+        $s = Invoke-RestMethod -Uri "http://127.0.0.1:8189/api/plan-models" -TimeoutSec 5 -ErrorAction Stop
+        if ($s -and $s.current) { return @{ Gpu = [bool]$s.current.gpu; Model = [string]$s.current.path } }
+    }
+    catch { }
+    return $null
+}
+
+function Test-TcpPort {
+    # ポートのリスナーへの TCP 接続可否を 2 秒で判定する。/api/queue 等の
+    # HTTP プローブは ComfyUI 停止中に 503 を返して偽陰性になるため、
+    # h3-chat の生存確認はこの TCP プローブで行う。
+    param([int]$Port)
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $async = $tcp.BeginConnect('127.0.0.1', $Port, $null, $null)
+        $ok = $async.AsyncWaitHandle.WaitOne(2000)
+        if ($ok) { $tcp.EndConnect($async) }
+        $tcp.Close()
+        return $ok
+    }
+    catch { return $false }
+}
+
+function Stop-LlamaDockPlanStack {
+    # h3-chat (8189) と企画 llama-server (8190/8191) だけをポートのリスナー PID で
+    # 的確に停止する（ComfyUI 8188 やコーダー 8080 は巻き込まない）。
+    param([switch]$IncludeChat)
+    $ports = @(8190, 8191)
+    if ($IncludeChat) { $ports = @(8189) + $ports }
+    foreach ($p in $ports) {
+        try {
+            $conns = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+            foreach ($ownerPid in @($conns | Select-Object -ExpandProperty OwningProcess -Unique)) {
+                if ($ownerPid -and $ownerPid -ne 0) { Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        catch { }
+    }
+    if ($IncludeChat) {
+        # 二重起動の片割れなどポートを握らない h3-chat.py も掃除する
+        try {
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -match 'h3-chat\.py' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+        catch { }
+    }
+    Start-Sleep -Milliseconds 800
+}
 
 if (-not (Test-Path -LiteralPath $chatPy)) {
     Write-Host "エラー: $chatPy が見つかりません" -ForegroundColor Red
@@ -129,7 +185,7 @@ if (-not (Test-Path -LiteralPath $chatPy)) {
 # Is ComfyUI up?
 $comfyUp = $false
 try {
-    $r = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
     if ($r.StatusCode -eq 200) { $comfyUp = $true }
 } catch { }
 
@@ -152,7 +208,7 @@ if (-not $comfyUp) {
         for ($i = 0; $i -lt 50; $i++) {
             Start-Sleep -Seconds 3
             try {
-                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8188/system_stats" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
                 if ($r.StatusCode -eq 200) { $comfyUp = $true; break }
             }
             catch { }
@@ -170,32 +226,49 @@ if (-not $comfyUp) {
 }
 
 # Already running?
-$already = $false
-try {
-    $r = Invoke-WebRequest -Uri "$url/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-    if ($r.StatusCode -eq 200) { $already = $true }
-} catch { }
-
-# Double-launch guard: chat UI (and, for the resident CPU planner, the
-# planning LLM) already running means there is nothing left to do here.
-# The GPU planner is started on demand by h3-chat.py, so it is not checked.
-# Use the model's .Gpu flag rather than enumerating names, so new GPU planners
-# (e.g. Qwen3.8-27B-GPU-Vision) are picked up automatically.
-$planIsGpuModel = [bool]($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu)
-if ($already -and -not $planIsGpuModel -and $PlanModel -ne "Off") {
-    try {
-        $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        if ($r.StatusCode -eq 200) {
-            Write-Host "h3-chat と企画 LLM は既に起動しています。新しく起動するものはありません。" -ForegroundColor Green
-            if (-not $NoBrowser) { Start-Process $url }
-            exit 0
-        }
-    } catch { }
+$already = Test-TcpPort 8189
+if (-not $already) {
+    # 8189 にリスナーが残っているのに TCP 接続できないのはスタックした旧
+    # h3-chat。そのまま新規起動するとポート競合するため、掃除してから続行する。
+    $stuckChat = Get-NetTCPConnection -LocalPort 8189 -State Listen -ErrorAction SilentlyContinue
+    if ($stuckChat) {
+        Write-Host "8189 の旧 h3-chat が応答していないため停止して再起動します..." -ForegroundColor Yellow
+        Stop-LlamaDockPlanStack -IncludeChat
+    }
 }
-elseif ($already -and $planIsGpuModel) {
-    Write-Host "h3-chat は既に起動しています。新しく起動するものはありません。" -ForegroundColor Green
-    if (-not $NoBrowser) { Start-Process $url }
-    exit 0
+
+# Double-launch guard + selection reconcile. h3-chat.py fixes the planning
+# LLM (GPU/CPU + model path) from its startup env, so an already-running chat
+# silently ignores a different -PlanModel. Compare the live stack's plan
+# status with the selection: match → reuse; differ → stop the old chat +
+# planners and fall through to a fresh start with the chosen model.
+$planIsGpuModel = [bool]($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu)
+if ($already) {
+    $selectionOk = $false
+    $live = Get-LivePlanStatus
+    if ($live) {
+        $selectionOk = ($live.Gpu -eq $planIsGpuModel)
+        if ($selectionOk -and $planModels[$PlanModel] -and $planModels[$PlanModel].Path) {
+            $liveLeaf = if ($live.Model) { Split-Path -Leaf ($live.Model -replace '/', '\') } else { "" }
+            $wantLeaf = Split-Path -Leaf $planModels[$PlanModel].Path
+            if (-not $liveLeaf -or -not ($liveLeaf -ieq $wantLeaf)) { $selectionOk = $false }
+        }
+    }
+    if ($selectionOk) {
+        Write-Host "h3-chat と企画 LLM は選択どおり起動しています。新しく起動するものはありません。" -ForegroundColor Green
+        if (-not $NoBrowser) { Start-Process $url }
+        exit 0
+    }
+    if ($PlanModel -eq "Off") {
+        # Off は明示的な「企画 LLM なし」選択。稼働中チャットのプラナーが
+        # 異なっていてもアクティブなセッションを殺さないためスタックは触らない。
+        Write-Host "h3-chat は既に起動しています。新しく起動するものはありません。" -ForegroundColor Green
+        if (-not $NoBrowser) { Start-Process $url }
+        exit 0
+    }
+    Write-Host "稼働中の h3-chat は別の企画 LLM を使っています。停止して選択モデルで再起動します…" -ForegroundColor Yellow
+    Stop-LlamaDockPlanStack -IncludeChat
+    $already = $false
 }
 
 # ---- planning LLM (optional) ---------------------------------------
@@ -223,6 +296,28 @@ if ($planGpu) {
         $env:LLAMADOCK_PLAN_MODEL = $model.Path
         if ($model.Mmproj) { $env:LLAMADOCK_PLAN_MMPROJ = $model.Mmproj } else { $env:LLAMADOCK_PLAN_MMPROJ = "" }
         $skipPlanStart = $true
+        # 旧セッションの企画 llama-server が別モデルで残っていないか掃除する
+        # （h3-chat 未起動でも llama-server だけが残っていることがある）。
+        foreach ($pp in @(8190, 8191)) {
+            $oldId = ""
+            try {
+                $oldm = Invoke-RestMethod -Uri "http://127.0.0.1:$pp/v1/models" -TimeoutSec 5 -ErrorAction Stop
+                if ($oldm -and $oldm.data) { $oldId = [string]$oldm.data[0].id }
+            }
+            catch { }
+            if ($oldId) {
+                $oldLeaf = Split-Path -Leaf ($oldId -replace '/', '\')
+                if (-not ($oldLeaf -ieq (Split-Path -Leaf $model.Path))) {
+                    try {
+                        $oldConns = Get-NetTCPConnection -LocalPort $pp -State Listen -ErrorAction SilentlyContinue
+                        foreach ($oldPid in @($oldConns | Select-Object -ExpandProperty OwningProcess -Unique)) {
+                            if ($oldPid -and $oldPid -ne 0) { Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue }
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
     }
 }
 if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
@@ -235,17 +330,36 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
         Write-Host "警告: llama-server が見つかりません ($planServer)。企画モードを無効化します。" -ForegroundColor Yellow
     } else {
         # Reuse an already-running planning LLM instead of stacking a second
-        # llama-server on the same port (double-instance guard).
+        # llama-server on the same port — but only when it serves the SAME
+        # model. A different model means the selection changed: stop the old
+        # server so the chosen model takes its place (double-instance guard
+        # + selection reconcile).
+        $reusePlan = $false
         try {
-            $planHealth = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-            if ($planHealth.StatusCode -eq 200) {
+            $planHealth = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+            if ($planHealth.StatusCode -eq 200) { $reusePlan = $true }
+        }
+        catch { }
+        if ($reusePlan) {
+            $liveId = ""
+            try {
+                $pm = Invoke-RestMethod -Uri "$planUrl/v1/models" -TimeoutSec 5 -ErrorAction Stop
+                if ($pm -and $pm.data) { $liveId = [string]$pm.data[0].id }
+            }
+            catch { }
+            $liveLeaf = if ($liveId) { Split-Path -Leaf ($liveId -replace '/', '\') } else { "" }
+            $wantLeaf = Split-Path -Leaf $model.Path
+            if ($liveLeaf -and ($liveLeaf -ieq $wantLeaf)) {
                 Write-Host "企画 LLM は $planUrl で既に起動中です。これを再利用します。" -ForegroundColor Green
                 $planArgs = @("--plan-url", $planUrl)
                 $planReady = $true
                 $skipPlanStart = $true
             }
+            else {
+                Write-Host "企画 LLM ($planUrl) は別モデル ($liveLeaf) を提供中です。$wantLeaf で再起動します。" -ForegroundColor Yellow
+                Stop-LlamaDockPlanStack   # 8190/8191 の旧プラナーを掃除
+            }
         }
-        catch { }
         # CPU-only (-ngl 0) so ComfyUI keeps all VRAM. This 4B model is not a
         # reasoning model: with thinking enabled it re-reads its own system
         # prompt until the token budget runs out, then restarts thinking inside
@@ -282,7 +396,7 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
         for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 2
             try {
-                $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                $r = Invoke-WebRequest -Uri "$planUrl/v1/models" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
                 if ($r.StatusCode -eq 200) { $planReady = $true; break }
             } catch { }
         }

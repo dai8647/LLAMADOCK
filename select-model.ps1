@@ -110,11 +110,9 @@ if (Test-Path -LiteralPath $utf8Helper) {
     . $utf8Helper
 }
 
-# Single engine since 2026-08-30: the Unsloth llama.cpp HIP build (b10687,
-# gfx110X = RX 7800 XT). It is the fastest measured backend on this box
-# (prefill 227-271 t/s vs 49-80 t/s on Vulkan) and supports every flag the
-# launcher passes (--cache-reuse, --prio, --reasoning, --spec-type draft-mtp,
-# ...). Override with LLAMADOCK_UNSLOTH_SERVER if the path ever moves.
+# Single engine since 2026-09-11: Unsloth llama.cpp CUDA build (b10840,
+# NVIDIA RTX 3080). Previously the HIP/gfx110X build for RX 7800 XT.
+# Override with LLAMADOCK_UNSLOTH_SERVER if the path ever moves.
 $UnslothServerPath = if ($env:LLAMADOCK_UNSLOTH_SERVER) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
 }
@@ -125,6 +123,46 @@ else {
     "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 }
 $ServerPath = $UnslothServerPath
+
+function Ensure-UnslothCudaRuntime {
+    # ggml-cuda.dll imports cublas64_13 / nvcudart_hybrid64. Unsloth's Release
+    # folder does not ship them; without them --list-devices is empty and every
+    # model silently runs on CPU. Drop the CUDA 13 DLLs from the bundled torch
+    # next to llama-server.exe when missing (nvcudart_hybrid64 is an alias of
+    # cudart64_13).
+    param([string]$ServerExe = $ServerPath)
+    if ([string]::IsNullOrWhiteSpace($ServerExe) -or -not (Test-Path -LiteralPath $ServerExe)) {
+        return
+    }
+    $rel = Split-Path -Parent $ServerExe
+    $cudaDll = Join-Path $rel "ggml-cuda.dll"
+    if (-not (Test-Path -LiteralPath $cudaDll)) {
+        return
+    }
+    if (Test-Path -LiteralPath (Join-Path $rel "cublas64_13.dll")) {
+        return
+    }
+    $torchLib = "C:\Users\dai86\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib"
+    if (-not (Test-Path -LiteralPath $torchLib)) {
+        return
+    }
+    $copies = @(
+        @{ Src = "cublas64_13.dll"; Dst = "cublas64_13.dll" },
+        @{ Src = "cublasLt64_13.dll"; Dst = "cublasLt64_13.dll" },
+        @{ Src = "cudart64_13.dll"; Dst = "cudart64_13.dll" },
+        @{ Src = "cudart64_13.dll"; Dst = "nvcudart_hybrid64.dll" },
+        @{ Src = "nvrtc64_130_0.dll"; Dst = "nvrtc64_130_0.dll" },
+        @{ Src = "nvrtc-builtins64_130.dll"; Dst = "nvrtc-builtins64_130.dll" }
+    )
+    foreach ($c in $copies) {
+        $src = Join-Path $torchLib $c.Src
+        $dst = Join-Path $rel $c.Dst
+        if ((Test-Path -LiteralPath $src) -and -not (Test-Path -LiteralPath $dst)) {
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            Write-Host ("Installed CUDA runtime DLL for llama-server: {0}" -f $c.Dst) -ForegroundColor DarkGray
+        }
+    }
+}
 $ModelsBase = if ($env:LLAMADOCK_MODELS_BASE) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_MODELS_BASE)
 }
@@ -1269,17 +1307,37 @@ function Get-ComfyUITritonVersion {
     return $null
 }
 
+function Test-ComfyUICuda {
+    # True when the ComfyUI venv torch is a CUDA build (NVIDIA).
+    try {
+        $comfyPython = Join-Path $ComfyRoot ".venv\Scripts\python.exe"
+        $out = & $comfyPython -c "import torch; print(int(torch.version.cuda is not None and torch.cuda.is_available()))" 2>$null
+        return ($out -match "^1")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-ComfyUISage {
+    # True when sageattention imports in the ComfyUI venv (CUDA path).
+    try {
+        $comfyPython = Join-Path $ComfyRoot ".venv\Scripts\python.exe"
+        $out = & $comfyPython -c "import importlib.util; print(int(importlib.util.find_spec('sageattention') is not None))" 2>$null
+        return ($out -match "^1")
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-TritonBackendFlags {
     # Returns @("--enable-triton-backend") only when the user opts in with
-    # $env:LLAMADOCK_COMFY_TRITON=1 AND triton >= 3.7 is installed. Default off:
-    # comfy-kitchen's ROCm INT8 Triton kernels still hard-crash ComfyUI on this
-    # GPU even with triton 3.7.1 ("couldn't allocate input reg for constraint
-    # 'r'" while loading the H3 text encoder; the standalone kernel test passes
-    # but the real nvfp4/int8 path does not). The HIP backend is the working
-    # path, so the `triton` and `super` profiles fall back to ck/default.
+    # $env:LLAMADOCK_COMFY_TRITON=1 AND triton >= 3.7 is installed.
+    # On ROCm this was crash-prone on the H3 INT8 path. On CUDA it is still
+    # opt-in until bench-tested, so the `triton`/`super` profiles do not force it.
     if ($env:LLAMADOCK_COMFY_TRITON -ne "1") {
-        Write-Host "WARNING: --enable-triton-backend omitted (triton 3.7.x still crashes ComfyUI on the H3 INT8 path on this GPU)." -ForegroundColor Yellow
-        Write-Host "         Set LLAMADOCK_COMFY_TRITON=1 to force it on and test a newer build." -ForegroundColor Yellow
+        Write-Host "NOTE: --enable-triton-backend omitted (opt-in via LLAMADOCK_COMFY_TRITON=1)." -ForegroundColor Yellow
         return @()
     }
     $tritonVersion = Get-ComfyUITritonVersion
@@ -1287,8 +1345,8 @@ function Get-TritonBackendFlags {
         return @("--enable-triton-backend")
     }
     if ($null -ne $tritonVersion) {
-        Write-Host ("WARNING: triton {0} is too old for comfy-kitchen's ROCm INT8 path (needs >= 3.7);" -f $tritonVersion) -ForegroundColor Yellow
-        Write-Host "         --enable-triton-backend omitted (older HIP builds crash ComfyUI)." -ForegroundColor Yellow
+        Write-Host ("WARNING: triton {0} is too old (needs >= 3.7);" -f $tritonVersion) -ForegroundColor Yellow
+        Write-Host "         --enable-triton-backend omitted." -ForegroundColor Yellow
     }
     else {
         Write-Host "WARNING: triton is not installed in the ComfyUI venv; --enable-triton-backend omitted." -ForegroundColor Yellow
@@ -1297,31 +1355,25 @@ function Get-TritonBackendFlags {
 }
 
 function Get-ComfyUILaunchArgs {
-    # Researched MiniMax H3 / ROCm tuning for the ComfyUI workspace. Sources and
+    # Researched MiniMax H3 tuning for the ComfyUI workspace. Sources and
     # the reasoning behind each profile live in docs/MiniMax-H3-Tuning.md.
+    # GPU stack is now NVIDIA RTX 3080 / torch cu130 (was AMD ROCm).
     #
     # Precedence: -ComfyUIFlags parameter > $env:LLAMADOCK_COMFY_FLAGS >
     #             interactive picker (custom flags) > profile
     #             (env LLAMADOCK_COMFY_PROFILE > interactive picker > default).
     #
     # Profiles:
-    #   default - reserve 1 GB VRAM for the OS/desktop and let DynamicVRAM fill
+    #   default - reserve VRAM for the OS/desktop and let DynamicVRAM fill
     #             the rest of the card. No --lowvram: it forces the text encoder
     #             onto the CPU and offloads the DiT unnecessarily.
-    #   fast    - default + --fast fp16_accumulation --force-non-blocking. The
-    #             flags are marked "untested / quality deteriorating" upstream;
-    #             benchmark against default before adopting.
-    #   triton  - default + --enable-triton-backend so comfy-kitchen can run its
-    #             INT8 Triton kernels (the H3 DiT is int8). Only useful after
-    #             installing triton into the ComfyUI venv; see comfyui-tune.ps1.
-    #             Off by default: 3.7.x still crashes the H3 text encoder on this
-    #             GPU, so the flag is only added with LLAMADOCK_COMFY_TRITON=1.
-    #   super   - ck + triton combined. On this machine triton falls back to the
-    #             HIP backend (opt-in with LLAMADOCK_COMFY_TRITON=1), so super ==
-    #             ck + the working kernels; pair with h3_workflow_super.json
-    #             (Turbo LoRA + ClipProj, 8 steps).
+    #   sage    - default + --use-sage-attention (CUDA + sageattention installed).
+    #             Community-default for MiniMax H3 on NVIDIA (~2x attention).
     #   ck      - default + --use-ck-attention (comfy-kitchen attention, needs
-    #             ComfyUI >= 0.33.0). Works on ROCm/hip; big win for H3 DiT.
+    #             ComfyUI >= 0.33.0). Fallback when sageattention is missing.
+    #   fast    - default + --fast fp16_accumulation --force-non-blocking.
+    #   triton  - default + optional --enable-triton-backend (LLAMADOCK_COMFY_TRITON=1).
+    #   super   - ck + optional triton; pair with h3_workflow_super.json.
     #   bench   - no extras; pair with LLAMADOCK_COMFY_FLAGS for A/B runs.
     param([int]$Port = 8188)
     $base = @("main.py", "--port", "$Port", "--listen", "127.0.0.1")
@@ -1337,6 +1389,15 @@ function Get-ComfyUILaunchArgs {
         "triton" { $extra = @("--reserve-vram", "6.0") + (Get-TritonBackendFlags) }
         "super" { $extra = @("--reserve-vram", "6.0", "--use-ck-attention") + (Get-TritonBackendFlags) }
         "ck" { $extra = @("--reserve-vram", "6.0", "--use-ck-attention") }
+        "sage" {
+            if (Test-ComfyUISage) {
+                $extra = @("--reserve-vram", "6.0", "--use-sage-attention")
+            }
+            else {
+                Write-Host "WARNING: sageattention not installed; falling back to --use-ck-attention." -ForegroundColor Yellow
+                $extra = @("--reserve-vram", "6.0", "--use-ck-attention")
+            }
+        }
         "bench" { $extra = @() }
         default { $extra = @("--reserve-vram", "6.0") }
     }
@@ -1370,36 +1431,50 @@ function Select-ComfyUITuning {
     if ([Console]::IsInputRedirected) {
         return
     }
+    $isCuda = Test-ComfyUICuda
+    $hasSage = Test-ComfyUISage
+    $fastProfile = if ($isCuda -and $hasSage) { "sage" } else { "ck" }
+    $fastLabel = if ($fastProfile -eq "sage") { "sageattention（CUDA・約2倍）" } else { "comfy-kitchen attention（約11%）" }
+
     Write-Host ""
     Write-Host "ComfyUI tuning (MiniMax H3): フローはどれも同じ。変わるのは「生成速度」と「企画LLM」" -ForegroundColor Green
     Write-Host " [1] plan    - 高速化 + 企画LLMを自分で選ぶ【推奨】(Enter)"
-    Write-Host " [2] ck      - 高速化 + 企画LLMは自動（CPU 4B・Qwen3.5）"
-    Write-Host " [3] default - 高速化なし（互換・19分26秒）+ 企画LLMは自動（CPU 4B）"
+    Write-Host (" [2] {0}      - 高速化 + 企画LLMは自動（CPU 4B・Qwen3.5）" -f $fastProfile)
+    Write-Host " [3] default - 高速化なし（互換）+ 企画LLMは自動（CPU 4B）"
     Write-Host " [4] custom  - 生のComfyUIフラグ + 企画LLMは自動（CPU 4B）"
-    Write-Host " ※高速化(ck)=comfy-kitchen attention。画質そのまま生成が約11%速い（ComfyUI 0.33+）" -ForegroundColor DarkGray
+    Write-Host (" ※高速化({0})={1}（ComfyUI 0.33+ / torch CUDA）" -f $fastProfile, $fastLabel) -ForegroundColor DarkGray
     Write-Host ""
     do {
         $tuningInput = Read-Host "Select ComfyUI tuning (1-4), or press Enter for plan"
         $tuningValid = $true
         if ([string]::IsNullOrWhiteSpace($tuningInput)) {
-            $script:ComfyProfileChoice = "ck"
+            $script:ComfyProfileChoice = $fastProfile
             $script:PlanModeChoice = $true
             $script:PlanModelChoice = Select-PlanModel
         }
         else {
             switch ($tuningInput) {
                 "1" {
-                    $script:ComfyProfileChoice = "ck"
+                    $script:ComfyProfileChoice = $fastProfile
                     $script:PlanModeChoice = $true
                     $script:PlanModelChoice = Select-PlanModel
                 }
-                "2" { $script:ComfyProfileChoice = "ck"; $script:PlanModeChoice = $false }
-                "3" { $script:ComfyProfileChoice = "default"; $script:PlanModeChoice = $false }
+                "2" {
+                    $script:ComfyProfileChoice = $fastProfile
+                    $script:PlanModeChoice = $true
+                    $script:PlanModelChoice = "Qwen3.5"
+                }
+                "3" {
+                    $script:ComfyProfileChoice = "default"
+                    $script:PlanModeChoice = $true
+                    $script:PlanModelChoice = "Qwen3.5"
+                }
                 "4" {
                     $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
                     $script:ComfyProfileChoice = "custom"
                     $script:ComfyFlagsChoice = $rawFlags
-                    $script:PlanModeChoice = $false
+                    $script:PlanModeChoice = $true
+                    $script:PlanModelChoice = "Qwen3.5"
                 }
                 default { $tuningValid = $false }
             }
@@ -1572,6 +1647,65 @@ function Test-H3ChatTabOpen {
     return ($null -ne $conns -and @($conns).Count -gt 0)
 }
 
+function Get-LivePlanStatus {
+    # 稼働中 h3-chat (8189) の企画 LLM 設定（GPU/CPU + モデルパス）を取得する。
+    # リポジトリ世代で API が異なるため /api/plan-status → /api/plan-models の順に試す。
+    try {
+        $s = Invoke-RestMethod -Uri "http://127.0.0.1:8189/api/plan-status" -TimeoutSec 5 -ErrorAction Stop
+        if ($null -ne $s) { return @{ Gpu = [bool]$s.gpu; Model = [string]$s.model } }
+    }
+    catch { }
+    try {
+        $s = Invoke-RestMethod -Uri "http://127.0.0.1:8189/api/plan-models" -TimeoutSec 5 -ErrorAction Stop
+        if ($s -and $s.current) { return @{ Gpu = [bool]$s.current.gpu; Model = [string]$s.current.path } }
+    }
+    catch { }
+    return $null
+}
+
+function Test-TcpPort {
+    # ポートのリスナーへの TCP 接続可否を 2 秒で判定する。/api/queue 等の
+    # HTTP プローブは ComfyUI 停止中に 503 を返して偽陰性になるため、
+    # h3-chat の生存確認はこの TCP プローブで行う。
+    param([int]$Port)
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $async = $tcp.BeginConnect('127.0.0.1', $Port, $null, $null)
+        $ok = $async.AsyncWaitHandle.WaitOne(2000)
+        if ($ok) { $tcp.EndConnect($async) }
+        $tcp.Close()
+        return $ok
+    }
+    catch { return $false }
+}
+
+function Stop-LlamaDockPlanStack {
+    # h3-chat (8189) と企画 llama-server (8190/8191) だけをポートのリスナー PID で
+    # 的確に停止する（ComfyUI 8188 やコーダー 8080 は巻き込まない）。
+    param([switch]$IncludeChat)
+    $ports = @(8190, 8191)
+    if ($IncludeChat) { $ports = @(8189) + $ports }
+    foreach ($p in $ports) {
+        try {
+            $conns = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+            foreach ($ownerPid in @($conns | Select-Object -ExpandProperty OwningProcess -Unique)) {
+                if ($ownerPid -and $ownerPid -ne 0) { Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        catch { }
+    }
+    if ($IncludeChat) {
+        # 二重起動の片割れなどポートを握らない h3-chat.py も掃除する
+        try {
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -match 'h3-chat\.py' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+        catch { }
+    }
+    Start-Sleep -Milliseconds 800
+}
+
 function Start-H3Chat {
     # Starts the text-to-video chat UI (tools\h3-chat.py, port 8189) if it is
     # not already running, then opens it in the default browser. This is what
@@ -1586,34 +1720,61 @@ function Start-H3Chat {
     if ($script:PlanModeChoice) {
         $h3chatPs1 = Join-Path $PSScriptRoot "tools\h3-chat.ps1"
         if (Test-Path -LiteralPath $h3chatPs1) {
-            # Double-launch guard: if the chat UI (and, for the resident CPU
-            # planner, the planning LLM) is already up there is nothing to
-            # start, just open the browser. The GPU planner is started on
-            # demand by h3-chat.py, so only the chat UI is checked for it.
-            $chatUpNow = $false
-            $planUpNow = $false
-            try {
-                $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-                if ($h.StatusCode -eq 200) { $chatUpNow = $true }
-            }
-            catch { }
-            if ($script:PlanModelChoice -eq "Qwen3.8-27B-GPU" -or
-                $script:PlanModelChoice -eq "Qwen3.8-27B-GPU-Vision" -or
-                $script:PlanModelChoice -eq "Qwen3.5-A35B-GPU-Vision" -or
-                ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom -and $script:PlanModelCustom.Gpu)) {
-                $planUpNow = $true
-            }
-            else {
-                try {
-                    $h = Invoke-WebRequest -Uri "http://127.0.0.1:8190/v1/models" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-                    if ($h.StatusCode -eq 200) { $planUpNow = $true }
+            # Double-launch guard + selection reconcile. h3-chat.py fixes the
+            # planning LLM (GPU/CPU + model path) from its startup env, so an
+            # already-running chat silently ignores a different -PlanModel.
+            # Compare the live stack's plan status with the selection: match
+            # → reuse; differ → stop the old chat + planners and fall through
+            # to a fresh start with the chosen model.
+            $chatUpNow = Test-TcpPort 8189
+            if (-not $chatUpNow) {
+                # 8189 にリスナーが残っているのに TCP 接続できないのはスタック
+                # した旧 h3-chat。そのまま新規起動するとポート競合するため、
+                # 掃除してから続行する。
+                $stuckChat = Get-NetTCPConnection -LocalPort 8189 -State Listen -ErrorAction SilentlyContinue
+                if ($stuckChat) {
+                    Write-Host "8189 の旧 h3-chat が応答していないため停止して再起動します..." -ForegroundColor Yellow
+                    Stop-LlamaDockPlanStack -IncludeChat
                 }
-                catch { }
             }
-            if (-not ($chatUpNow -and $planUpNow)) {
-                # 企画 LLM のエンジン: 単一エンジン（Unsloth HIP ビルド）を h3-chat.py/
-                # h3-chat.ps1 が PLAN_SERVER_BIN で起動する。
-                $planEngineHint = "Unsloth (ROCm 7.1 HIP)"
+            if ($chatUpNow) {
+                # 選択モデルの Gpu フラグ/パス（Custom は $script:PlanModelCustom）。
+                $desiredGpu = $false
+                $desiredPath = ""
+                if ($script:PlanModelChoice -eq "Custom" -and $script:PlanModelCustom) {
+                    $desiredGpu = [bool]$script:PlanModelCustom.Gpu
+                    $desiredPath = [string]$script:PlanModelCustom.Path
+                }
+                else {
+                    $wantEntry = Get-PlanModelMenu | Where-Object { $_.Key -eq $script:PlanModelChoice } | Select-Object -First 1
+                    if ($wantEntry) {
+                        $desiredGpu = [bool]$wantEntry.Gpu
+                        $desiredPath = [string]$wantEntry.Path
+                    }
+                }
+                $selectionOk = $false
+                $live = Get-LivePlanStatus
+                if ($live) {
+                    $selectionOk = ($live.Gpu -eq $desiredGpu)
+                    if ($selectionOk -and $desiredPath) {
+                        $liveLeaf = if ($live.Model) { Split-Path -Leaf ($live.Model -replace '/', '\') } else { "" }
+                        $wantLeaf = Split-Path -Leaf $desiredPath
+                        if (-not $liveLeaf -or -not ($liveLeaf -ieq $wantLeaf)) { $selectionOk = $false }
+                    }
+                }
+                if ($selectionOk) {
+                    Write-Host "h3-chat is already running with the selected planning LLM; opening the UI." -ForegroundColor Green
+                }
+                else {
+                    Write-Host "Running h3-chat uses a different planning LLM; restarting it with the selection..." -ForegroundColor Yellow
+                    Stop-LlamaDockPlanStack -IncludeChat
+                    $chatUpNow = $false
+                }
+            }
+            if (-not $chatUpNow) {
+                # 企画 LLM のエンジン: CPU / GPU とも Unsloth 同梱の llama-server
+                # (CUDA / RTX 3080) で起動する。
+                $planEngineHint = "Unsloth (CUDA)"
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
@@ -1625,16 +1786,13 @@ function Start-H3Chat {
                 }
                 Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File $h3chatPs1 -PlanModel $script:PlanModelChoice -NoBrowser" -WindowStyle Hidden
             }
-            else {
-                Write-Host "h3-chat and planning LLM are already running; opening the UI." -ForegroundColor Green
-            }
             # Wait for the chat UI (and, behind it, the planning LLM) to come
             # up before opening the browser, so the user lands on a live page.
             $chatReady = $false
             for ($i = 0; $i -lt 45; $i++) {
                 Start-Sleep -Seconds 2
                 try {
-                    $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                    $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
                     if ($h.StatusCode -eq 200) { $chatReady = $true; break }
                 }
                 catch { }
@@ -1658,7 +1816,7 @@ function Start-H3Chat {
     }
     $chatUp = $false
     try {
-        $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        $h = Invoke-WebRequest -Uri "$chatUrl/api/queue" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         if ($h.StatusCode -eq 200) { $chatUp = $true }
     }
     catch { }
@@ -1700,7 +1858,7 @@ function Open-ComfyUIClient {
         return $null
     }
     try {
-        $existingComfyHealth = Invoke-WebRequest -Uri "$comfyUrl/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        $existingComfyHealth = Invoke-WebRequest -Uri "$comfyUrl/system_stats" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         if ($existingComfyHealth.StatusCode -eq 200) {
             Write-Host "ComfyUI is already running on $comfyUrl; reusing the existing instance." -ForegroundColor Green
             Start-H3Chat -SkipOpenBrowser:$SkipOpenBrowser
@@ -1719,7 +1877,7 @@ function Open-ComfyUIClient {
         Start-Sleep -Seconds 1
         if ($process.HasExited) { break }
         try {
-            $health = Invoke-WebRequest -Uri "$comfyUrl/system_stats" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            $health = Invoke-WebRequest -Uri "$comfyUrl/system_stats" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
             if ($health.StatusCode -eq 200) {
                 $ready = $true
                 break
@@ -3540,7 +3698,8 @@ function Test-GpuOffloadProbe {
     return $null
 }
 
-Wait-VramRelease -TimeoutSec 20
+Wait-VramRelease -TimeoutSec 50
+Ensure-UnslothCudaRuntime -ServerExe $ServerPath
 
 Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
 if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """h3-chat.py - MiniMax H3 text-to-video chat UI.
 
 Runs a tiny local HTTP server (127.0.0.1:8189) that serves a chat-style page.
@@ -49,6 +49,78 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+
+# meta-camp 由来の NSFW 用語集（config/nsfw-prompt-kb.json）。
+# ユーザーの日本語から keys を引き、Flux 向け英語 phrase を企画プロンプトに注入する。
+_NSFW_KB_PATH = os.path.join(REPO, "config", "nsfw-prompt-kb.json")
+
+
+def _load_nsfw_kb():
+    try:
+        with open(_NSFW_KB_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        entries = data.get("entries") or []
+        # longest key first so 巨乳 wins over 乳 when both present
+        flat = []
+        for e in entries:
+            for k in (e.get("keys") or []):
+                if k:
+                    flat.append((k, e.get("ja", ""), e.get("phrase", ""), e.get("cat", "")))
+        flat.sort(key=lambda t: -len(t[0]))
+        return flat
+    except Exception as ex:
+        print(f"h3-chat: failed to load nsfw-prompt-kb: {ex}")
+        return []
+
+
+NSFW_KB = _load_nsfw_kb()
+
+
+def _match_nsfw_kb(text, limit=12):
+    """ユーザー文から用語集ヒットを拾い (ja, phrase) のリストを返す。"""
+    if not text or not NSFW_KB:
+        return []
+    low = text  # keys are Japanese; no case fold needed
+    hits = []
+    seen_phrase = set()
+    used_spans = []
+    for key, ja, phrase, _cat in NSFW_KB:
+        if len(hits) >= limit:
+            break
+        if not phrase or phrase in seen_phrase:
+            continue
+        start = 0
+        while True:
+            i = low.find(key, start)
+            if i < 0:
+                break
+            j = i + len(key)
+            # overlap with an already-matched span → skip
+            if any(not (j <= a or i >= b) for a, b in used_spans):
+                start = i + 1
+                continue
+            used_spans.append((i, j))
+            seen_phrase.add(phrase)
+            hits.append((ja, phrase))
+            break
+    return hits
+
+
+def _nsfw_kb_system_note(user_text):
+    """企画 system に足す用語集ヒント（該当がなければ空文字）。"""
+    hits = _match_nsfw_kb(user_text)
+    if not hits:
+        return ""
+    lines = [
+        "【NSFW用語集ヒント・重要】このユーザー文に対応する英語表現を [IMG_PROMPT] に必ず織り込むこと。",
+        "語彙は以下を優先し、同等の別表現に置き換えない:",
+    ]
+    for ja, phrase in hits:
+        lines.append(f"- {ja} → {phrase}")
+    lines.append(
+        "組み合わせは自然な1つの英語タグ列にし、スマホ写真の語順（被写体→体型→ポーズ→行為→カメラ→背景→照明→質感）を守る。"
+    )
+    return "\n".join(lines)
 
 WORKFLOWS = {
     # 32B Heretic encoder: best Japanese / detailed-prompt fidelity
@@ -119,28 +191,28 @@ IMG_ENGINES = {
         "workflow": KIMG_WORKFLOW,
         "prompt": NODE_KIMG_PROMPT, "latent": NODE_KIMG_LATENT, "seed": NODE_KIMG_SEED,
         "default_size": (1024, 1024),
-        "label": "Klein 9B (高品質・爆速)",
+        "label": "Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け・素人風に強い）",
         "batch_size": 1,
     },
     "krea2": {
         "workflow": KREA2_WORKFLOW,
         "prompt": NODE_KREA2_PROMPT, "latent": NODE_KREA2_LATENT, "seed": NODE_KREA2_SEED,
         "default_size": (1024, 1024),
-        "label": "Krea 2 Turbo (超爆速・12.9B INT4)",
+        "label": "Krea 2 Turbo（Krea 2 専用 LoRA 対応・NSFW MASTER 等が使える）",
         "batch_size": 1,
     },
     "qimg": {
         "workflow": QIMG_WORKFLOW,
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
-        "label": "Qwen-Image 2512",
+        "label": "Qwen-Image 2512（文字・看板の描画特化・高画質・約7分）",
         "batch_size": 1,
     },
     "sdcpp": {
         "backend": "sdcpp",
         "script": os.path.join(REPO, "tools", "sd.cpp", "test_run_4b.ps1"),
         "default_size": (1024, 1024),
-        "label": "sd.cpp Klein 4B (超爆速・36秒・Q4_0 GGUF)",
+        "label": "sd.cpp Klein 4B（ComfyUI 不要・単体で動く最速の試行錯誤用）",
         "batch_size": 1,
     },
 }
@@ -429,11 +501,10 @@ def _resolve_plan_model(for_gpu):
     return _auto_plan_model(for_gpu)
 
 
-# Planner engine: single engine since 2026-08-30 — the Unsloth llama.cpp HIP
-# build (b10687, gfx110X = RX 7800 XT). It is the fastest measured backend on
-# this box (prefill 227-271 t/s vs 49-80 t/s on Vulkan) and replaces the
-# retired AtomicBot/TurboTan/DFlash2 chain. Path may churn if Unsloth Desktop
-# updates — _spawn_plan_llm re-resolves when the remembered path dies.
+# Planner engine: single engine — Unsloth llama.cpp CUDA build (RTX 3080).
+# Previously the HIP/gfx110X build for RX 7800 XT. CUDA runtime DLLs sit next
+# to llama-server.exe (Ensure-UnslothCudaRuntime in select-model.ps1). Path may
+# churn if Unsloth Desktop updates — _spawn_plan_llm re-resolves when missing.
 _GPU_BIN_CANDIDATES = (
     r"C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe",
 )
@@ -465,9 +536,10 @@ PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
 
 def _plan_engine_label():
     if ".unsloth" in PLAN_SERVER_BIN:
-        return "Unsloth (ROCm 7.1 HIP)"
+        return "Unsloth (CUDA)"
     return "Unknown"
-# The HIP build needs the ROCm runtime (amdhip64_7.dll) on PATH.
+# ROCm PATH injection is a no-op after the 2026-09-11 CUDA switch (dir gone).
+# CUDA DLLs are next to llama-server.exe (cwd in Popen).
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
 # mode. The old rule (vision = not GPU) broke the 27B vision model, which runs
@@ -479,8 +551,8 @@ PLAN_SETTINGS = {
     "ctk": "q8_0",       # KV cache key quantization (q8_0, q4_0, f16, none)
     "ctv": "q4_0",       # KV cache value quantization (q8_0, q4_0, f16, none)
     "fa": True,           # Flash Attention
-    "reasoning_effort": "medium",  # off, low, medium, xhigh
-    "reasoning_budget": 1536,       # max thinking tokens
+    "reasoning_effort": "low",     # off, low, medium, xhigh (low = short thinking)
+    "reasoning_budget": 768,        # max thinking tokens
 }
 PLAN_ENGINE = _plan_engine_label()
 PLAN_PROC = None
@@ -491,6 +563,17 @@ def _plan_alive():
     """True when a planning LLM answers on the default port."""
     try:
         with urllib.request.urlopen(PLAN_URL_DEFAULT + "/v1/models", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _url_alive(base):
+    """True when an OpenAI-compatible endpoint answers /v1/models."""
+    if not base:
+        return False
+    try:
+        with urllib.request.urlopen(base.rstrip("/") + "/v1/models", timeout=2) as r:
             return r.status == 200
     except Exception:
         return False
@@ -595,18 +678,31 @@ def _spawn_plan_llm():
         "--prio", "2",
     ]
     if PLAN_GPU:
-        # GPU planner: full offload, jinja template, medium reasoning effort.
-        # hama-jp's research (github.com/hama-jp/qwen38-reasoning-effort)
-        # shows --reasoning off pushes thinking INTO the answer text (3x output
-        # tokens, 3x slower). medium effort keeps thinking separate and short
-        # (~312 tokens median vs 29k at xhigh default). Budget 1536 tokens as a
-        # safety net against runaway thinking (Qwen3.8-27B defaults to xhigh).
+        # GPU planner: full offload, jinja template, short reasoning.
+        # hama-jp's research (github.com/hama-jp/qwen38-reasoning-effort):
+        # --reasoning off pushes thinking INTO the answer text (3x tokens).
+        # low effort keeps thinking separate and brief; budget 768 is a
+        # safety net against runaway thinking (Qwen3.8-27B defaults xhigh).
         args += [
             "-ngl", "all", "--jinja",
             "-ub", "1024",
             "--chat-template-kwargs", json.dumps({"reasoning_effort": PLAN_SETTINGS["reasoning_effort"]}),
             "--reasoning-budget", str(PLAN_SETTINGS["reasoning_budget"]),
         ]
+        # MTP self-draft (built into *_MTP.gguf). Unsloth CUDA build supports
+        # --spec-type draft-mtp. Without it the 27B runs ~11-13 t/s; with it
+        # ~18-26 t/s (HANDOFF / HauhauCS bench). Mirrors select-model.ps1.
+        # Do NOT pass -md (draft context is derived from model_tgt).
+        if re.search(r"(?i)mtp", os.path.basename(PLAN_MODEL_PATH or "")):
+            args += [
+                "--spec-type", "draft-mtp",
+                "--spec-draft-n-max", "2",
+                "--spec-draft-n-min", "1",
+            ]
+            if PLAN_SETTINGS["ctk"] and PLAN_SETTINGS["ctk"] != "none":
+                args += ["-ctkd", PLAN_SETTINGS["ctk"]]
+            if PLAN_SETTINGS["ctv"] and PLAN_SETTINGS["ctv"] != "none":
+                args += ["-ctvd", PLAN_SETTINGS["ctv"]]
         # KV cache compression + Flash Attention (configurable via UI).
         # V quantization requires Flash Attention (see docs/LlamaDock-Runbook.md).
         if PLAN_SETTINGS["fa"]:
@@ -1694,10 +1790,10 @@ HTML = """<!doctype html>
       </div>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
-        <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（高品質・爆速）</label>
-        <label><input type="radio" name="imgengine" value="krea2"> Krea 2 Turbo（超爆速・12.9B INT4）</label>
-        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2512（高画質）</label>
-        <label><input type="radio" name="imgengine" value="sdcpp"> sd.cpp Klein 4B（超爆速・36秒・Q4_0 GGUF）</label>
+        <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け）</label>
+        <label><input type="radio" name="imgengine" value="krea2"> Krea 2 Turbo（Krea 2 専用 LoRA 対応）</label>
+        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2512（文字・看板描画特化）</label>
+        <label><input type="radio" name="imgengine" value="sdcpp"> sd.cpp Klein 4B（ComfyUI 不要・最速試行錯誤）</label>
       </div>
       <div class="advgroup" id="planmodelset">
         <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
@@ -1709,8 +1805,8 @@ HTML = """<!doctype html>
         <label>KV キー:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
         <label>KV 値:<select id="p-ctv" onchange="sendPlanSettings()"><option value="q4_0" selected>q4_0</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
         <label><input type="checkbox" id="p-fa" checked onchange="sendPlanSettings()"> フラッシュアテンション</label>
-        <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="medium" selected>medium</option><option value="low">low</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
-        <label>予算:<input type="number" id="p-budget" value="1536" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
+        <label>推論:<select id="p-reasoning" onchange="sendPlanSettings()"><option value="low" selected>low</option><option value="medium">medium</option><option value="off">off</option><option value="xhigh">xhigh</option></select></label>
+        <label>予算:<input type="number" id="p-budget" value="768" min="0" max="32768" step="256" style="width:70px" onchange="sendPlanSettings()"></label>
       </div>
     </details>
     <details id="audioset">
@@ -1834,7 +1930,7 @@ function sendPlanSettings() {
     body: JSON.stringify({
       ctk: ctk.value, ctv: ctv.value,
       fa: fa.checked, reasoning_effort: re.value,
-      reasoning_budget: parseInt(rb.value, 10) || 1536
+      reasoning_budget: parseInt(rb.value, 10) || 768
     })
   }).catch(() => {});
 }
@@ -1860,7 +1956,7 @@ async function loadPlanModels() {
     });
     const st = $("#p-model-status");
     if (st) {
-      if (j.external) st.textContent = "外部エンドポイント（--plan-url）が設定されています。";
+      if (j.external) st.textContent = "外部エンドポイント使用中。モデルを選ぶと外部を停止して新しいモデルで起動します。";
       else if (!j.current || !j.current.path) st.textContent = "⚠ 企画 LLM のモデルが見つかりません（LM Studio に GGUF を追加してください）";
       else st.textContent = j.running ? "稼働中。切り替えると次回メッセージから反映。" : "停止中。次のメッセージで自動起動。";
     }
@@ -2204,7 +2300,8 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const label = eng === "qimg" ? "Qwen-Image 2512（約7分）" : "Klein 9B（約1分）";
+  const engLabels = {kimg: "Klein 9B", krea2: "Krea 2 Turbo", qimg: "Qwen-Image 2512", sdcpp: "sd.cpp Klein 4B"};
+  const label = engLabels[eng] || "画像";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
   try {
@@ -3179,8 +3276,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             "note": "切り替えました。次のメッセージから新しいモデルで起動します。",
         }
         if self.server.plan_url:
-            resp["note"] = ("--plan-url の外部エンドポイントが優先されるため、"
-                            "この切替は h3-chat が企画 LLM を自前起動するときのみ有効です。")
+            # 選択を優先: 外部エンドポイントを解除して自前起動に切り替える。
+            # 外部プランナー（--plan-url が指す llama-server）を停止してから
+            # 次メッセージで選択モデルを PLAN_PORT に起動する。
+            try:
+                ext_port = int(urllib.parse.urlparse(self.server.plan_url).port or PLAN_PORT)
+            except Exception:
+                ext_port = PLAN_PORT
+            self.server.plan_url = None
+            ChatHandler._kill_port(ext_port)
+            resp["note"] = ("外部エンドポイントを停止し、選択したモデルで自前起動に切り替えました。"
+                            "次のメッセージから新しいモデルで起動します。")
         self._json(200, resp)
 
     def _generate(self, parsed):
@@ -3673,12 +3779,12 @@ class ChatHandler(BaseHTTPRequestHandler):
     def _plan_endpoint(self, probe=True):
         """Return the planning-LLM base URL to use.
 
-        Prefers the configured --plan-url; otherwise auto-detects the standard
-        llama-server on PLAN_PORT, auto-starting it when missing, so plan mode
-        works no matter how h3-chat.py was started. Returns None when no
-        planning LLM is reachable.
+        Prefers the configured --plan-url when it is actually alive; if that
+        endpoint is dead, fall through to the auto path (PLAN_PORT / GPU 8191)
+        so a leftover --plan-url 8190 does not pin the UI to a corpse while the
+        GPU planner is running on 8191.
         """
-        if self.server.plan_url:
+        if self.server.plan_url and _url_alive(self.server.plan_url):
             return self.server.plan_url
         if probe:
             # The gpu27b planner needs ~14GB: make sure ComfyUI is not holding
@@ -3793,7 +3899,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             # keep the context bounded; system prompt always first. 6 turns is
             # enough for the 2-stage flow and halves prompt-processing time
             # (~36 t/s on CPU: every extra turn costs real seconds of latency).
-            history = [{"role": "system", "content": PLAN_SYSTEM}] + PLAN_HISTORY[-6:]
+            kb_note = _nsfw_kb_system_note(user_text)
+            system_content = PLAN_SYSTEM if not kb_note else PLAN_SYSTEM + "\n\n" + kb_note
+            history = [{"role": "system", "content": system_content}] + PLAN_HISTORY[-6:]
             # An image costs ~1024+ tokens every time it appears. The planner
             # only needs to see it once, so keep the image part in the newest
             # user turn only and downgrade older copies to a text placeholder
@@ -4314,11 +4422,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             req = self._read_json_body()
         except Exception:
             req = {}
-        scope = req.get("scope") or "comfy"   # "comfy" | "all" | "cancel"
+        scope = req.get("scope") or "comfy"   # "comfy" | "all" | "cancel" | "free"
         if scope == "cancel":
             # browser-side countdown was cancelled: keep the stack alive
             self.server.autostop.poke()
             self._json(200, {"ok": True, "stopped": []})
+            return
+        if scope == "free":
+            # モデルのみアンロード（VRAM 解放）。プロセスは止めず連続生成可能。
+            self._free_comfy()
+            self.server.autostop.poke()
+            self._json(200, {"ok": True, "stopped": ["VRAM"]})
             return
         self._free_comfy()
         stopped = ["ComfyUI"]
