@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     MiniMax H3 acceleration status and apply helper for the ComfyUI workspace.
 
@@ -14,23 +14,22 @@
     Notes on what is NOT auto-installed and why (details in
     docs/MiniMax-H3-Tuning.md):
 
-      - SageAttention (--use-sage-attention, KJNodes "Patch Sage Attention" and
-        "MiniMax H3 Memory Efficient Sage Attention Patch") is CUDA-only. The
-        mem-eff H3 patch requires the latest SageAttention 2.x, which cannot run
-        on this ROCm stack.
-      - Sol-Attn (kijai/ComfyUI-SolAttn_triton) targets NVIDIA SM89+ kernels.
-      - The built-in EasyCache node (advanced/debug/model) is generic PyTorch
-        and IS used: it is inserted into the non-Spectrum workflows
-        (h3_workflow_*.json, reuse 0.10 / start 0.15 / end 0.90 per pepikir's
-        research). It is mutually exclusive with Spectrum, and end_percent
-        must stay at 0.90 to avoid skipping the final steps.
+      - SageAttention (--use-sage-attention) is CUDA-only. This machine is now
+        NVIDIA RTX 3080 / torch cu130, so sageattention + triton-windows can be
+        installed and the default LlamaDock profile is `sage` when present.
+        SageAttention 2.x from upstream is preferred when a matching Windows
+        wheel is available; PyPI currently ships 1.0.6.
+      - Sol-Attn (kijai/ComfyUI-SolAttn_triton) targets NVIDIA SM89+ kernels
+        (RTX 4090 class). RTX 3080 is SM86, so leave it off unless bench-tested.
+      - The built-in EasyCache node is generic PyTorch and IS used: it is
+        inserted into the non-Spectrum workflows (h3_workflow_*.json, reuse
+        0.10 / start 0.15 / end 0.90). It is mutually exclusive with Spectrum,
+        and end_percent must stay at 0.90 to avoid skipping the final steps.
       - The patch-based ComfyUI-MiniMaxH3-Cache (lihaoyun6) is NOT used:
         it patches ComfyUI core files and reports quality degradation.
       - comfy-kitchen INT8 Triton kernels (--enable-triton-backend) require
-        triton in the ComfyUI venv. On ROCm Windows the only option is the
-        triton-windows fork, and testing on 2026-08-14 showed it crashes
-        ComfyUI during text-encoder processing (HIP codegen error), so this
-        tool reports availability but does not enable or install it.
+        triton. triton-windows is installed on this CUDA stack; still opt-in
+        via LLAMADOCK_COMFY_TRITON=1 until bench-tested on H3.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\comfyui-tune.ps1
@@ -179,33 +178,29 @@ if ($clipProjInstalled) {
 }
 Write-Result ("  --use-ck-attention:        {0}  (comfy-kitchen attention; needs ComfyUI >= 0.33)" -f ($(if ($ckFlagSupported) { "supported" } else { "NOT in this ComfyUI build" })))
 if ($ckFlagSupported -and $info.ck_attn -eq $true) {
-    Write-Result "    int8 attention kernels:   available on this GPU (RDNA3 WMMA) -> LLAMADOCK_COMFY_PROFILE=ck"
+    $ckArchNote = if ($isNvidia) { "CUDA AMP/int8 path" } elseif ($isRocm) { "RDNA3 WMMA" } else { "local GPU" }
+    Write-Result ("    int8 attention kernels:   available on this GPU ({0}) -> LLAMADOCK_COMFY_PROFILE=ck" -f $ckArchNote)
 }
 if ($isNvidia) {
-    Write-Result "  GPU is NVIDIA/CUDA: install sageattention wheel + use --use-sage-attention or the KJNodes sage patch (~2x)."
+    Write-Result "  GPU is NVIDIA/CUDA: LLAMADOCK_COMFY_PROFILE=sage uses --use-sage-attention when sageattention is installed."
+    if ($info.sageattention) {
+        Write-Result "    sageattention installed -> default interactive profile prefers sage."
+    }
+    else {
+        Write-Result "    sageattention missing -> install a CUDA wheel, then LLAMADOCK_COMFY_PROFILE=sage."
+    }
 }
 elseif ($isRocm) {
-    Write-Result "  GPU is AMD/ROCm: SageAttention 2.x is CUDA-only; the practical AMD path is --use-ck-attention (>= 0.33) + Spectrum + launch flags."
-    if ($info.gcn -and ($info.gcn -match "gfx11" -or $info.gcn -match "gfx12")) {
-        if ($info.triton) {
-            Write-Result "  triton is installed but known-crashy on this stack: do NOT use LLAMADOCK_COMFY_PROFILE=triton"
-            Write-Result "  (see docs/MiniMax-H3-Tuning.md; the hip backend already covers INT8)."
-        }
-        else {
-            Write-Result "  triton is missing: comfy-kitchen INT8 kernels still run on the hip backend (already active)."
-            Write-Result "  triton-windows can be installed, but testing shows it crashes ComfyUI with"
-            Write-Result "  --enable-triton-backend; keep the default profile (see docs/MiniMax-H3-Tuning.md)."
-        }
-    }
+    Write-Result "  GPU is AMD/ROCm: SageAttention is CUDA-only; use --use-ck-attention (LLAMADOCK_COMFY_PROFILE=ck)."
 }
 
 Write-Section "Recommended launch flags (llamadock default already applies these)"
 Write-Result "  main.py --port 8188 --listen 127.0.0.1 --reserve-vram 6.0"
 if ($ckFlagSupported -and $info.ck_attn -eq $true) {
-    Write-Result "  Best on this stack: add --use-ck-attention (LLAMADOCK_COMFY_PROFILE=ck) -> Comfy Kitchen attention."
+    Write-Result "  On CUDA prefer LLAMADOCK_COMFY_PROFILE=sage; ck is the fallback (LLAMADOCK_COMFY_PROFILE=ck)."
 }
 Write-Result "  Overrides: -ComfyUIFlags on select-model.ps1, or env LLAMADOCK_COMFY_FLAGS (exact args),"
-Write-Result "  or LLAMADOCK_COMFY_PROFILE=fast|ck|triton|bench (see docs/MiniMax-H3-Tuning.md)."
+Write-Result "  or LLAMADOCK_COMFY_PROFILE=sage|ck|fast|triton|super|bench (see docs/MiniMax-H3-Tuning.md)."
 
 if ($spectrumInstalled) {
     Write-Result "  Spectrum is available: h3_workflow_fast.json in the LlamaDock repo uses it."

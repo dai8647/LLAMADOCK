@@ -1,8 +1,8 @@
 # MiniMax H3 高速化チューニング（調査メモ + 実装）
 
 対象: LlamaDock の ComfyUI ワークスペース (`Open-ComfyUIClient`) で MiniMax H3 の動画生成を速くする。
-この PC は **AMD RX 7800 XT (gfx1101) / ROCm Windows / torch 2.9.1+rocmsdk20260116 / ComfyUI 0.33.0（2026-08-14 更新）** なので、
-コミュニティの定番策（SageAttention 等）の大半は CUDA 前提で**そのままでは使えない**。適用可否を調査して整理した。
+この PC は **NVIDIA GeForce RTX 3080 (SM86) / torch 2.10.0+cu130 / triton-windows / sageattention（CUDA）**（旧: AMD RX 7800 XT / ROCm）。
+CUDA 切り替え後は SageAttention が利用可能。LLAMADOCK の既定プロファイルは `sage`（sageattention 未導入時は `ck` にフォールバック）。
 
 ---
 

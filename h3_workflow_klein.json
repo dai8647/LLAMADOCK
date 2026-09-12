@@ -7,9 +7,9 @@
    }
   },
   "2": {
-   "class_type": "CLIPLoader",
+   "class_type": "CLIPLoaderGGUF",
    "inputs": {
-    "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+    "clip_name": "flux2-klein-9b-uncensored-q4_k_m.gguf",
     "type": "flux2"
    }
   },
@@ -35,7 +35,7 @@
   "5": {
    "class_type": "CLIPTextEncode",
    "inputs": {
-    "text": "1girl, solo, nude, full body, detailed genitalia, vulva with visible labia majora and minora, natural skin texture, high quality, best quality",
+    "text": "masterpiece, best quality, ultra detailed, high quality, 1girl, solo, fully nude, completely bare skin, full body, detailed genitalia, vulva with visible labia majora and minora, natural pubic hair, detailed nipples, erect nipples, natural imperfect skin texture, soft lighting, smartphone photo, candid, slight grain",
     "clip": [
      "2",
      0
@@ -45,7 +45,7 @@
   "6": {
    "class_type": "CLIPTextEncode",
    "inputs": {
-    "text": "lowres, blurry, deformed genitalia, extra fingers, watermark, text, clothed, underwear, modest",
+    "text": "lowres, blurry, deformed, deformed genitalia, extra fingers, missing fingers, watermark, text, logo, clothed, underwear, bra, panties, clothes, modest, 3d render, cgi, plastic skin, studio lighting, perfect skin, airbrushed",
     "clip": [
      "2",
      0
@@ -128,7 +128,7 @@
      "8",
      0
     ],
-    "lora_name": "Phone_Photography_2025_KL_9B.safetensors",
+    "lora_name": "klein_base_snapshot_v13.safetensors",
     "strength_model": 1.0
    }
   }
