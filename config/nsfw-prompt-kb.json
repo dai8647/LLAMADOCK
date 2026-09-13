@@ -1,0 +1,2163 @@
+{
+  "version": 1,
+  "updated": "2026-09-11",
+  "source": "meta-camp.net prompt guides, translated to Flux-natural prose (no weight/dynamic syntax, no anime quality tags)",
+  "note": "phrase = English prose fragment for Flux Klein / H3 prompts. keys = Japanese match words. cat drives stage boosting. +13 entries (age/school/sex/fellatio/masturbation variants)",
+  "entries": [
+    {
+      "id": "bd01",
+      "cat": "body",
+      "ja": "巨乳",
+      "keys": [
+        "巨乳",
+        "大きい胸",
+        "爆乳",
+        "おっぱい大"
+      ],
+      "phrase": "large heavy breasts with natural weight and softness"
+    },
+    {
+      "id": "bd02",
+      "cat": "body",
+      "ja": "美乳・張り",
+      "keys": [
+        "美乳",
+        "張り",
+        "形がいい"
+      ],
+      "phrase": "well-shaped firm breasts with gentle lift"
+    },
+    {
+      "id": "bd03",
+      "cat": "body",
+      "ja": "貧乳",
+      "keys": [
+        "貧乳",
+        "小さい胸",
+        "ちっぱい"
+      ],
+      "phrase": "small modest breasts, slender chest"
+    },
+    {
+      "id": "bd04",
+      "cat": "body",
+      "ja": "谷間",
+      "keys": [
+        "谷間",
+        "たにま"
+      ],
+      "phrase": "deep shadowed cleavage between her breasts"
+    },
+    {
+      "id": "bd05",
+      "cat": "body",
+      "ja": "乳首",
+      "keys": [
+        "乳首",
+        "ちくび",
+        "ニップル"
+      ],
+      "phrase": "detailed nipples with natural color and texture"
+    },
+    {
+      "id": "bd06",
+      "cat": "body",
+      "ja": "乳輪",
+      "keys": [
+        "乳輪"
+      ],
+      "phrase": "soft areolae with subtle color gradation"
+    },
+    {
+      "id": "bd07",
+      "cat": "body",
+      "ja": "濡れた肌",
+      "keys": [
+        "濡れ",
+        "汗",
+        "湿った",
+        "テカリ"
+      ],
+      "phrase": "skin glistening with sweat and moisture"
+    },
+    {
+      "id": "bd08",
+      "cat": "body",
+      "ja": "肌質感",
+      "keys": [
+        "肌質",
+        "毛穴",
+        "質感",
+        "リアルな肌"
+      ],
+      "phrase": "visible pores, fine skin texture, natural imperfections"
+    },
+    {
+      "id": "bd09",
+      "cat": "body",
+      "ja": "お尻",
+      "keys": [
+        "お尻",
+        "尻",
+        "ヒップ"
+      ],
+      "phrase": "round firm buttocks with smooth curving lines"
+    },
+    {
+      "id": "bd10",
+      "cat": "body",
+      "ja": "太もも",
+      "keys": [
+        "太もも",
+        "脚",
+        "足"
+      ],
+      "phrase": "soft thighs with natural muscle tone and smooth skin"
+    },
+    {
+      "id": "bd11",
+      "cat": "body",
+      "ja": "陰部・女性器",
+      "keys": [
+        "陰部",
+        "女性器",
+        "あそこ",
+        "秘部",
+        "局部"
+      ],
+      "phrase": "anatomically correct vulva with natural folds and detail"
+    },
+    {
+      "id": "bd12",
+      "cat": "body",
+      "ja": "男性器",
+      "keys": [
+        "男性器",
+        "ペニス",
+        "ちんこ",
+        "ちんちん"
+      ],
+      "phrase": "anatomically correct erect penis with natural veins and texture"
+    },
+    {
+      "id": "bd13",
+      "cat": "body",
+      "ja": "陰毛",
+      "keys": [
+        "陰毛",
+        "アンダーヘア",
+        "毛"
+      ],
+      "phrase": "natural pubic hair, softly lit"
+    },
+    {
+      "id": "bd14",
+      "cat": "body",
+      "ja": "裸・全裸",
+      "keys": [
+        "裸",
+        "全裸",
+        "ヌード",
+        "何も着てない"
+      ],
+      "phrase": "completely nude, no clothing, bare skin everywhere"
+    },
+    {
+      "id": "bd15",
+      "cat": "body",
+      "ja": "半裸",
+      "keys": [
+        "半裸",
+        "半脱ぎ",
+        "はだけ"
+      ],
+      "phrase": "half-undressed, clothes slipping off her shoulders"
+    },
+    {
+      "id": "bd16",
+      "cat": "body",
+      "ja": "下着姿",
+      "keys": [
+        "下着",
+        "パンティ",
+        "ブラ",
+        "ランジェリー"
+      ],
+      "phrase": "thin lacy underwear clinging to her body"
+    },
+    {
+      "id": "bd17",
+      "cat": "body",
+      "ja": "透け",
+      "keys": [
+        "透け",
+        "シースルー",
+        "薄い布"
+      ],
+      "phrase": "sheer translucent fabric revealing the shape beneath"
+    },
+    {
+      "id": "bd18",
+      "cat": "body",
+      "ja": "濡れ衣装",
+      "keys": [
+        "濡れ衣装",
+        "濡れた服",
+        "水着濡れ"
+      ],
+      "phrase": "wet clothes sticking to her skin, fabric transparency increased"
+    },
+    {
+      "id": "bd19",
+      "cat": "body",
+      "ja": "汗ばみ",
+      "keys": [
+        "汗ば",
+        "汗だく",
+        "蒸れ"
+      ],
+      "phrase": "beads of sweat rolling down her flushed skin"
+    },
+    {
+      "id": "bd20",
+      "cat": "body",
+      "ja": "血管・朱み",
+      "keys": [
+        "血管",
+        "朱み",
+        "赤らみ",
+        "上気"
+      ],
+      "phrase": "faint blush spreading across her chest and cheeks"
+    },
+    {
+      "id": "bd21",
+      "cat": "body",
+      "ja": "垂れ・柔らか胸",
+      "keys": [
+        "垂れ乳",
+        "垂れた胸",
+        "柔らかい胸"
+      ],
+      "phrase": "heavy soft breasts hanging naturally with their own weight"
+    },
+    {
+      "id": "bd22",
+      "cat": "body",
+      "ja": "上向き・張り胸",
+      "keys": [
+        "上向き",
+        "ツンと上",
+        "ロケット"
+      ],
+      "phrase": "high perky breasts jutting forward defiantly"
+    },
+    {
+      "id": "bd23",
+      "cat": "body",
+      "ja": "左右差・個性",
+      "keys": [
+        "左右差",
+        "個性的",
+        "不揃い"
+      ],
+      "phrase": "charmingly uneven breasts, sisters not twins"
+    },
+    {
+      "id": "bd24",
+      "cat": "body",
+      "ja": "腹筋・筋肉（男）",
+      "keys": [
+        "腹筋",
+        "筋肉",
+        "マッチョ",
+        "細マッチョ"
+      ],
+      "phrase": "defined abs tightening with each thrust, sweat tracing the grooves"
+    },
+    {
+      "id": "bd25",
+      "cat": "body",
+      "ja": "胸板・大胸筋（男）",
+      "keys": [
+        "胸板",
+        "大胸筋",
+        "男の胸"
+      ],
+      "phrase": "broad muscular chest heaving, nipples hard with exertion"
+    },
+    {
+      "id": "bd26",
+      "cat": "body",
+      "ja": "腕・血管（男）",
+      "keys": [
+        "腕",
+        "力こぶ",
+        "腕の血管"
+      ],
+      "phrase": "veined forearms braced on either side of her, tendons standing out"
+    },
+    {
+      "id": "bd27",
+      "cat": "body",
+      "ja": "背筋・背中（男）",
+      "keys": [
+        "背筋",
+        "背中",
+        "男の背中"
+      ],
+      "phrase": "broad back rippling as he drives forward, shoulder blades shifting"
+    },
+    {
+      "id": "bd28",
+      "cat": "body",
+      "ja": "短髪・髭（男）",
+      "keys": [
+        "短髪",
+        "髭",
+        "無精髭",
+        "坊主"
+      ],
+      "phrase": "cropped hair damp with sweat, rough stubble shadowing his jaw"
+    },
+    {
+      "id": "bd29",
+      "cat": "body",
+      "ja": "男性の余裕・獣欲",
+      "keys": [
+        "余裕の男",
+        "獣欲",
+        "雄",
+        "オス"
+      ],
+      "phrase": "predatory male confidence, slow deliberate movements, total control"
+    },
+    {
+      "id": "bd30",
+      "cat": "body",
+      "ja": "カップル・男女",
+      "keys": [
+        "カップル",
+        "男女",
+        "二人",
+        "ペア"
+      ],
+      "phrase": "man and woman intertwined, contrasting hard muscle and soft curves"
+    },
+    {
+      "id": "bd31",
+      "cat": "body",
+      "ja": "体格差",
+      "keys": [
+        "体格差",
+        "身長差",
+        "大きい男"
+      ],
+      "phrase": "striking size difference, his large frame engulfing her small one"
+    },
+    {
+      "id": "bd32",
+      "cat": "body",
+      "ja": "年齢・熟女",
+      "keys": [
+        "熟女",
+        "人妻",
+        "年上",
+        "おばさん"
+      ],
+      "phrase": "mature woman in her forties, softness and experience in every line"
+    },
+    {
+      "id": "bd33",
+      "cat": "body",
+      "ja": "若さ・ハリ",
+      "keys": [
+        "若い",
+        "ハリ",
+        "ぴちぴち",
+        "10代後半"
+      ],
+      "phrase": "youthful taut skin, everything high and tight and new"
+    },
+    {
+      "id": "bd34",
+      "cat": "body",
+      "ja": "ぽっちゃり・むちむち",
+      "keys": [
+        "ぽっちゃり",
+        "むちむち",
+        "豊満",
+        "デブ"
+      ],
+      "phrase": "soft voluptuous curves, flesh dimpling sweetly at hip and thigh"
+    },
+    {
+      "id": "bd35",
+      "cat": "body",
+      "ja": "スレンダー・華奢",
+      "keys": [
+        "スレンダー",
+        "華奢",
+        "細身",
+        "モデル体型"
+      ],
+      "phrase": "slender delicate frame, collarbones sharp, ribs faintly visible"
+    },
+    {
+      "id": "ac01",
+      "cat": "action",
+      "ja": "フェラ",
+      "keys": [
+        "フェラ",
+        "口で",
+        "咥える",
+        "フェラチオ"
+      ],
+      "phrase": "face buried against an erect penis, mouth wrapping tightly around the glans, lips sealed, saliva glistening on the shaft, no female genitalia in frame"
+    },
+    {
+      "id": "ac02",
+      "cat": "action",
+      "ja": "クンニ",
+      "keys": [
+        "クンニ",
+        "舐められる",
+        "クリ"
+      ],
+      "phrase": "tongue working slowly against her clitoris, her back arching"
+    },
+    {
+      "id": "ac03",
+      "cat": "action",
+      "ja": "パイズリ",
+      "keys": [
+        "パイズリ",
+        "胸で挟"
+      ],
+      "phrase": "her breasts pressed tightly together around an erect penis, grinding slowly up and down along the shaft"
+    },
+    {
+      "id": "ac04",
+      "cat": "action",
+      "ja": "手コキ",
+      "keys": [
+        "手コキ",
+        "手でしごく",
+        "シコシコ"
+      ],
+      "phrase": "her hand gripping and stroking an erect penis rhythmically, precum glistening at the glans"
+    },
+    {
+      "id": "ac05",
+      "cat": "action",
+      "ja": "手マン",
+      "keys": [
+        "手マン",
+        "指入れ",
+        "指で"
+      ],
+      "phrase": "fingers sliding into her vaginal opening, wet slick sounds, her hips bucking slightly"
+    },
+    {
+      "id": "ac06",
+      "cat": "action",
+      "ja": "オナニー・自慰",
+      "keys": [
+        "オナニー",
+        "自慰",
+        "マスターベーション",
+        "自分で"
+      ],
+      "phrase": "solo, no other person in frame, her own hand moving between her thighs, breath quickening"
+    },
+    {
+      "id": "ac07",
+      "cat": "action",
+      "ja": "ディープスロート",
+      "keys": [
+        "喉奥",
+        "ディープ",
+        "えずき"
+      ],
+      "phrase": "face buried deep around an erect penis, throat working the glans, tears welling, drool spilling down the shaft, no female genitalia in frame"
+    },
+    {
+      "id": "ac08",
+      "cat": "action",
+      "ja": "69",
+      "keys": [
+        "69",
+        "シックスナイン",
+        "相互"
+      ],
+      "phrase": "locked in 69, pleasuring each other mouth to body at once"
+    },
+    {
+      "id": "ac09",
+      "cat": "action",
+      "ja": "潮吹き",
+      "keys": [
+        "潮吹き",
+        "潮",
+        "スプラッシュ"
+      ],
+      "phrase": "squirting hard, fluid arcing through the air, sheets dampening"
+    },
+    {
+      "id": "ac10",
+      "cat": "action",
+      "ja": "顔射",
+      "keys": [
+        "顔射",
+        "顔にかかる",
+        "ぶっかけ顔"
+      ],
+      "phrase": "warm spray landing across her cheeks and lips, dripping slowly"
+    },
+    {
+      "id": "ac11",
+      "cat": "action",
+      "ja": "胸射",
+      "keys": [
+        "胸射",
+        "胸にかかる",
+        "ぶっかけ胸"
+      ],
+      "phrase": "spending across her breasts, white trails over flushed skin"
+    },
+    {
+      "id": "ac12",
+      "cat": "action",
+      "ja": "中出し",
+      "keys": [
+        "中出し",
+        "膣内",
+        "クリームパイ"
+      ],
+      "phrase": "deep final thrusts, warmth spilling inside, bodies going still"
+    },
+    {
+      "id": "ac13",
+      "cat": "action",
+      "ja": "足コキ",
+      "keys": [
+        "足コキ",
+        "足で"
+      ],
+      "phrase": "her bare feet wrapping around an erect penis, toes curling and working the shaft slowly"
+    },
+    {
+      "id": "ac14",
+      "cat": "action",
+      "ja": "乳首責め",
+      "keys": [
+        "乳首責め",
+        "乳首つま",
+        "こねくり"
+      ],
+      "phrase": "fingers rolling her stiff nipples, her breath catching each time"
+    },
+    {
+      "id": "ac15",
+      "cat": "action",
+      "ja": "バイブ・おもちゃ",
+      "keys": [
+        "バイブ",
+        "ローター",
+        "おもちゃ",
+        "ディルド"
+      ],
+      "phrase": "a buzzing vibrator pressed hard against her, thighs trembling"
+    },
+    {
+      "id": "ac16",
+      "cat": "action",
+      "ja": "キス・舌絡み",
+      "keys": [
+        "キス",
+        "舌絡み",
+        "ディープキス"
+      ],
+      "phrase": "deep open-mouthed kiss, tongues tangling, ragged breathing between"
+    },
+    {
+      "id": "ac17",
+      "cat": "action",
+      "ja": "愛撫・前戯",
+      "keys": [
+        "愛撫",
+        "前戯",
+        "撫で",
+        "まさぐり"
+      ],
+      "phrase": "slow caressing hands roaming her body, teasing without rushing"
+    },
+    {
+      "id": "ac18",
+      "cat": "action",
+      "ja": "乳揉み",
+      "keys": [
+        "乳揉み",
+        "胸揉み",
+        "揉みしだ"
+      ],
+      "phrase": "hands kneading her soft breasts, fingers sinking into warm flesh"
+    },
+    {
+      "id": "ac19",
+      "cat": "action",
+      "ja": "尻叩き・スパンキング",
+      "keys": [
+        "尻叩き",
+        "スパンキング",
+        "叩く"
+      ],
+      "phrase": "sharp spank reddening her ass cheek, the sting blooming pink"
+    },
+    {
+      "id": "ac20",
+      "cat": "action",
+      "ja": "縛り・拘束",
+      "keys": [
+        "縛り",
+        "拘束",
+        "緊縛",
+        "縄"
+      ],
+      "phrase": "rope biting softly into skin, bound wrists straining gently"
+    },
+    {
+      "id": "ac21",
+      "cat": "action",
+      "ja": "目隠し",
+      "keys": [
+        "目隠し",
+        "見えない"
+      ],
+      "phrase": "blindfolded, every touch amplified, lips parted in anticipation"
+    },
+    {
+      "id": "ac22",
+      "cat": "action",
+      "ja": "言葉責め",
+      "keys": [
+        "言葉責め",
+        "罵倒",
+        "囁き"
+      ],
+      "phrase": "filthy whispered words making her shiver and flush deeper"
+    },
+    {
+      "id": "ac23",
+      "cat": "action",
+      "ja": "同時責め",
+      "keys": [
+        "同時",
+        "両方",
+        "3P"
+      ],
+      "phrase": "two mouths and four hands on her at once, overloaded and gasping"
+    },
+    {
+      "id": "ac24",
+      "cat": "action",
+      "ja": "着衣のまま",
+      "keys": [
+        "着衣",
+        "服着たまま",
+        "脱がさず"
+      ],
+      "phrase": "clothes still half on, fabric yanked aside where it matters"
+    },
+    {
+      "id": "ac25",
+      "cat": "action",
+      "ja": "野外・露出",
+      "keys": [
+        "野外",
+        "露出",
+        "外で"
+      ],
+      "phrase": "risk of being seen heightening every sensation, glancing around"
+    },
+    {
+      "id": "ac26",
+      "cat": "action",
+      "ja": "風呂・シャワー",
+      "keys": [
+        "風呂",
+        "シャワー",
+        "湯船",
+        "水"
+      ],
+      "phrase": "hot water streaming over slick skin, steam fogging the air"
+    },
+    {
+      "id": "ac27",
+      "cat": "action",
+      "ja": "ベッド・布団",
+      "keys": [
+        "ベッド",
+        "布団",
+        "寝室"
+      ],
+      "phrase": "sinking into rumpled sheets, mattress dipping under their weight"
+    },
+    {
+      "id": "ac28",
+      "cat": "action",
+      "ja": "車内",
+      "keys": [
+        "車内",
+        "車の中",
+        "カーセックス"
+      ],
+      "phrase": "cramped back seat, fogged windows, muffled city sounds outside"
+    },
+    {
+      "id": "ac29",
+      "cat": "action",
+      "ja": "トイレ・個室",
+      "keys": [
+        "トイレ",
+        "個室",
+        "便所"
+      ],
+      "phrase": "cramped public stall, fluorescent buzz, trying to stay quiet"
+    },
+    {
+      "id": "ac30",
+      "cat": "action",
+      "ja": "職場・オフィス",
+      "keys": [
+        "オフィス",
+        "職場",
+        "会社",
+        "残業"
+      ],
+      "phrase": "empty after-hours office, desk edge digging into her back"
+    },
+    {
+      "id": "po01",
+      "cat": "position",
+      "ja": "正常位",
+      "keys": [
+        "正常位",
+        "覆いかぶさ"
+      ],
+      "phrase": "lying flat on her back, legs spread and bent at the knees, hips low in the mattress"
+    },
+    {
+      "id": "po02",
+      "cat": "position",
+      "ja": "騎乗位",
+      "keys": [
+        "騎乗位",
+        "上に乗る",
+        "跨る"
+      ],
+      "phrase": "straddling on top, knees bent wide, hips grinding down hard, hair falling over her face"
+    },
+    {
+      "id": "po03",
+      "cat": "position",
+      "ja": "バック",
+      "keys": [
+        "バック",
+        "後背位",
+        "後ろから"
+      ],
+      "phrase": "taken from behind on all fours, back arched deep, ass high"
+    },
+    {
+      "id": "po04",
+      "cat": "position",
+      "ja": "対面座位",
+      "keys": [
+        "対面座位",
+        "向かい合って座"
+      ],
+      "phrase": "sitting facing forward, legs wrapped tightly together, hands gripping the edge of the seat, rocking slowly"
+    },
+    {
+      "id": "po05",
+      "cat": "position",
+      "ja": "背面騎乗・背面座位",
+      "keys": [
+        "背面騎乗",
+        "背面座位",
+        "後ろ向き"
+      ],
+      "phrase": "facing away, back arched, hips raised and bouncing gently, glancing over her shoulder"
+    },
+    {
+      "id": "po06",
+      "cat": "position",
+      "ja": "立ちバック・立位",
+      "keys": [
+        "立ちバック",
+        "立位",
+        "立ったまま",
+        "駅弁"
+      ],
+      "phrase": "pressed flat against the wall, back straight, one knee lifted high, toes gripping the wall"
+    },
+    {
+      "id": "po07",
+      "cat": "position",
+      "ja": "M字開脚",
+      "keys": [
+        "M字",
+        "脚を開",
+        "開脚",
+        "股開き"
+      ],
+      "phrase": "legs spread wide in a deep M, everything exposed to the camera"
+    },
+    {
+      "id": "po08",
+      "cat": "position",
+      "ja": "寝バック・うつ伏せ",
+      "keys": [
+        "うつ伏せ",
+        "寝バック",
+        "腹ばい"
+      ],
+      "phrase": "face down on all fours, spine arched deep, hips lifted and swaying"
+    },
+    {
+      "id": "po09",
+      "cat": "position",
+      "ja": "スプーン・横向き",
+      "keys": [
+        "スプーン",
+        "横向き",
+        "横たわり",
+        "添い寝"
+      ],
+      "phrase": "lying on her side, legs stacked, hips pressed forward, slow rolling grind against the mattress"
+    },
+    {
+      "id": "po10",
+      "cat": "position",
+      "ja": "69体位",
+      "keys": [
+        "69",
+        "相互オーラル"
+      ],
+      "phrase": "head to tail in 69, muffled moans vibrating against skin"
+    },
+    {
+      "id": "po11",
+      "cat": "position",
+      "ja": "フェラ体勢",
+      "keys": [
+        "跪く",
+        "ひざまず",
+        "しゃがみフェラ"
+      ],
+      "phrase": "kneeling low on the floor, hips back, face tilted upward with parted lips and wet expectant eyes"
+    },
+    {
+      "id": "po12",
+      "cat": "position",
+      "ja": "クンニ体勢",
+      "keys": [
+        "脚を抱え",
+        "持ち上げクンニ"
+      ],
+      "phrase": "thighs spread wide and held open, head lowered between them, hips lifting in rhythm"
+    },
+    {
+      "id": "po13",
+      "cat": "position",
+      "ja": "座位・椅子",
+      "keys": [
+        "椅子",
+        "座位",
+        "座って"
+      ],
+      "phrase": "straddling the chair, knees bent, hands gripping the armrests for leverage"
+    },
+    {
+      "id": "po14",
+      "cat": "position",
+      "ja": "四つん這い",
+      "keys": [
+        "四つん這い",
+        "よつんばい",
+        "這う"
+      ],
+      "phrase": "on all fours, spine swaying, presenting herself completely"
+    },
+    {
+      "id": "po15",
+      "cat": "position",
+      "ja": "壁押し付け",
+      "keys": [
+        "壁ドン",
+        "壁に押し",
+        "壁"
+      ],
+      "phrase": "palms flat on the cold wall, pressed hard from behind"
+    },
+    {
+      "id": "po16",
+      "cat": "position",
+      "ja": "鏡越し",
+      "keys": [
+        "鏡",
+        "鏡越し",
+        "反射"
+      ],
+      "phrase": "catching her own flushed reflection, unable to look away"
+    },
+    {
+      "id": "po17",
+      "cat": "position",
+      "ja": "ベッド端・淵",
+      "keys": [
+        "ベッド端",
+        "淵",
+        "端に座"
+      ],
+      "phrase": "perched on the mattress edge, knees apart, toes barely touching floor"
+    },
+    {
+      "id": "po18",
+      "cat": "position",
+      "ja": "床・畳",
+      "keys": [
+        "床",
+        "畳",
+        "フローリング",
+        "寝転"
+      ],
+      "phrase": "sprawled on the bare floor, limbs loose and heavy"
+    },
+    {
+      "id": "po19",
+      "cat": "position",
+      "ja": "ソファ",
+      "keys": [
+        "ソファ",
+        "カウチ",
+        "肘掛け"
+      ],
+      "phrase": "draped over the sofa arm, cushions denting under her hips"
+    },
+    {
+      "id": "po20",
+      "cat": "position",
+      "ja": "机の上",
+      "keys": [
+        "机",
+        "テーブル",
+        "デスク"
+      ],
+      "phrase": "lifted onto the desk, papers scattering, legs dangling then spreading"
+    },
+    {
+      "id": "po21",
+      "cat": "position",
+      "ja": "窓際・カーテン",
+      "keys": [
+        "窓際",
+        "窓",
+        "カーテン"
+      ],
+      "phrase": "backlit by the window, sheer curtain brushing her bare shoulder"
+    },
+    {
+      "id": "po22",
+      "cat": "position",
+      "ja": "風呂場",
+      "keys": [
+        "浴室",
+        "浴槽",
+        "湯船"
+      ],
+      "phrase": "kneeling on wet tile, water beading and running in rivulets"
+    },
+    {
+      "id": "po23",
+      "cat": "position",
+      "ja": "野外",
+      "keys": [
+        "野外",
+        "屋外",
+        "公園",
+        "ビーチ"
+      ],
+      "phrase": "half-hidden outdoors, listening for footsteps between gasps"
+    },
+    {
+      "id": "po24",
+      "cat": "position",
+      "ja": "車",
+      "keys": [
+        "車",
+        "助手席",
+        "後部座席"
+      ],
+      "phrase": "folded into the passenger seat, knees against the dashboard"
+    },
+    {
+      "id": "po25",
+      "cat": "position",
+      "ja": "密着・抱擁",
+      "keys": [
+        "抱き合",
+        "抱擁",
+        "密着",
+        "ハグ"
+      ],
+      "phrase": "chests crushed together, arms locked tight, breathing as one"
+    },
+    {
+      "id": "fc01",
+      "cat": "face",
+      "ja": "アヘ顔",
+      "keys": [
+        "アヘ顔",
+        "アヘ",
+        "イキ顔"
+      ],
+      "phrase": "face twisted in ecstasy, tongue lolling, eyes rolled back"
+    },
+    {
+      "id": "fc02",
+      "cat": "face",
+      "ja": "トロ目・うつろ",
+      "keys": [
+        "トロ目",
+        "うつろ",
+        "焦点合わず",
+        "虚ろ"
+      ],
+      "phrase": "glassy unfocused eyes, lids heavy, consciousness slipping"
+    },
+    {
+      "id": "fc03",
+      "cat": "face",
+      "ja": "涙目・泣き",
+      "keys": [
+        "涙",
+        "泣き",
+        "涙目",
+        "泣き顔"
+      ],
+      "phrase": "tears spilling over, mixing with sweat on her cheeks"
+    },
+    {
+      "id": "fc04",
+      "cat": "face",
+      "ja": "よだれ",
+      "keys": [
+        "よだれ",
+        "涎",
+        "唾液"
+      ],
+      "phrase": "drool trailing from the corner of her open mouth"
+    },
+    {
+      "id": "fc05",
+      "cat": "face",
+      "ja": "赤面・上気",
+      "keys": [
+        "赤面",
+        "上気",
+        "頬染め",
+        "照れ"
+      ],
+      "phrase": "deep flush spreading from cheeks down her neck and chest"
+    },
+    {
+      "id": "fc06",
+      "cat": "face",
+      "ja": "荒い息・喘ぎ",
+      "keys": [
+        "喘ぎ",
+        "荒い息",
+        "ハァハァ",
+        "息遣い"
+      ],
+      "phrase": "ragged panting breaths, lips parted, chest heaving"
+    },
+    {
+      "id": "fc07",
+      "cat": "face",
+      "ja": "舌出し",
+      "keys": [
+        "舌出し",
+        "舌",
+        "ベロ"
+      ],
+      "phrase": "tongue hanging out, tip glistening with saliva"
+    },
+    {
+      "id": "fc08",
+      "cat": "face",
+      "ja": "恍惚・放心",
+      "keys": [
+        "恍惚",
+        "放心",
+        "蕩け",
+        "トロトロ"
+      ],
+      "phrase": "blissful vacant stare, completely lost in sensation"
+    },
+    {
+      "id": "fc09",
+      "cat": "face",
+      "ja": "羞恥・困惑",
+      "keys": [
+        "羞恥",
+        "恥ずかし",
+        "困惑",
+        "照れ隠し"
+      ],
+      "phrase": "embarrassed sidelong glance, biting her lower lip"
+    },
+    {
+      "id": "fc10",
+      "cat": "face",
+      "ja": "誘惑・挑発",
+      "keys": [
+        "誘惑",
+        "挑発",
+        "誘う",
+        "流し目"
+      ],
+      "phrase": "knowing seductive smirk, heavy-lidded inviting eyes"
+    },
+    {
+      "id": "fc11",
+      "cat": "face",
+      "ja": "絶頂直前・我慢",
+      "keys": [
+        "我慢",
+        "寸止め",
+        "絶頂寸前",
+        "堪える"
+      ],
+      "phrase": "teeth gritted at the edge, whole body tensed, about to break"
+    },
+    {
+      "id": "fc12",
+      "cat": "face",
+      "ja": "絶頂・オーガズム",
+      "keys": [
+        "絶頂",
+        "イク",
+        "イキ",
+        "オーガズム",
+        "昇天"
+      ],
+      "phrase": "mid-orgasm, mouth open in a silent scream, eyes squeezed shut then rolling"
+    },
+    {
+      "id": "fc13",
+      "cat": "face",
+      "ja": "余韻・事後",
+      "keys": [
+        "余韻",
+        "事後",
+        "ぐったり",
+        "賢者"
+      ],
+      "phrase": "afterglow haze, limp limbs, soft dazed smile, sweat cooling"
+    },
+    {
+      "id": "fc14",
+      "cat": "face",
+      "ja": "震え・痙攣",
+      "keys": [
+        "震え",
+        "痙攣",
+        "ビクビク",
+        "ガクガク",
+        "震わせ"
+      ],
+      "phrase": "fine tremors running through her thighs and shoulders"
+    },
+    {
+      "id": "fc15",
+      "cat": "face",
+      "ja": "汗・テカリ",
+      "keys": [
+        "汗",
+        "テカリ",
+        "びっしょり",
+        "ぐっしょり"
+      ],
+      "phrase": "sweat sheening every curve, droplets gathering at her collarbones"
+    },
+    {
+      "id": "fc16",
+      "cat": "face",
+      "ja": "濡れ・愛液",
+      "keys": [
+        "愛液",
+        "濡れ具合",
+        "ぐちゅ",
+        "蜜"
+      ],
+      "phrase": "slick wetness glistening between her thighs"
+    },
+    {
+      "id": "fc17",
+      "cat": "face",
+      "ja": "声・喘ぎ声",
+      "keys": [
+        "喘ぎ声",
+        "声",
+        "啜り泣き",
+        "悲鳴"
+      ],
+      "phrase": "small broken moans escaping with every breath"
+    },
+    {
+      "id": "fc18",
+      "cat": "face",
+      "ja": "視線・見つめる",
+      "keys": [
+        "見つめる",
+        "視線",
+        "上目遣い",
+        "見上げ"
+      ],
+      "phrase": "looking straight into the lens, unashamed and hungry"
+    },
+    {
+      "id": "fc19",
+      "cat": "face",
+      "ja": "笑顔・余裕",
+      "keys": [
+        "笑顔",
+        "微笑",
+        "余裕",
+        "楽しげ"
+      ],
+      "phrase": "playful confident smile, clearly enjoying herself"
+    },
+    {
+      "id": "fc20",
+      "cat": "face",
+      "ja": "苦悶・切なさ",
+      "keys": [
+        "苦悶",
+        "切ない",
+        "眉根",
+        "しかめ"
+      ],
+      "phrase": "brows knitted in sweet torment, lower lip caught in teeth"
+    },
+    {
+      "id": "fc21",
+      "cat": "face",
+      "ja": "放心・虚ろ目",
+      "keys": [
+        "虚ろ目",
+        "白目",
+        "ひん剥"
+      ],
+      "phrase": "whites of eyes showing, gaze fixed on nothing"
+    },
+    {
+      "id": "fc22",
+      "cat": "face",
+      "ja": "涙と笑みの混在",
+      "keys": [
+        "泣き笑い",
+        "笑い泣き"
+      ],
+      "phrase": "laughing through tears, joy and overload at once"
+    },
+    {
+      "id": "fc23",
+      "cat": "face",
+      "ja": "頬・フェイスライン",
+      "keys": [
+        "頬",
+        "輪郭",
+        "フェイスライン"
+      ],
+      "phrase": "flushed cheeks, soft jawline slack with pleasure"
+    },
+    {
+      "id": "fc24",
+      "cat": "face",
+      "ja": "髪の乱れ",
+      "keys": [
+        "髪乱れ",
+        "乱れ髪",
+        "汗で張り付"
+      ],
+      "phrase": "damp strands of hair sticking to her forehead and neck"
+    },
+    {
+      "id": "fc25",
+      "cat": "face",
+      "ja": "唇・口元",
+      "keys": [
+        "唇",
+        "口元",
+        "くちびる"
+      ],
+      "phrase": "swollen parted lips, bitten and glossy"
+    },
+    {
+      "id": "fc26",
+      "cat": "face",
+      "ja": "日本人・和顔",
+      "keys": [
+        "日本人",
+        "日本女性",
+        "和顔",
+        "日系",
+        "日本の女"
+      ],
+      "phrase": "distinctly Japanese features, black hair, monolid or hooded dark eyes, fair porcelain skin, small delicate nose, soft oval face shape, East Asian facial structure"
+    },
+    {
+      "id": "fc27",
+      "cat": "face",
+      "ja": "東洋人・オリエンタル",
+      "keys": [
+        "東洋人",
+        "アジア人",
+        "オリエンタル",
+        "和風顔"
+      ],
+      "phrase": "East Asian features, black hair, almond-shaped dark eyes, smooth pale skin, refined delicate bone structure"
+    },
+    {
+      "id": "fc28",
+      "cat": "face",
+      "ja": "韓国人・韓顔",
+      "keys": [
+        "韓国人",
+        "韓国",
+        "韓顔",
+        "K-beauty"
+      ],
+      "phrase": "Korean features, V-line face, large round dark eyes, high cheekbones, glass-skin complexion"
+    },
+    {
+      "id": "fc29",
+      "cat": "face",
+      "ja": "白人・欧米人（除外用）",
+      "keys": [
+        "白人",
+        "欧米人",
+        "西洋顔",
+        "外人"
+      ],
+      "phrase": "Caucasian European features, blue or green eyes, light skin, angular western bone structure"
+    },
+    {
+      "id": "of01",
+      "cat": "office",
+      "ja": "残業オフィス",
+      "keys": [
+        "残業",
+        "夜のオフィス",
+        "終電後"
+      ],
+      "phrase": "empty office after hours, only emergency lights and monitor glow"
+    },
+    {
+      "id": "of02",
+      "cat": "office",
+      "ja": "デスク・机",
+      "keys": [
+        "デスク",
+        "机上",
+        "パソコン前"
+      ],
+      "phrase": "bent over her own desk, keyboard pushed aside, papers sliding"
+    },
+    {
+      "id": "of03",
+      "cat": "office",
+      "ja": "会議室",
+      "keys": [
+        "会議室",
+        "ミーティング",
+        "プレゼン"
+      ],
+      "phrase": "abandoned meeting room, long table, whiteboard looming behind"
+    },
+    {
+      "id": "of04",
+      "cat": "office",
+      "ja": "OL制服",
+      "keys": [
+        "OL",
+        "制服",
+        "スーツ",
+        "タイトスカート",
+        "ブラウス"
+      ],
+      "phrase": "tight office uniform straining, skirt riding higher as she moves"
+    },
+    {
+      "id": "of05",
+      "cat": "office",
+      "ja": "パンスト・ストッキング",
+      "keys": [
+        "パンスト",
+        "ストッキング",
+        "タイツ"
+      ],
+      "phrase": "sheer stockings, one runner laddering down her calf"
+    },
+    {
+      "id": "of06",
+      "cat": "office",
+      "ja": "上司・同僚",
+      "keys": [
+        "上司",
+        "同僚",
+        "部下",
+        "社員"
+      ],
+      "phrase": "a coworker's silhouette in the glass partition, unaware"
+    },
+    {
+      "id": "of07",
+      "cat": "office",
+      "ja": "更衣室・ロッカー",
+      "keys": [
+        "更衣室",
+        "ロッカー",
+        "着替え"
+      ],
+      "phrase": "narrow locker room, half-open lockers, uniform half peeled off"
+    },
+    {
+      "id": "of08",
+      "cat": "office",
+      "ja": "トイレ・給湯室",
+      "keys": [
+        "給湯室",
+        "トイレ",
+        "洗面所"
+      ],
+      "phrase": "cramped office restroom, humming vent, dripping faucet"
+    },
+    {
+      "id": "of09",
+      "cat": "office",
+      "ja": "窓・夜景",
+      "keys": [
+        "窓",
+        "夜景",
+        "ブラインド",
+        "カーテン"
+      ],
+      "phrase": "city lights through half-closed blinds striping her skin"
+    },
+    {
+      "id": "of10",
+      "cat": "office",
+      "ja": "椅子・ソファ",
+      "keys": [
+        "椅子",
+        "ソファ",
+        "応接"
+      ],
+      "phrase": "sprawled in the desk chair, wheels squeaking softly as it rolls"
+    },
+    {
+      "id": "of11",
+      "cat": "office",
+      "ja": "シャツ・ブラウス",
+      "keys": [
+        "シャツ",
+        "ボタン"
+      ],
+      "phrase": "shirt buttons straining then popping, crisp cotton wrinkling"
+    },
+    {
+      "id": "of12",
+      "cat": "office",
+      "ja": "ヒール・靴",
+      "keys": [
+        "ヒール",
+        "パンプス",
+        "靴"
+      ],
+      "phrase": "one heel kicked off, the other dangling from her toes"
+    },
+    {
+      "id": "cl01",
+      "cat": "clothing",
+      "ja": "Tシャツ・白シャツ",
+      "keys": [
+        "Tシャツ",
+        "白シャツ",
+        "ワイシャツ"
+      ],
+      "phrase": "thin white T-shirt turning translucent with sweat"
+    },
+    {
+      "id": "cl02",
+      "cat": "clothing",
+      "ja": "下着・ランジェリー",
+      "keys": [
+        "下着セット",
+        "ランジェリー",
+        "ブラジャー",
+        "ショーツ"
+      ],
+      "phrase": "matching lace lingerie set, straps slipping off shoulders"
+    },
+    {
+      "id": "cl03",
+      "cat": "clothing",
+      "ja": "制服・学生服",
+      "keys": [
+        "制服",
+        "学生服",
+        "セーラー"
+      ],
+      "phrase": "school uniform with loosened ribbon, skirt hitched high"
+    },
+    {
+      "id": "cl04",
+      "cat": "clothing",
+      "ja": "OL・スーツ",
+      "keys": [
+        "スーツ姿",
+        "リクルート"
+      ],
+      "phrase": "tailored office suit, pencil skirt tight across her hips"
+    },
+    {
+      "id": "cl05",
+      "cat": "clothing",
+      "ja": "水着・ビキニ",
+      "keys": [
+        "水着",
+        "ビキニ",
+        "スク水"
+      ],
+      "phrase": "damp bikini clinging hard, strings pulled slightly aside"
+    },
+    {
+      "id": "cl06",
+      "cat": "clothing",
+      "ja": "部屋着・パジャマ",
+      "keys": [
+        "部屋着",
+        "パジャマ",
+        "ルームウェア"
+      ],
+      "phrase": "oversized sleep shirt hanging off one shoulder, bare legs below"
+    },
+    {
+      "id": "cl07",
+      "cat": "clothing",
+      "ja": "バニー・コスプレ",
+      "keys": [
+        "バニー",
+        "コスプレ",
+        "メイド",
+        "制服コス"
+      ],
+      "phrase": "bunny-girl leotard with fishnet stockings, ears tilted crooked"
+    },
+    {
+      "id": "cl08",
+      "cat": "clothing",
+      "ja": "拘束具・ハーネス",
+      "keys": [
+        "ハーネス",
+        "拘束具",
+        "首輪"
+      ],
+      "phrase": "leather harness straps framing her chest, metal rings glinting"
+    },
+    {
+      "id": "cl09",
+      "cat": "clothing",
+      "ja": "濡れ透け",
+      "keys": [
+        "濡れ透け",
+        "水濡れ服",
+        "シャワー後"
+      ],
+      "phrase": "soaked thin dress gone see-through, water beading and dripping"
+    },
+    {
+      "id": "cl10",
+      "cat": "clothing",
+      "ja": "破れ・はだけ",
+      "keys": [
+        "破れ",
+        "はだけ",
+        "ボロボロ",
+        "引き裂き"
+      ],
+      "phrase": "torn fabric gaping open, frayed edges curling back"
+    },
+    {
+      "id": "cl11",
+      "cat": "clothing",
+      "ja": "タオル一枚",
+      "keys": [
+        "タオル",
+        "バスタオル"
+      ],
+      "phrase": "single bath towel slipping lower with every breath, steam in the air"
+    },
+    {
+      "id": "cl12",
+      "cat": "clothing",
+      "ja": "ニット・セーター",
+      "keys": [
+        "ニット",
+        "セーター",
+        "もこもこ"
+      ],
+      "phrase": "chunky knit sweater, hem ridden up to expose her midriff"
+    },
+    {
+      "id": "cl13",
+      "cat": "clothing",
+      "ja": "デニム・ジーンズ",
+      "keys": [
+        "デニム",
+        "ジーンズ",
+        "Gパン"
+      ],
+      "phrase": "unbuttoned jeans sliding off her hips, zipper half down"
+    },
+    {
+      "id": "cl14",
+      "cat": "clothing",
+      "ja": "スカート・ミニスカ",
+      "keys": [
+        "ミニスカ",
+        "スカート",
+        "プリーツ"
+      ],
+      "phrase": "short pleated skirt flipped up by her own movement"
+    },
+    {
+      "id": "cl15",
+      "cat": "clothing",
+      "ja": "ドレス・ワンピース",
+      "keys": [
+        "ドレス",
+        "ワンピース",
+        "パーティー"
+      ],
+      "phrase": "silky slip dress strap fallen, neckline gaping as she leans"
+    },
+    {
+      "id": "cl16",
+      "cat": "clothing",
+      "ja": "和服・浴衣",
+      "keys": [
+        "和服",
+        "浴衣",
+        "着物",
+        "帯"
+      ],
+      "phrase": "loosened yukata sash, collar slipping to bare one shoulder"
+    },
+    {
+      "id": "cl17",
+      "cat": "clothing",
+      "ja": "スポーツウェア",
+      "keys": [
+        "スポーツ",
+        "ジム",
+        "ヨガ",
+        "ユニフォーム"
+      ],
+      "phrase": "sweaty gym top clinging, leggings stretched taut over her hips"
+    },
+    {
+      "id": "cl18",
+      "cat": "clothing",
+      "ja": "ナース・制服系",
+      "keys": [
+        "ナース",
+        "メイド服",
+        "ポリス",
+        "CA"
+      ],
+      "phrase": "uniform repurposed: buttons undone, skirt hiked, authority undone"
+    },
+    {
+      "id": "cl19",
+      "cat": "clothing",
+      "ja": "網タイツ・ガーター",
+      "keys": [
+        "網タイツ",
+        "ガーター",
+        "ストッキング"
+      ],
+      "phrase": "fishnet stockings with one deliberate run up the thigh"
+    },
+    {
+      "id": "cl20",
+      "cat": "clothing",
+      "ja": "ヒール・裸足",
+      "keys": [
+        "ヒール",
+        "裸足",
+        "素足",
+        "靴"
+      ],
+      "phrase": "heels kicked aside, bare feet curling against the floor"
+    },
+    {
+      "id": "cl21",
+      "cat": "clothing",
+      "ja": "アクセ・ピアス",
+      "keys": [
+        "アクセ",
+        "ピアス",
+        "ネックレス",
+        "指輪"
+      ],
+      "phrase": "a single thin necklace resting in the hollow of her throat"
+    },
+    {
+      "id": "cl22",
+      "cat": "clothing",
+      "ja": "髪型・ヘア",
+      "keys": [
+        "髪型",
+        "ポニーテール",
+        "ツインテール",
+        "ボブ"
+      ],
+      "phrase": "hair escaping its tie, damp strands framing her face"
+    },
+    {
+      "id": "cl23",
+      "cat": "clothing",
+      "ja": "メガネ",
+      "keys": [
+        "メガネ",
+        "眼鏡",
+        "伊達"
+      ],
+      "phrase": "glasses fogging slightly, slipping down her nose"
+    },
+    {
+      "id": "cl24",
+      "cat": "clothing",
+      "ja": "濡れ髪・お風呂上がり",
+      "keys": [
+        "濡れ髪",
+        "湯上がり",
+        "シャワー上がり"
+      ],
+      "phrase": "wet hair dripping onto bare shoulders, towel half dropped"
+    },
+    {
+      "id": "cl25",
+      "cat": "clothing",
+      "ja": "日焼け・水着跡",
+      "keys": [
+        "日焼け",
+        "水着跡",
+        "焼け跡"
+      ],
+      "phrase": "pale tan lines where her swimsuit used to be"
+    },
+    {
+      "id": "cl26",
+      "cat": "clothing",
+      "ja": "入れ墨・タトゥー",
+      "keys": [
+        "タトゥー",
+        "入れ墨",
+        "刺青"
+      ],
+      "phrase": "small dark tattoo curling along her hip bone"
+    },
+    {
+      "id": "cl27",
+      "cat": "clothing",
+      "ja": "ほくろ・そばかす",
+      "keys": [
+        "ほくろ",
+        "そばかす",
+        "シミ"
+      ],
+      "phrase": "a mole at the corner of her mouth, faint freckles over her nose"
+    },
+    {
+      "id": "cl28",
+      "cat": "clothing",
+      "ja": "下着の食い込み",
+      "keys": [
+        "食い込み",
+        "Tバック",
+        "紐パン"
+      ],
+      "phrase": "thin thong strap disappearing between her cheeks"
+    },
+    {
+      "id": "cl29",
+      "cat": "clothing",
+      "ja": "ノーブラ・透け乳首",
+      "keys": [
+        "ノーブラ",
+        "乳首透け",
+        "浮き"
+      ],
+      "phrase": "braless under thin cotton, nipples pressing visibly through"
+    },
+    {
+      "id": "cl30",
+      "cat": "clothing",
+      "ja": "パンチラ・覗き",
+      "keys": [
+        "パンチラ",
+        "覗き",
+        "めくれ"
+      ],
+      "phrase": "a flash of panties as her skirt lifts in motion"
+    },
+    {
+      "id": "cm01",
+      "cat": "camera",
+      "ja": "ローアングル・煽り",
+      "keys": [
+        "煽り",
+        "ローアングル",
+        "見上げ",
+        "下から"
+      ],
+      "phrase": "low angle looking up, lending her looming presence"
+    },
+    {
+      "id": "cm02",
+      "cat": "camera",
+      "ja": "俯瞰・見下ろし",
+      "keys": [
+        "俯瞰",
+        "見下ろし",
+        "上から"
+      ],
+      "phrase": "high angle looking down, her upturned face vulnerable below"
+    },
+    {
+      "id": "cm03",
+      "cat": "camera",
+      "ja": "接写・クローズアップ",
+      "keys": [
+        "接写",
+        "クローズアップ",
+        "アップ",
+        "ドアップ"
+      ],
+      "phrase": "tight close-up, shallow depth of field, everything else melting away"
+    },
+    {
+      "id": "cm04",
+      "cat": "camera",
+      "ja": "全身・引き",
+      "keys": [
+        "全身",
+        "引き",
+        "ワイド",
+        "遠景"
+      ],
+      "phrase": "full-body wide shot, small figure in a detailed environment"
+    },
+    {
+      "id": "cm05",
+      "cat": "camera",
+      "ja": "主観・POV",
+      "keys": [
+        "主観",
+        "POV",
+        "一人称"
+      ],
+      "phrase": "first-person POV, her attention fixed directly on the viewer"
+    },
+    {
+      "id": "cm06",
+      "cat": "camera",
+      "ja": "斜め・ダッチアングル",
+      "keys": [
+        "斜め",
+        "ダッチ",
+        "傾き"
+      ],
+      "phrase": "slightly tilted dutch angle, uneasy off-balance energy"
+    },
+    {
+      "id": "cm07",
+      "cat": "camera",
+      "ja": "鏡越し・反射",
+      "keys": [
+        "鏡越し",
+        "鏡",
+        "反射",
+        "映り込み"
+      ],
+      "phrase": "caught in the mirror, doubled and watching herself being watched"
+    },
+    {
+      "id": "cm08",
+      "cat": "camera",
+      "ja": "背後・後ろ姿",
+      "keys": [
+        "背後",
+        "後ろ姿",
+        "バックショット"
+      ],
+      "phrase": "shot from behind, spine and shoulder blades leading the eye"
+    },
+    {
+      "id": "cm09",
+      "cat": "camera",
+      "ja": "横顔・プロフィール",
+      "keys": [
+        "横顔",
+        "プロフィール",
+        "横から"
+      ],
+      "phrase": "clean profile view, nose to chin in one elegant line"
+    },
+    {
+      "id": "cm10",
+      "cat": "camera",
+      "ja": "手持ち・素人感",
+      "keys": [
+        "手持ち",
+        "素人",
+        "ホームビデオ",
+        "ブレ"
+      ],
+      "phrase": "handheld amateur framing, slight shake, imperfect and intimate"
+    },
+    {
+      "id": "cm11",
+      "cat": "camera",
+      "ja": "顔なし・胴体のみ",
+      "keys": [
+        "顔なし",
+        "首から下",
+        "胴体"
+      ],
+      "phrase": "head cropped out of frame, all attention on the body"
+    },
+    {
+      "id": "cm12",
+      "cat": "camera",
+      "ja": "目線・カメラ目線",
+      "keys": [
+        "カメラ目線",
+        "目線",
+        "見つめる"
+      ],
+      "phrase": "eyes locked on the lens, direct unashamed gaze"
+    },
+    {
+      "id": "cm13",
+      "cat": "camera",
+      "ja": "股間フォーカス",
+      "keys": [
+        "股間フォーカス",
+        "結合部",
+        "クローズアップ下"
+      ],
+      "phrase": "intimate close framing on the point of contact"
+    },
+    {
+      "id": "cm14",
+      "cat": "camera",
+      "ja": "逆光・シルエット",
+      "keys": [
+        "逆光",
+        "シルエット",
+        "輪郭光"
+      ],
+      "phrase": "strong backlight rimming her outline, face half in shadow"
+    },
+    {
+      "id": "cm15",
+      "cat": "camera",
+      "ja": "夜・低照度",
+      "keys": [
+        "夜",
+        "暗い",
+        "低照度",
+        "月明かり"
+      ],
+      "phrase": "dim night lighting, grain and shadow pooling naturally"
+    },
+    {
+      "id": "bd36",
+      "cat": "body",
+      "ja": "ロリ・幼体型",
+      "keys": [
+        "ロリ",
+        "ロリータ",
+        "幼い",
+        "童顔",
+        "子供体型",
+        "子供っぽい"
+      ],
+      "phrase": "childlike petite frame, baby-faced with soft round cheeks, small delicate proportions"
+    },
+    {
+      "id": "bd37",
+      "cat": "body",
+      "ja": "中学生",
+      "keys": [
+        "中学生",
+        "中1",
+        "中2",
+        "中3",
+        "中学"
+      ],
+      "phrase": "a young middle school girl, small and slender with a childlike body just beginning to curve"
+    },
+    {
+      "id": "bd38",
+      "cat": "body",
+      "ja": "高校生・JK",
+      "keys": [
+        "高校生",
+        "JK",
+        "高1",
+        "高2",
+        "高3",
+        "高校"
+      ],
+      "phrase": "a high school girl in her early teens, slim adolescent figure with soft youthful curves"
+    },
+    {
+      "id": "bd39",
+      "cat": "body",
+      "ja": "小柄・未熟体型",
+      "keys": [
+        "小柄",
+        "未熟",
+        "細い体",
+        "まだ小さい"
+      ],
+      "phrase": "small and underdeveloped, limbs thin, body still holding a childlike narrowness"
+    },
+    {
+      "id": "ac31",
+      "cat": "action",
+      "ja": "セックス・挿入行為",
+      "keys": [
+        "セックス",
+        "挿入",
+        "性交",
+        "行為",
+        "中出しsex"
+      ],
+      "phrase": "penetrating her deeply, hips thrusting in steady rhythm, bodies pressed tight together"
+    },
+    {
+      "id": "ac32",
+      "cat": "action",
+      "ja": "フェラチオ・舌使い",
+      "keys": [
+        "舌フェラ",
+        "口コキ",
+        "舌で舐る",
+        "舌回し"
+      ],
+      "phrase": "tongue swirling around the glans of an erect penis, lips sealed tight against the shaft, throat working deep, no female genitalia in frame"
+    },
+    {
+      "id": "ac33",
+      "cat": "action",
+      "ja": "寝フェラ・横位",
+      "keys": [
+        "寝フェラ",
+        "横になってフェラ",
+        "仰向け口"
+      ],
+      "phrase": "lying on her back, face buried against an erect penis held above her, tongue working the glans, no female genitalia in frame"
+    },
+    {
+      "id": "ac34",
+      "cat": "action",
+      "ja": "オナニー・指コキ",
+      "keys": [
+        "指コキ",
+        "指で自慰",
+        "クリコキ"
+      ],
+      "phrase": "solo, no other person in frame, fingers sliding between her thighs in slow circles, breath catching, hips pressing down"
+    },
+    {
+      "id": "ac35",
+      "cat": "action",
+      "ja": "オナニー・寝姿",
+      "keys": [
+        "寝ながらオナニー",
+        "横になって",
+        "布団で自慰"
+      ],
+      "phrase": "solo, no other person in frame, lying on her side in the futon, one hand working herself, the other tangled in the sheet"
+    },
+    {
+      "id": "ac36",
+      "cat": "action",
+      "ja": "オナニー・顔埋め",
+      "keys": [
+        "顔埋め",
+        "抱き枕",
+        "布団押し",
+        "枕押し"
+      ],
+      "phrase": "solo, no other person in frame, face buried in the pillow, muffled moans, hips rolling against it with each stroke"
+    },
+    {
+      "id": "cl31",
+      "cat": "clothing",
+      "ja": "セーラー服・中学制服",
+      "keys": [
+        "セーラー服",
+        "学生制服",
+        "水兵服",
+        "校章",
+        "中学制服"
+      ],
+      "phrase": "sailor uniform with white collar and red neckerchief, pleated skirt hiked up"
+    },
+    {
+      "id": "cl32",
+      "cat": "clothing",
+      "ja": "ブレザー・高校制服",
+      "keys": [
+        "ブレザー",
+        "高校制服",
+        "学ラン",
+        "リボン"
+      ],
+      "phrase": "high school blazer unbuttoned, ribbon loosened, pleated skirt riding high"
+    },
+    {
+      "id": "cl33",
+      "cat": "clothing",
+      "ja": "体操服・ジャージ",
+      "keys": [
+        "体操服",
+        "ジャージ",
+        "運動着",
+        "体育着"
+      ],
+      "phrase": "loose gym uniform, white tee and short shorts, jersey number on the back"
+    }
+  ]
+}
