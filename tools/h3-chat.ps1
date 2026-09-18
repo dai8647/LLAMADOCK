@@ -108,6 +108,40 @@ if (-not (Test-Path -LiteralPath $planServer) -and $env:LLAMADOCK_UNSLOTH_SERVER
     $planServer = [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
 }
 
+# ggml-cuda.dll needs cublas64_13 / nvcudart_hybrid64 next to llama-server.exe.
+# Without them the GPU planner silently falls back to CPU (-ngl all ignored).
+# Mirrors select-model.ps1 Ensure-UnslothCudaRuntime (plan mode may launch
+# without ever running the coder server path that used to be the only caller).
+function Ensure-PlanCudaRuntime {
+    param([string]$ServerPath)
+    if ([string]::IsNullOrWhiteSpace($ServerPath) -or -not (Test-Path -LiteralPath $ServerPath)) { return }
+    $rel = Split-Path -Parent $ServerPath
+    if (-not (Test-Path -LiteralPath (Join-Path $rel "ggml-cuda.dll"))) { return }
+    if (Test-Path -LiteralPath (Join-Path $rel "cublas64_13.dll")) { return }
+    $torchLib = @(
+        "C:\Users\dai86\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib",
+        "C:\Users\dai86\Documents\ComfyUI\.venv\Lib\site-packages\torch\lib"
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $torchLib) { return }
+    $copies = @(
+        @{ Src = "cublas64_13.dll"; Dst = "cublas64_13.dll" },
+        @{ Src = "cublasLt64_13.dll"; Dst = "cublasLt64_13.dll" },
+        @{ Src = "cudart64_13.dll"; Dst = "cudart64_13.dll" },
+        @{ Src = "cudart64_13.dll"; Dst = "nvcudart_hybrid64.dll" },
+        @{ Src = "nvrtc64_130_0.dll"; Dst = "nvrtc64_130_0.dll" },
+        @{ Src = "nvrtc-builtins64_130.dll"; Dst = "nvrtc-builtins64_130.dll" }
+    )
+    foreach ($c in $copies) {
+        $src = Join-Path $torchLib $c.Src
+        $dst = Join-Path $rel $c.Dst
+        if ((Test-Path -LiteralPath $src) -and -not (Test-Path -LiteralPath $dst)) {
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            Write-Host ("Installed CUDA runtime DLL for plan llama-server: {0}" -f $c.Dst) -ForegroundColor DarkGray
+        }
+    }
+}
+Ensure-PlanCudaRuntime -ServerPath $planServer
+
 function Get-PlanEngineName {
     # 企画 LLM の llama-server 実体からエンジン名を判定（コーダー側のエンジン表記と揃える）。
     param([string]$ServerPath)

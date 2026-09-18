@@ -22,6 +22,13 @@ param(
     [string]$FlashAttentionMode = "Prompt",
     [ValidateSet("Prompt", "Off", "MtpNextN")]
     [string]$SpecMode = "Prompt",
+    # PLE n-gram / per-layer embedding lazy disk read (--lazy-mode).
+    # Qwen3.8-Flash-Next (qwen4exp) marks the huge PLE table TENSOR_READ_LAZY;
+    # "on" streams rows from the GGUF on demand (FreeToken PR #311 equivalent)
+    # instead of pinning tens of GiB in host RAM. Requires mmap (default).
+    # Empty/"Prompt" = auto: "on" for Flash-Next/qwen4exp, else leave engine default.
+    [ValidateSet("Prompt", "On", "Auto", "Off")]
+    [string]$LazyMode = "Prompt",
     [ValidateSet("Prompt", "Auto", "2", "3", "4", "6", "8", "Custom")]
     [string]$MoeExpertsMode = "Prompt",
     [string]$MoeExpertsCount = "",
@@ -110,8 +117,10 @@ if (Test-Path -LiteralPath $utf8Helper) {
     . $utf8Helper
 }
 
-# Single engine since 2026-09-11: Unsloth llama.cpp CUDA build (b10840,
-# NVIDIA RTX 3080). Previously the HIP/gfx110X build for RX 7800 XT.
+# Single engine since 2026-09-11: Unsloth llama.cpp build (b10909) with
+# bundled ROCm/HIP runtime (amdhip64_7 / hipblas / ggml-hip). Works on
+# RX 7800 XT without a system-wide ROCm install. Comments previously said
+# CUDA/NVIDIA — that was wrong; the Release tree ships ggml-hip.dll.
 # Override with LLAMADOCK_UNSLOTH_SERVER if the path ever moves.
 $UnslothServerPath = if ($env:LLAMADOCK_UNSLOTH_SERVER) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
@@ -142,8 +151,12 @@ function Ensure-UnslothCudaRuntime {
     if (Test-Path -LiteralPath (Join-Path $rel "cublas64_13.dll")) {
         return
     }
-    $torchLib = "C:\Users\dai86\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib"
-    if (-not (Test-Path -LiteralPath $torchLib)) {
+    $torchLibCandidates = @(
+        "C:\Users\dai86\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib",
+        "C:\Users\dai86\Documents\ComfyUI\.venv\Lib\site-packages\torch\lib"
+    )
+    $torchLib = $torchLibCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $torchLib) {
         return
     }
     $copies = @(
@@ -622,8 +635,8 @@ function Test-PortBusy {
 
 function Get-RequiredEngine {
     param([object]$Model)
-    # Single engine since 2026-08-30: Unsloth's llama.cpp HIP build runs every
-    # supported arch (including MTP GGUFs); no per-model engine routing needed.
+    # Single engine since 2026-08-30: Unsloth's llama.cpp HIP build (bundled
+    # ROCm) runs every supported arch including qwen4exp / MTP GGUFs.
     return "Unsloth"
 }
 
@@ -2153,16 +2166,39 @@ if ($comfyOnly) {
 $allFiles = Get-ChildItem -Path $ModelsBase -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notmatch "mmproj" -and $_.Name -notmatch "(?i)(^|[\\/_. -])Hy3([\\/_. -]|$)|Hy[-_ ]?V3" -and $_.Name -notmatch "(?i)DSpark" }
 
-# Build model list (all models except mmproj)
+# Build model list (all models except mmproj). Multi-part GGUFs
+# (name-00001-of-0000N.gguf) are offered once as the first shard; SizeMB is
+# the sum of every sibling so VRAM/RAM fit math sees the real footprint.
 $models = @()
 foreach ($f in $allFiles) {
     if ($f.Name -notmatch "mmproj" -and $f.Name -notmatch "(?i)DFlash2") {
+        if ($f.Name -match "^(?<base>.+)-(?<idx>\d{5})-of-(?<total>\d{5})\.gguf$") {
+            $partIdx = [int]$Matches.idx
+            $partTotal = $Matches.total
+            $partBase = $Matches.base
+            if ($partIdx -ne 1) { continue }
+            $basePattern = "^$([regex]::Escape($partBase))-\d{5}-of-$partTotal\.gguf$"
+            $siblings = @($allFiles | Where-Object { $_.Name -match $basePattern })
+            $totalBytes = ($siblings | Measure-Object -Property Length -Sum).Sum
+            $isTQ3 = $f.Name -match "TQ3"
+            $models += [PSCustomObject]@{
+                Name = "$partBase [$($siblings.Count)-part GGUF]"
+                FullName = $f.FullName
+                SizeMB = [math]::Round($totalBytes / 1MB, 1)
+                IsTQ3 = $isTQ3
+                IsSplit = $true
+                PartCount = $siblings.Count
+            }
+            continue
+        }
         $isTQ3 = $f.Name -match "TQ3"
         $models += [PSCustomObject]@{
             Name = $f.Name
             FullName = $f.FullName
             SizeMB = [math]::Round($f.Length / 1MB, 1)
             IsTQ3 = $isTQ3
+            IsSplit = $false
+            PartCount = 1
         }
     }
 }
@@ -2213,11 +2249,13 @@ $requiredEngine = Get-RequiredEngine -Model $selected
 $selectedModelText = "$($selected.Name) $($selected.FullName)"
 $isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x7B|expert|DeepSeek|Laguna|Flash[-_ ]?Next"
 $isDeepSeek = $selectedModelText -match "(?i)DeepSeek"
+# qwen4exp (Qwen3.8-Flash-Next): huge PLE n-gram table marked TENSOR_READ_LAZY.
+$isQwen4Exp = $selectedModelText -match "(?i)qwen4exp|Flash[-_ ]?Next|qwen3\.8[-_ ]?flash"
 if ($EngineMode -ne "Auto") {
     $requiredEngine = $EngineMode
 }
 
-# Single engine (Unsloth HIP) since 2026-08-30: no engine selection menu.
+# Single engine (Unsloth HIP, bundled ROCm) since 2026-08-30: no engine selection menu.
 $ServerPath = $UnslothServerPath
 
 $modelNote = Get-ModelNote -Model $selected
@@ -2872,6 +2910,15 @@ if ($cpuMoeMode -eq "Auto") {
                 Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
             }
         }
+        elseif ($isQwen4Exp) {
+            # Size is dominated by the 51B PLE n-gram table (lazy disk), not MoE
+            # experts. Ratio-based auto produced ~39 and measured 3.2 t/s on
+            # RX 7800 XT; 4 layers CPU-MoE measured 5.3 t/s (2026-09-15).
+            $selectedCpuMoe = "4"
+            if (-not $isQuickLaunch) {
+                Write-Host "CPU MoE layers: Auto (4) - Flash-Next 実測最速（PLE は lazy でディスク側）" -ForegroundColor Yellow
+            }
+        }
         else {
             $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
             $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
@@ -3187,6 +3234,16 @@ if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode) -and $ClientMode -in @
 $effectiveKCacheType = $selectedKCache.Type
 $effectiveVCacheType = $selectedVCache.Type
 
+# qwen4exp / Flash-Next on this Unsloth HIP build: FA has no kernel for the
+# K/V pair q8_0+q4_0 and silently converts both to f16 (slow). Force V=q8_0
+# so FA stays on the quantized path (measured 2026-09-15 on RX 7800 XT).
+if ($isQwen4Exp -and $effectiveVCacheType -eq "q4_0") {
+    $effectiveVCacheType = "q8_0"
+    if (-not $isQuickLaunch) {
+        Write-Host "KV cache V: q8_0 (Flash-Next は q8_0+q4_0 で FA カーネルが無く f16 変換になるため)" -ForegroundColor Yellow
+    }
+}
+
 # Keep prompt-cache RAM explicit. Long-context and larger-model runs receive
 # smaller host-side cache budgets unless the caller overrides this parameter.
 # The prompt cache lives in host RAM, so scale the default with detected RAM:
@@ -3353,8 +3410,28 @@ else {
     Write-Host ""
 }
 
-# Get model short name for -a flag
-$modelShort = $selected.Name -replace "\.gguf$", "" -replace "-", "_"
+# Get model short name for -a flag. Split models display as
+# "Base [N-part GGUF]"; use the on-disk first-shard name so -a stays a
+# clean identifier.
+$modelLeaf = [System.IO.Path]::GetFileNameWithoutExtension($selected.FullName)
+$modelShort = $modelLeaf -replace "-\d{5}-of-\d{5}$", "" -replace "-", "_"
+
+# PLE / per-layer n-gram lazy disk read (--lazy-mode). FreeToken PR #311
+# equivalent already in Unsloth llama.cpp: TENSOR_READ_LAZY on per_layer_tok_embd
+# streams the huge Qwen3.8-Flash-Next table from the GGUF instead of pinning
+# it in host RAM. "on" forces it (even below the 4 GiB auto threshold);
+# "auto" lets the engine decide; "off" loads everything eagerly.
+$effectiveLazyMode = "auto"
+if (-not [string]::IsNullOrWhiteSpace($LazyMode) -and $LazyMode -ne "Prompt") {
+    $effectiveLazyMode = $LazyMode.Trim().ToLower()
+}
+elseif ($isQwen4Exp) {
+    $effectiveLazyMode = "on"
+}
+if ($isQwen4Exp -and $effectiveLazyMode -ne "off") {
+    Write-Host "PLE n-gram: lazy disk read (--lazy-mode $effectiveLazyMode) — テーブルは GGUF 上に置き、参照行だけ読み込み" -ForegroundColor Green
+    Write-Host "  既定の mmap を維持すること。--no-mmap は PLE を RAM に全ロードしディスク100%の原因になる" -ForegroundColor DarkGray
+}
 
 # Start server
 $startFilePath = $ServerPath
@@ -3375,6 +3452,35 @@ $args = @(
 )
 
 $args += "--no-ui"
+
+# Lazy PLE / per-layer embedding disk read. Probe once: builds without -lzm
+# abort on unknown flags, so skip when the engine is too old. "auto" is the
+# engine default and needs no flag.
+if ($effectiveLazyMode -and $effectiveLazyMode -ne "auto") {
+    if (-not $script:UnslothHelpText) {
+        $oldProbePath = $env:PATH
+        try {
+            $script:UnslothHelpText = (& $ServerPath --help 2>&1 | Out-String)
+        }
+        finally {
+            $env:PATH = $oldProbePath
+        }
+    }
+    if ($script:UnslothHelpText -match "--lazy-mode") {
+        $args += @("--lazy-mode", $effectiveLazyMode)
+    }
+    elseif ($effectiveLazyMode -eq "on" -and -not $isQuickLaunch) {
+        Write-Host "WARNING: engine has no --lazy-mode; PLE table will load fully into RAM." -ForegroundColor Yellow
+    }
+}
+
+# CPU threads. Engine default is 6 which leaves half of a 12-thread box idle
+# on CPU-bound MoE decode. Flash-Next measured +0.6 t/s at -t 11 (2026-09-15).
+if ($isQwen4Exp) {
+    $logical = [Environment]::ProcessorCount
+    $threadN = [math]::Max(4, $logical - 1)
+    $args += @("-t", "$threadN", "-tb", "$threadN")
+}
 
 # Opt-in vision: image input via the mmproj adapter picked during setup.
 if ($visionEnabled -and $visionMmprojPath) {
@@ -3829,6 +3935,7 @@ Write-Host " KVキャッシュ       K=$effectiveKCacheType, V=$effectiveVCacheT
 Write-Host " プロンプトキャッシュ $effectiveCacheRamMiB MiB" -ForegroundColor Green
 Write-Host " Flash Attention    $flashAttention" -ForegroundColor Green
 Write-Host " 推測デコード       $SpecMode" -ForegroundColor Green
+Write-Host " PLE レイジー読込   $effectiveLazyMode" -ForegroundColor Green
 Write-Host " GPUオフロード      $selectedOffload" -ForegroundColor Green
 Write-Host " MCP                $selectedMcp" -ForegroundColor Green
 Write-Host ""

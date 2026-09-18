@@ -58,5 +58,11 @@
   "pattern": "(?i)HauhauCS",
   "note": "Qwen3.8-27B-Uncensored-HauhauCS-Aggressive MTP 搭載（vision mmproj 同梱リポジトリ）。2026-08-21 統一実測 RX 7800 XT（ctx16K/fa/KV q8_0+q4_0/draft-mtp n2）: **IQ3_M = 実効 28.32 t/s・acceptance 0.782 で速度の王**、IQ4_XS = 19.27 t/s（部分オフロード）だが品質最良。日常は IQ3_M、品質優先なら IQ4_XS。draft-mtp 前提なので SpecMode は MTP/NextN を選ぶこと。",
   "recommended_preset": "PiCoding"
+ },
+ {
+  "pattern": "(?i)qwen4exp|Flash[-_ ]?Next|qwen3[.]8[-_ ]?flash",
+  "note": "Qwen3.8-Flash-Next (qwen4exp): 125B-A6B + 51B PLE n-gram + 4B MTP（この IQ2_XXS 轉換には MTP レイヤー無し）。Unsloth の TENSOR_READ_LAZY で PLE をディスク行読込。LlamaDock は --lazy-mode on / -t 11 / --n-cpu-moe 4 を自動付与。RX 7800 XT 96GB 実測: n-cpu-moe 4 で tg 約 5.3 t/s（3 回平均 5.27）、常駐 66GB、ディスク 1% 未満。ratio 既定の 39 では 3.2 t/s に落ちる。V は q8_0（q4_0 は FA カーネル無しで f16 変換）。",
+  "warning": "Experts Laguna / AtomicBot では qwen4exp 未対応。Unsloth HIP 必須。--spec-type draft-mtp はこの GGUF では失敗（MTP 層なし）。ngram 系投機は短文ユニークプロンプトで逆に遅い。メモリ節約したいなら n-cpu-moe 16（tg 約 4.9 / WS 48GB）。",
+  "recommended_preset": "PiCoding"
  }
 ]
