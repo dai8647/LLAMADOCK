@@ -29,6 +29,12 @@ logs/
 .freebuff/
 local-deep-research-test/
 
+# --- Character library (local creative assets, edited via the Web GUI) ---
+# index.json (schema template) stays tracked; per-character cards are local.
+config/characters/*.json
+!config/characters/index.json
+config/characters/ref/
+
 # --- Downloaded model binaries (sd.cpp runtime downloads, multi-GB) ---
 tools/sd.cpp/models/
 tools/sd.cpp/old/

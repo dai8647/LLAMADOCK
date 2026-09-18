@@ -837,6 +837,51 @@ code, pre {
 .es-status.warn { color: var(--amber); }
 .es-status.err { color: var(--red); }
 
+/* ---------------- Character library card ---------------- */
+
+.char-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+.char-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; }
+
+.char-summary {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.char-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+.char-refimgs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+.char-ref { position: relative; display: inline-block; }
+.char-ref img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--border-strong); display: block; }
+.char-ref-del {
+  position: absolute; top: -6px; right: -6px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--red, #c0392b); color: #fff; border: none;
+  font-size: 12px; line-height: 18px; cursor: pointer; padding: 0;
+}
+
+.field textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--sans);
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+}
+.field textarea:focus { border-color: var(--teal); }
+
+.card-title .btn { margin-left: auto; }
+
 /* ---------------- Scrollbars ---------------- */
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }

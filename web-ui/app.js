@@ -784,6 +784,172 @@
     await refreshStatus();
   }
 
+  /* ---------- character library (config/characters/) ---------- */
+
+  // Card editor state: null id = create, otherwise editing that card.
+  let charEditingId = null;
+
+  async function loadCharacters() {
+    const el = $("#char-list");
+    if (!el) return;
+    try {
+      const payload = await api("/api/characters");
+      const cards = payload.characters || [];
+      if (!cards.length) {
+        el.innerHTML = `<li class="result-empty">キャラカードがありません。「+ 追加」で作成してください。</li>`;
+        return;
+      }
+      el.innerHTML = cards.map((c) => {
+        const loraCount = Object.values(c.lora || {}).reduce((n, list) => n + (list?.length || 0), 0);
+        const meta = [
+          loraCount ? `LoRA ${loraCount}本` : null,
+          c.seed != null ? `seed ${c.seed}` : null,
+          (c.refImages || []).length ? `基準画像 ${(c.refImages).length}枚` : null,
+        ].filter(Boolean).join(" · ") || "タグ固定のみ";
+        return `
+          <li class="result-item char-item">
+            <div class="result-name">${esc(c.name || c.id)} <span class="muted small">(${esc(c.id)})</span></div>
+            <div class="result-meta">${esc(meta)}</div>
+            <div class="char-summary muted small">${esc(c.summary)}</div>
+            <div class="char-actions">
+              <button class="btn btn-ghost btn-sm" data-char-edit="${esc(c.id)}" type="button">編集</button>
+              <button class="btn btn-ghost btn-sm" data-char-del="${esc(c.id)}" type="button">削除</button>
+            </div>
+          </li>`;
+      }).join("");
+      $$('[data-char-edit]').forEach((b) => b.addEventListener("click", () => openCharacterDialog(b.dataset.charEdit)));
+      $$('[data-char-del]').forEach((b) => b.addEventListener("click", () => deleteCharacter(b.dataset.charDel)));
+    } catch { /* API not ready yet */ }
+  }
+
+  function loraToText(lora) {
+    const parts = [];
+    for (const list of Object.values(lora || {})) {
+      for (const e of list || []) parts.push(e.strength === 1 ? e.name : `${e.name}:${e.strength}`);
+    }
+    return parts.join(", ");
+  }
+
+  function textToLora(text) {
+    // Simple v1: one shared list applied to the Klein (kimg) engine — the
+    // per-engine split is available in the JSON for power users.
+    const list = String(text || "").split(",").map((s) => s.trim()).filter(Boolean).map((part) => {
+      const [name, strength] = part.split(":");
+      const n = Number(strength);
+      return { name: name.trim(), strength: Number.isFinite(n) ? n : 1.0 };
+    });
+    return list.length ? { kimg: list } : {};
+  }
+
+  async function openCharacterDialog(id = null) {
+    charEditingId = id;
+    const dlg = $("#char-dialog");
+    $("#char-dialog-title").textContent = id ? `キャラカードを編集: ${id}` : "キャラカードを新規作成";
+    $("#char-id").value = id || "";
+    $("#char-id").disabled = !!id;
+    $("#char-id-original").value = id || "";
+    $("#char-name").value = "";
+    $("#char-summary").value = "";
+    $("#char-negative").value = "";
+    $("#char-lora").value = "";
+    $("#char-seed").value = "";
+    $("#char-notes").value = "";
+    $("#char-refimg").value = "";
+    $("#char-refimgs").innerHTML = "";
+    if (id) {
+      try {
+        const cards = (await api("/api/characters")).characters || [];
+        const card = cards.find((c) => c.id === id);
+        if (card) {
+          $("#char-name").value = card.name || "";
+          $("#char-summary").value = card.summary || "";
+          $("#char-negative").value = card.negative || "";
+          $("#char-lora").value = loraToText(card.lora);
+          $("#char-seed").value = card.seed != null ? card.seed : "";
+          $("#char-notes").value = card.notes || "";
+          renderCharRefImages(id);
+        }
+      } catch { /* keep empty form */ }
+    }
+    dlg.showModal();
+  }
+
+  async function renderCharRefImages(id) {
+    const el = $("#char-refimgs");
+    if (!el) return;
+    try {
+      const payload = await api(`/api/characters/${encodeURIComponent(id)}/refimg`);
+      el.innerHTML = (payload.images || []).map((img) => `
+        <span class="char-ref">
+          <img src="${esc(img.url)}" alt="${esc(img.file)}" title="${esc(img.file)}" />
+          <button type="button" class="char-ref-del" data-ref-del="${esc(img.file)}" title="削除">×</button>
+        </span>`).join("");
+      $$('[data-ref-del]').forEach((b) => b.addEventListener("click", async () => {
+        await api(`/api/characters/${encodeURIComponent(id)}/refimg/${encodeURIComponent(b.dataset.refDel)}`, { method: "DELETE" });
+        renderCharRefImages(id);
+      }));
+    } catch {
+      el.innerHTML = "";
+    }
+  }
+
+  async function saveCharacterFromDialog() {
+    const id = ($("#char-id-original").value || $("#char-id").value || "").trim();
+    const body = {
+      id,
+      name: $("#char-name").value.trim(),
+      summary: $("#char-summary").value.trim(),
+      negative: $("#char-negative").value.trim(),
+      lora: textToLora($("#char-lora").value),
+      seed: $("#char-seed").value === "" ? null : Number($("#char-seed").value),
+      notes: $("#char-notes").value,
+    };
+    try {
+      const result = await api("/api/characters", { method: "POST", body: JSON.stringify(body) });
+      if (!result.ok) throw new Error(result.message || "保存できませんでした");
+      // Upload any newly picked reference images after the card exists.
+      const files = $("#char-refimg")?.files || [];
+      for (const f of files) {
+        const dataBase64 = await new Promise((resolve64, reject64) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve64(String(reader.result).split(",")[1] || "");
+          reader.onerror = reject64;
+          reader.readAsDataURL(f);
+        });
+        await api(`/api/characters/${encodeURIComponent(id)}/refimg`, {
+          method: "POST",
+          body: JSON.stringify({ name: f.name, dataBase64 }),
+        });
+      }
+      $("#char-dialog").close();
+      toast(`キャラ「${body.name || id}」を保存しました`, "ok");
+      await loadCharacters();
+    } catch (error) {
+      toast(`保存に失敗しました: ${error.message}`, "warn");
+    }
+  }
+
+  async function deleteCharacter(id) {
+    if (!confirm(`キャラ「${id}」を削除しますか？（基準画像は残ります）`)) return;
+    try {
+      const result = await api(`/api/characters?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!result.ok) throw new Error(result.message || "削除できませんでした");
+      toast(`キャラ「${id}」を削除しました`, "ok");
+      await loadCharacters();
+    } catch (error) {
+      toast(`削除に失敗しました: ${error.message}`, "warn");
+    }
+  }
+
+  function bindCharacterUI() {
+    $("#btn-char-new")?.addEventListener("click", () => openCharacterDialog(null));
+    $("#btn-char-save")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      saveCharacterFromDialog();
+    });
+    $("#btn-char-cancel")?.addEventListener("click", () => $("#char-dialog").close());
+  }
+
   /* ---------- engine settings (coder engine 8080) ---------- */
 
   function setEsStatus(msg, cls) {
@@ -979,6 +1145,9 @@
     $("#es-apply").addEventListener("click", applyEngineSettings);
     $("#es-spec").addEventListener("change", toggleEsDraftRow);
     loadEngineSettings();
+
+    bindCharacterUI();
+    loadCharacters();
 
     $("#btn-copy-args").addEventListener("click", async () => {
       try {

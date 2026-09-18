@@ -122,6 +122,163 @@ def _nsfw_kb_system_note(user_text):
     )
     return "\n".join(lines)
 
+
+# ---- キャラ固定ライブラリ（config/characters/） ---------------------------
+# 編集は Web GUI (web-ui/server.js の /api/characters)、消費はこのファイル。
+# キャッシュを持たずリクエストごとにディレクトリを読むので、GUI での編集が
+# h3-chat の再起動なしで次の生成から反映される。システムプロンプト
+# (PLAN_SYSTEM) は 1 バイトも変更しない: 認知は「ピン中ターンのユーザー文前置き」
+# （char_identity_prefix）、保証は生成時の機械適用（negative 追記 / LoRA 挿入 /
+# seed 固定）で行う。ピンなしのリクエストは従来どおり動く。
+CHARACTERS_DIR = os.path.join(REPO, "config", "characters")
+_CHAR_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _char_id_ok(char_id):
+    return bool(char_id) and bool(_CHAR_ID_RE.match(char_id))
+
+
+def _load_characters():
+    """キャラカード一覧を読む（毎回ディスク・壊れたファイルはスキップ）。"""
+    out = []
+    try:
+        names = os.listdir(CHARACTERS_DIR)
+    except OSError:
+        return out
+    for fn in sorted(names):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(CHARACTERS_DIR, fn), encoding="utf-8") as f:
+                card = json.load(f)
+        except Exception as ex:
+            print(f"h3-chat: skipping character file {fn}: {ex}")
+            continue
+        if isinstance(card, dict) and _char_id_ok(card.get("id")) and card.get("summary"):
+            out.append(card)
+    return out
+
+
+def get_character(char_id):
+    """char_id のカードを返す（無ければ None）。パストラバーサルは ID 正規表現で遮断。"""
+    if not _char_id_ok(char_id):
+        return None
+    for card in _load_characters():
+        if card.get("id") == char_id:
+            return card
+    return None
+
+
+def char_summary_text(card):
+    """カード summary をプロンプト用 1 文に正規化（改行潰し・末尾句点除去）。"""
+    s = " ".join(str((card or {}).get("summary") or "").split())
+    return s[:-1] if s.endswith(".") else s
+
+
+def char_negative_text(card):
+    return " ".join(str((card or {}).get("negative") or "").split())
+
+
+def char_identity_prefix(card):
+    """認知層: ピン中のターンだけユーザー文の頭に前置きする 1 行。
+
+    PLAN_SYSTEM への追記はしない。前置きは PLAN_HISTORY の 6 ターン窓から
+    自然に流れ出るため、ピンを外せばコンテキスト コストはゼロに戻る。
+    量は約 60〜80 トークン/ピン中ターン。
+    """
+    if not card:
+        return ""
+    name = str(card.get("name") or card.get("id"))
+    return (
+        "[キャラ固定: " + name + "] "
+        "被写体の同一人物性（顔・髪・体型・肌質）は次の英語タグ列で固定する。"
+        "[IMG_PROMPT] ではスマホ写真の導入句の直後にこの被写体描写をそのまま置き、"
+        "ユーザーの指示と矛盾しない限り髪・体型・顔は変更しない。"
+        "人数・ポーズ・行為・服装・構図・照明・質感はシーンに合わせて書いてよい: "
+        + char_summary_text(card) + "\n\n"
+    )
+
+
+def _negative_node_id(wf):
+    """KSampler の negative 入力リンクを辿って負プロンプト ノード ID を返す。
+
+    ノード ID はワークフローごとに違う（klein=6, krea2=5, qimg=6, 動画系も別）
+    のでハードコードせず必ずリンクから特定する。
+    """
+    for node in wf.values():
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") in ("KSampler", "KSamplerAdvanced"):
+            neg = (node.get("inputs") or {}).get("negative")
+            if isinstance(neg, list) and neg and isinstance(neg[0], str) and neg[0] in wf:
+                return neg[0]
+    return None
+
+
+def _append_negative(wf, extra):
+    """負プロンプト ノードの text に extra を追記する（重複は無視）。"""
+    extra = (extra or "").strip(", ")
+    if not extra:
+        return False
+    nid = _negative_node_id(wf)
+    if not nid:
+        return False
+    inputs = wf[nid].setdefault("inputs", {})
+    text = str(inputs.get("text") or "")
+    if extra in text:
+        return True
+    inputs["text"] = (text.rstrip().rstrip(",") + ", " + extra) if text else extra
+    return True
+
+
+def _apply_char_loras(wf, lora_list):
+    """カードの LoRA を KSampler の model 入力にチェーン挿入する。
+
+    既存の qimg 多段 LoRA（LoraLoaderModelOnly を model 入力に直列接続）と
+    同型の改変。適用できた LoRA 名のリストを返す。
+    """
+    if not isinstance(lora_list, list) or not lora_list:
+        return []
+    sampler = next((n for n in wf.values()
+                    if isinstance(n, dict) and n.get("class_type") in ("KSampler", "KSamplerAdvanced")), None)
+    if not sampler:
+        return []
+    ins = sampler.get("inputs") or {}
+    model_in = ins.get("model")
+    if not (isinstance(model_in, list) and len(model_in) == 2
+            and isinstance(model_in[0], str) and model_in[0] in wf):
+        return []
+    cur = model_in[0]
+    next_id = max((int(k) for k in wf if k.isdigit()), default=0) + 1
+    applied = []
+    for entry in lora_list:
+        if isinstance(entry, str):
+            entry = {"name": entry, "strength": 1.0}
+        name = str((entry or {}).get("name") or "").strip()
+        if not name or os.sep in name or "/" in name:
+            continue
+        try:
+            strength = float((entry or {}).get("strength", 1.0))
+        except (TypeError, ValueError):
+            strength = 1.0
+        nid = str(next_id)
+        next_id += 1
+        wf[nid] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": [cur, 0], "lora_name": name, "strength_model": strength},
+            "_meta": {"title": "Character LoRA: " + name},
+        }
+        cur = nid
+        applied.append(name)
+    if applied:
+        # Python dict semantics: `ins` IS sampler["inputs"], so this already
+        # rewires the sampler in place. Reassign it anyway to make the
+        # mutation explicit and survive a future copy-based refactor.
+        ins["model"] = [cur, 0]
+        sampler["inputs"]["model"] = ins["model"]
+    return applied
+
+
 WORKFLOWS = {
     # 32B Heretic encoder: best Japanese / detailed-prompt fidelity
     "high": os.path.join(REPO, "h3_workflow_turbo_audio.json"),
@@ -641,6 +798,48 @@ def _warn_if_vram_tight():
         pass
 
 
+def _ensure_plan_cuda_runtime(server_bin):
+    """Copy CUDA 13 DLLs next to llama-server when ggml-cuda.dll is present.
+
+    ggml-cuda.dll imports cublas64_13 / nvcudart_hybrid64. Unsloth's Release
+    folder does not ship them; without them llama-server silently falls back
+    to CPU even with -ngl all (high CPU, no VRAM). Mirrors
+    select-model.ps1 Ensure-UnslothCudaRuntime so plan mode / UI model
+    switch works without a prior coder launch.
+    """
+    if not server_bin or not os.path.isfile(server_bin):
+        return
+    rel = os.path.dirname(server_bin)
+    if not os.path.isfile(os.path.join(rel, "ggml-cuda.dll")):
+        return
+    if os.path.isfile(os.path.join(rel, "cublas64_13.dll")):
+        return
+    candidates = (
+        r"C:\Users\dai86\.unsloth\studio\unsloth_studio\Lib\site-packages\torch\lib",
+        r"C:\Users\dai86\Documents\ComfyUI\.venv\Lib\site-packages\torch\lib",
+    )
+    torch_lib = next((p for p in candidates if os.path.isdir(p)), None)
+    if not torch_lib:
+        return
+    copies = (
+        ("cublas64_13.dll", "cublas64_13.dll"),
+        ("cublasLt64_13.dll", "cublasLt64_13.dll"),
+        ("cudart64_13.dll", "cudart64_13.dll"),
+        ("cudart64_13.dll", "nvcudart_hybrid64.dll"),
+        ("nvrtc64_130_0.dll", "nvrtc64_130_0.dll"),
+        ("nvrtc-builtins64_130.dll", "nvrtc-builtins64_130.dll"),
+    )
+    for src_name, dst_name in copies:
+        src = os.path.join(torch_lib, src_name)
+        dst = os.path.join(rel, dst_name)
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            try:
+                shutil.copy2(src, dst)
+                print(f"h3-chat: installed CUDA runtime DLL for planner: {dst_name}")
+            except OSError as e:
+                print(f"h3-chat: failed to copy {dst_name}: {e}")
+
+
 def _spawn_plan_llm():
     """Launch the planning llama-server detached on PLAN_PORT.
 
@@ -664,6 +863,7 @@ def _spawn_plan_llm():
     if not os.path.isfile(PLAN_MODEL_PATH):
         print(f"h3-chat: planning model not found: {PLAN_MODEL_PATH}")
         return None
+    _ensure_plan_cuda_runtime(PLAN_SERVER_BIN)
     server_bin = PLAN_SERVER_BIN
     args = [
         server_bin, "-m", PLAN_MODEL_PATH,
@@ -1800,6 +2000,11 @@ HTML = """<!doctype html>
         <label>モデル:<select id="p-model" onchange="selectPlanModel()" style="max-width:420px"></select></label>
         <span id="p-model-status" class="hint"></span>
       </div>
+      <div class="advgroup">
+        <span class="hint" title="キャラライブラリ（config/characters/）に登録した人物の顔・髪・体型を固定します。次のキー画像から効き、画像を固定すれば動画 (I2V/R2V) も自動的に同じ人物になります。解除するまで有効。">キャラ固定（任意・次のキー画像から有効）:</span>
+        <label>キャラ:<select id="char-pin" onchange="onCharPinChange()" style="max-width:280px"><option value="">なし（毎回自由に決める）</option></select></label>
+        <span id="char-pin-status" class="hint"></span>
+      </div>
       <div class="advgroup" id="planparams">
         <span class="hint">企画 LLM パラメータ:</span>
         <label>KV キー:<select id="p-ctk" onchange="sendPlanSettings()"><option value="q8_0" selected>q8_0</option><option value="q4_0">q4_0</option><option value="f16">f16</option><option value="none">なし</option></select></label>
@@ -1840,6 +2045,10 @@ let refImages = [];
 // ピッカーが開いている間の一時選択（「適用」で refImages に反映）
 let refPickerSelection = [];
 let planStage = "chat";   // chat -> image -> video -> done
+// キャラ固定の選択（config/characters/<id>.json の id・空 = 固定なし）。
+// セッションごとに uiSnapshot に載せて復元する。
+let pinnedChar = "";
+let charLib = [];
 // 参照モードで「どんな動画にするか」を相談中かどうか。最初の1ターンだけ
 // 企画 LLM に"いきなり FINAL_PROMPT を作らず相談して"という指示を付ける。
 let refConsultActive = false;
@@ -2205,7 +2414,8 @@ async function send() {
         image_use: $("#imguse").value,
         ref_size: ($("#refsize-max") && $("#refsize-max").checked) ? "max" : "match",
         tune: tuneSpec(),
-        audio: audioSpec(), length: lenValue()
+        audio: audioSpec(), length: lenValue(),
+        ...charPinSpec()
       })
     });
     const j = await r.json();
@@ -2229,7 +2439,7 @@ async function plan(text, refStart) {
     const r = await fetch("/api/plan", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: text, stage: planStage, image: refImages[0] || null, images: refImages, ref_start: !!refStart})
+      body: JSON.stringify({text: text, stage: planStage, image: refImages[0] || null, images: refImages, ref_start: !!refStart, ...charPinSpec()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -2308,7 +2518,7 @@ async function genImage(prevBot) {
     const r = await fetch("/api/kimg", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: lastImgPrompt, engine: eng})
+      body: JSON.stringify({text: lastImgPrompt, engine: eng, ...charPinSpec()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -2521,7 +2731,8 @@ async function doGenerate(mode, text, bot) {
         image_use: $("#imguse").value,
         ref_size: ($("#refsize-max") && $("#refsize-max").checked) ? "max" : "match",
         tune: tuneSpec(),
-        audio: audioSpec(), length: lenValue()
+        audio: audioSpec(), length: lenValue(),
+        ...charPinSpec()
       })
     });
     const j = await r.json();
@@ -2818,8 +3029,55 @@ function uiSnapshot() {
     refImages, refConsultActive,
     imguse: $("#imguse").value,
     curJobId: curJobId, curJobKind: curJobKind,
-    segmentChain: segmentChain, extendFrom: extendFrom
+    segmentChain: segmentChain, extendFrom: extendFrom,
+    pinnedChar: pinnedChar
   };
+}
+
+// ---- キャラ固定 ---------------------------------------------------------
+// config/characters/ を h3-chat サーバーの /api/characters 経由で読み、
+// セレクタに並べる。編集は Web GUI (コンフィ側) が担当。選択はサーバーに
+// char_id として送り、認知（企画への前置き）と保証（negative/LoRA/seed の
+// 機械適用）の両方で使われる。
+async function loadCharacters() {
+  const sel = $("#char-pin");
+  if (!sel) return;
+  try {
+    const r = await fetch("/api/characters");
+    const j = await r.json();
+    charLib = j.characters || [];
+  } catch (e) { charLib = []; }
+  const cur = pinnedChar;
+  sel.innerHTML = '<option value="">なし（毎回自由に決める）</option>' +
+    charLib.map(c => '<option value="' + esc(c.id) + '">' + esc(c.name || c.id) + '</option>').join("");
+  sel.value = charLib.some(c => c.id === cur) ? cur : "";
+  pinnedChar = sel.value;
+  updateCharPinStatus();
+}
+
+function onCharPinChange() {
+  pinnedChar = $("#char-pin").value || "";
+  updateCharPinStatus();
+  saveSession();
+}
+
+function updateCharPinStatus() {
+  const el = $("#char-pin-status");
+  if (!el) return;
+  const c = charLib.find(x => x.id === pinnedChar);
+  if (!c) { el.textContent = ""; return; }
+  const bits = [];
+  if (c.seed != null) bits.push("seed " + c.seed);
+  const lor = (c.lora && Object.values(c.lora) || []).flat();
+  if (lor.length) bits.push("LoRA " + lor.length + "本");
+  if ((c.refImages || []).length) bits.push("基準画像 " + c.refImages.length + "枚");
+  el.textContent = "📌 " + (bits.length ? bits.join("・") + " で固定中" : "固定中（次のキー画像から）");
+}
+
+function charPinSpec() {
+  // ピンなしのときはキー自体を送らない（旧サーバー / 従来のリクエスト body
+  // と完全に同一になるゼロ影響設計）。
+  return pinnedChar ? {char_id: pinnedChar} : {};
 }
 
 async function saveSession() {
@@ -2954,6 +3212,8 @@ function renderSession(doc) {
   segmentChain = Array.isArray(ui.segmentChain) ? ui.segmentChain.filter(x => typeof x === "string") : [];
   extendFrom = typeof ui.extendFrom === "string" ? ui.extendFrom : null;
   if (ui.imguse === "first" || ui.imguse === "last" || ui.imguse === "ref") $("#imguse").value = ui.imguse;
+  pinnedChar = typeof ui.pinnedChar === "string" ? ui.pinnedChar : "";
+  loadCharacters();
   updateRefSel();
   const clr = $("#ref-clear");
   if (clr) clr.style.display = refImages.length ? "inline-block" : "none";
@@ -3032,6 +3292,7 @@ async function initSessions() {
   } catch (e) {}
 }
 initSessions();
+loadCharacters();
 
 async function resetPlan() {
   // 進行中の生成ジョブがあれば先にキャンセルする
@@ -3147,6 +3408,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._refimg(parsed.query)
         elif parsed.path == "/api/plan-models":
             self._plan_models()
+        elif parsed.path == "/api/characters":
+            self._json(200, {"characters": _load_characters()})
         elif parsed.path == "/api/sessions":
             self._sessions_list()
         else:
@@ -3326,6 +3589,18 @@ class ChatHandler(BaseHTTPRequestHandler):
         if ref_size not in ("match", "max"):
             self._json(400, {"error": "unknown ref_size: " + str(ref_size)})
             return
+        # キャラ固定: カードは 1 回だけ解決する（ピンなし = None で全経路が
+        # 従来どおり動く）。
+        card = get_character(req.get("char_id") or None)
+        # Tier 2: R2V でユーザーが参照画像を 1 枚も選んでおらず、キャラに
+        # 基準画像が登録してあればそれを既定参照に使う。ref_image_N への
+        # 挿入や _stage_ref_image は既存経路をそのまま流用する。
+        if card and ref and not images:
+            char_refs = [p for p in (card.get("refImages") or [])
+                         if isinstance(p, str) and p]
+            if char_refs:
+                images = char_refs[:MAX_REF_IMAGES]
+                image_fn = images[0]
         # 画像が選択されているのに参照モード OFF のままでは、その画像は完全に
         # 無視され、テキストだけの無関係な動画が生成されていた（「女の子の
         # 参照画像を入れたのに車の動画になった」の根本原因）。ここで明示的に
@@ -3420,6 +3695,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json(500, {"error": f"ワークフロー読み込み失敗: {e}"})
                 return
+            # T2V（参照画像なし直行）は画像から同一人物性を運べないため、
+            # キャラ summary をプロンプト頭に機械前置きする。I2V / R2V は
+            # 画像が人物を運ぶので触らない（余計なトークンを増やさない）。
+            if card:
+                text = char_summary_text(card) + ". " + text
             wf[NODE_PROMPT]["inputs"]["prompt"] = text
         # チャットで指示した長さ・解像度の上書きを反映。UI の「長さ」ドロップ
         # ダウン（req["length"]、秒）もここで受け取る。チャット指示がより具体的
@@ -3478,6 +3758,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         except ValueError as bad:
             self._json(400, {"error": f"tune.{bad} の値が範囲外か数値ではありません"})
             return
+        # キャラ固定（保証層）: ネガティブ タグを負プロンプト ノードに機械追記。
+        # KSampler の negative リンクから汎用に特定するので I2V / R2V / T2V
+        # すべてのワークフローでそのまま効く（negative ノードが無いだけの
+        # ワークフローでは静かに無視される）。
+        if card:
+            _append_negative(wf, char_negative_text(card))
         classes = {n.get("class_type") for n in wf.values()}
         tune_ignored = []
         if t_cache is not None:
@@ -3597,6 +3883,12 @@ class ChatHandler(BaseHTTPRequestHandler):
                     if tw.get("resolution"):
                         SESSION["resolution"] = tw["resolution"]
                 tweak_note = "⚙ 設定を更新しました: " + tw["label"] + "（次の生成から反映）\n\n"
+        # キャラ固定（認知層）: PLAN_SYSTEM は変更せず、ピン中のターンだけ
+        # ユーザー文の頭に同一人物性の固定を 1 行前置きする。__RESET__ /
+        # __CONFIRM_IMAGE__ などの内部コマンドには付けない。
+        pinned_card = get_character(req.get("char_id") or None)
+        if pinned_card and not text.startswith("__"):
+            text = char_identity_prefix(pinned_card) + text
         try:
             reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja, img_prompt_ja = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
         except Exception as e:
@@ -4247,11 +4539,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         if not eng:
             self._json(400, {"error": "unknown image engine: " + engine})
             return
+        card = get_character(req.get("char_id") or None)
         # sd.cpp backend: skip ComfyUI workflow entirely. Run sd-cli via PowerShell
         # wrapper and poll the resulting PNG into job_meta so the frontend can
         # surface the same "image" completion it uses for ComfyUI outputs.
         if eng.get("backend") == "sdcpp":
-            self._kimg_sdcpp(parsed, req, text, eng)
+            self._kimg_sdcpp(parsed, req, text, eng, card)
             return
         dw, dh = eng["default_size"]
         try:
@@ -4270,6 +4563,18 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[eng["latent"]]["inputs"]["height"] = height
         wf[eng["latent"]]["inputs"]["batch_size"] = eng.get("batch_size", 1)
         wf[eng["seed"]]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
+        # キャラ固定（保証層）: negative 追記・LoRA 挿入・seed 固定を機械適用。
+        # 企画 LLM が summary を書き忘れても、ここで人物の輪郭設定だけは届く。
+        char_applied = []
+        if card:
+            if _append_negative(wf, char_negative_text(card)):
+                char_applied.append("negative")
+            if _apply_char_loras(wf, (card.get("lora") or {}).get(engine) or []):
+                char_applied.append("LoRA")
+            char_seed = card.get("seed")
+            if isinstance(char_seed, int) and not isinstance(char_seed, bool):
+                wf[eng["seed"]]["inputs"]["seed"] = char_seed % (2**31 - 1)
+                char_applied.append("seed固定")
         self.server.autostop.poke()
         # gpu27b planner: free its VRAM before the image model loads.
         stop_plan_llm()
@@ -4281,11 +4586,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             pid = json.loads(raw)["prompt_id"]
             self.server.job_meta[pid] = {"mode": engine, "start": time.time(), "kind": "image"}
-            self._json(200, {"prompt_id": pid})
+            self._json(200, {"prompt_id": pid, "char_applied": char_applied})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
-    def _kimg_sdcpp(self, parsed, req, text, eng):
+    def _kimg_sdcpp(self, parsed, req, text, eng, card=None):
         """stable-diffusion.cpp パス: ComfyUI を一旦停止して sd-cli を直接起動する。
 
         出力 PNG は ComfyUI output/ に置かれるので既存の画像配信エンドポイントで
@@ -4321,6 +4626,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                 env = os.environ.copy()
                 env["SDCPP_OUT"] = out_png
                 env["SDCPP_PROMPT"] = prompt_file
+                if card:
+                    char_neg = char_negative_text(card)
+                    if char_neg:
+                        # ps1 は 1 行文字列で sd-cli に渡すため埋め込み引用符は潰す
+                        env["SDCPP_NEG"] = char_neg.replace('"', "'")
+                    char_seed = card.get("seed")
+                    if isinstance(char_seed, int) and not isinstance(char_seed, bool):
+                        env["SDCPP_SEED"] = str(char_seed % (2**31 - 1))
                 # ps1 は固定の sdcpp_klein_4b.png を出力するので、終わったら job_id に rename
                 proc = subprocess.run(
                     ["powershell", "-ExecutionPolicy", "Bypass", "-File", eng["script"]],

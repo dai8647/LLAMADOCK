@@ -1,0 +1,27 @@
+{
+  "_readme": "キャラ固定ライブラリの雛形。実運用のカードは Web GUI (コンフィ側) から config/characters/<id>.json として保存する（ローカル資産のため .gitignore 済み）。このファイルは h3-chat には読まれず、スキーマの説明だけを目的とする。",
+  "schema": {
+    "id": "ローマ字小文字 + 数字 + ハイフンのみ (正規表現 ^[a-z0-9][a-z0-9_-]{0,63}$)。ファイル名 <id>.json と一致させる",
+    "name": "表示名 (チャット UI のセレクタに出る)",
+    "summary": "英語タグ列 1 文。顔・髪・体型・肌質などの同一人物性属性だけを書く (服装・ポーズ・背景はシーン側に任せる)。[IMG_PROMPT] のスマホ写真導入句の直後に挿入される",
+    "negative": "英語タグ列。この人物に絶対に来てほしくない属性 (髪色・体型など)。KSampler の negative ノードに機械追記される",
+    "lora": "エンジン別の LoRA スタック。kimg/krea2/qimg は [{name, strength}] 配列 (ComfyUI models/loras からの相対名)。sdcpp は未対応",
+    "seed": "固定したい構図用シード (任意・整数 or null)。null なら従来どおりランダム",
+    "refImages": "基準画像のフルパス配列 (任意・Tier 2)。R2V で参照画像を 1 枚も選んでいないとき、先頭から既定参照として使われる",
+    "notes": "自由メモ (生成には使われない)"
+  },
+  "example": {
+    "id": "akari",
+    "name": "あかり",
+    "summary": "japanese woman, mid-20s, petite slender build, long straight black hair with blunt bangs, fair skin, soft round face",
+    "negative": "blonde hair, tan skin, tall, muscular, western features",
+    "lora": {
+      "kimg": [{ "name": "flux_klein_9b_nsfw_v2.safetensors", "strength": 0.85 }],
+      "krea2": [],
+      "qimg": []
+    },
+    "seed": null,
+    "refImages": [],
+    "notes": "八重歯・右目下のほくろは summary に足すと再現が安定する"
+  }
+}

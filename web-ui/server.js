@@ -41,6 +41,10 @@ import { resolveParams, buildArgs } from "./arg-builder.js";
 import { createLaunchManager, DEFAULT_UPSTREAM_PORT } from "./launch-manager.js";
 import { addRun, loadResults, summarize } from "./results-store.js";
 import { createClientManager, CLIENT_BASE_URL } from "./client-manager.js";
+import {
+  listCharacters, saveCharacter, readCharacter, deleteCharacter,
+  listRefImages, deleteRefImage, refDir, refFileName, MAX_REF_BYTES,
+} from "./characters-store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -55,6 +59,10 @@ const SUPERVISOR_DIR = join(ROOT, "mcp-data", "server-supervisor");
 const SERVER_ARGUMENTS_PATH = join(SUPERVISOR_DIR, "server-arguments.json");
 const SUPERVISOR_STATUS_PATH = join(SUPERVISOR_DIR, "status.json");
 const RESTART_FLAG_PATH = join(SUPERVISOR_DIR, "restart-request.json");
+// Character library: edited here (config side), consumed by tools/h3-chat.py
+// which re-reads the directory on every request. Cards are local creative
+// assets (gitignored); index.json is the tracked schema template.
+const CHARACTERS_DIR = join(CONFIG_DIR, "characters");
 
 // --- Engine runtime resolution (mirrors select-model.ps1) ---
 // Single engine since 2026-08-30: the Unsloth llama.cpp HIP build. It runs
@@ -674,6 +682,99 @@ export function createAppServer() {
           found: !!(process.env.LLAMADOCK_ENGINE_BIN || resolveEngineBin(e.name)),
         })),
       });
+      return;
+    }
+
+    if (pathname === "/api/characters") {
+      // Character library CRUD. The frontend (h3-chat) reads the same files.
+      //   GET    /api/characters            -> { characters: [...] }
+      //   POST   /api/characters            -> save (upsert) card body
+      //   DELETE /api/characters?id=<id>    -> remove card file
+      if (req.method === "GET") {
+        sendJson(res, 200, { ok: true, characters: await listCharacters(CHARACTERS_DIR) });
+        return;
+      }
+      if (req.method === "POST") {
+        try {
+          const body = await readJsonBody(req);
+          const card = await saveCharacter(CHARACTERS_DIR, body);
+          sendJson(res, 200, { ok: true, card });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "character_save_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      if (req.method === "DELETE") {
+        const id = url.searchParams.get("id") || "";
+        try {
+          await deleteCharacter(CHARACTERS_DIR, id);
+          sendJson(res, 200, { ok: true });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "character_delete_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+
+    // Reference images per character (Tier 2): config/characters/ref/<id>/.
+    // GET list + serve; POST upload (JSON body {name, dataBase64}); DELETE by file name.
+    const charRefMatch = pathname.match(/^\/api\/characters\/([a-z0-9][a-z0-9_-]{0,63})\/refimg(?:\/(.+))?$/);
+    if (charRefMatch) {
+      const [, charId, fileParam] = charRefMatch;
+      const fileName = fileParam ? decodeURIComponent(fileParam) : null;
+      if (req.method === "GET" && !fileName) {
+        try {
+          sendJson(res, 200, { ok: true, images: await listRefImages(CHARACTERS_DIR, charId) });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "refimg_list_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      if (req.method === "GET" && fileName) {
+        try {
+          const dir = refDir(CHARACTERS_DIR, charId);
+          const target = resolve(join(dir, fileName));
+          if (!target.startsWith(dir + sep)) {
+            sendJson(res, 403, { ok: false, error: "forbidden" });
+            return;
+          }
+          const data = await readFile(target);
+          const ext = extname(target).toLowerCase();
+          const type = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+          res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
+          res.end(data);
+        } catch {
+          sendJson(res, 404, { ok: false, error: "not_found" });
+        }
+        return;
+      }
+      if (req.method === "POST" && !fileName) {
+        try {
+          const body = await readJsonBody(req);
+          const data = Buffer.from(String(body.dataBase64 || ""), "base64");
+          if (!data.length) throw new Error("画像データが空です");
+          if (data.length > MAX_REF_BYTES) throw new Error("画像が大きすぎます (上限 20MB)");
+          const name = refFileName(body.name);
+          const { writeFile: writeFileAsync } = await import("node:fs/promises");
+          await writeFileAsync(join(refDir(CHARACTERS_DIR, charId), name), data);
+          sendJson(res, 200, { ok: true, file: name, url: `/api/characters/${charId}/refimg/${encodeURIComponent(name)}` });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "refimg_upload_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      if (req.method === "DELETE" && fileName) {
+        try {
+          await deleteRefImage(CHARACTERS_DIR, charId, fileName);
+          sendJson(res, 200, { ok: true });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: "refimg_delete_failed", message: errorMessage(error) });
+        }
+        return;
+      }
+      sendJson(res, 405, { ok: false, error: "Method not allowed" });
       return;
     }
 
