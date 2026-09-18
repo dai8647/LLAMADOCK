@@ -2,6 +2,8 @@
 # h3-chat.py の _kimg_sdcpp から以下 env で呼ばれる:
 #   SDCPP_OUT    出力 PNG フルパス (未指定なら sdcpp_klein_4b.png)
 #   SDCPP_PROMPT プロンプトファイルパス (未指定なら prompt_test.txt)
+#   SDCPP_NEG    ネガティブプロンプト (任意・キャラ固定の negative タグ列)
+#   SDCPP_SEED   シード上書き (任意・キャラ固定の seed)
 #
 # VRAM 解放ポリシー:
 #   1. sd-cli は正常終了時に ggml_backend_release を呼んでから main() return する
@@ -21,6 +23,10 @@ $vae   = "C:\Users\dai86\Documents\ComfyUI\models\vae\flux2-vae.safetensors"
 $prompt = if ($env:SDCPP_PROMPT) { $env:SDCPP_PROMPT } else { Join-Path $here "prompt_test.txt" }
 $out   = if ($env:SDCPP_OUT)    { $env:SDCPP_OUT }    else { "C:\Users\dai86\Documents\ComfyUI\output\sdcpp_klein_4b.png" }
 
+# キャラ固定 (h3-chat.py 側から SDCPP_NEG / SDCPP_SEED で上書きされる)
+$negArg  = if ($env:SDCPP_NEG)  { "--negative-prompt `"$($env:SDCPP_NEG -replace '\"', '')`"" } else { "" }
+$seedArg = if ($env:SDCPP_SEED) { "-s $($env:SDCPP_SEED)" } else { "-s 42" }
+
 Write-Host "klein=$klein"
 Write-Host "llm=$llm"
 Write-Host "prompt=$prompt"
@@ -34,7 +40,8 @@ $args = @(
   "--vae-format flux"
   "--prompt-file `"$prompt`""
   "-H 1024 -W 1024"
-  "--steps 4 --cfg-scale 1 -s 42"
+  "--steps 4 --cfg-scale 1 $seedArg"
+  $negArg
   "-o `"$out`""
   "--sampling-method euler --scheduler simple"
   "--diffusion-conv-direct --vae-tiling"

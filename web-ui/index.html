@@ -202,6 +202,20 @@
           </ul>
         </div>
 
+        <div class="card" id="characters-card">
+          <div class="card-title">
+            キャラライブラリ
+            <button id="btn-char-new" class="btn btn-ghost btn-sm" type="button" title="キャラカードを新規作成">+ 追加</button>
+          </div>
+          <p class="muted small">
+            顔・髪・体型を英語タグ列で登録すると、h3-chat の「キャラ固定」セレクタから選べます。
+            保存先は <code>config/characters/</code>（h3-chat は毎回再読込・再起動不要）。
+          </p>
+          <ul class="char-list" id="char-list">
+            <li class="result-empty">キャラカードがありません。「+ 追加」で作成してください。</li>
+          </ul>
+        </div>
+
         <div class="card">
           <div class="card-title">ワークスペース接続</div>
           <ul class="workspace-list" id="workspace-list">
@@ -223,6 +237,50 @@
   </main>
 
   <div id="toast" class="toast hidden" role="status"></div>
+
+  <dialog id="char-dialog" class="dialog">
+    <form method="dialog" class="dialog-body">
+      <h2 id="char-dialog-title">キャラカード</h2>
+      <input type="hidden" id="char-id-original" />
+      <label class="field">
+        <span>ID（小英数字・ハイフン・_）</span>
+        <input id="char-id" type="text" autocomplete="off" placeholder="akari" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>表示名</span>
+        <input id="char-name" type="text" autocomplete="off" placeholder="あかり" />
+      </label>
+      <label class="field">
+        <span>同一人物性の英語タグ列（顔・髪・体型・肌質）※必須</span>
+        <textarea id="char-summary" rows="3" placeholder="japanese woman, mid-20s, petite slender build, long straight black hair with blunt bangs, fair skin"></textarea>
+      </label>
+      <label class="field">
+        <span>ネガティブ（この人物に来てほしくない属性・任意）</span>
+        <input id="char-negative" type="text" autocomplete="off" placeholder="blonde hair, tall, western features" />
+      </label>
+      <label class="field">
+        <span>LoRA（任意・カンマ区切り: name:strength, name）</span>
+        <input id="char-lora" type="text" autocomplete="off" placeholder="flux_klein_9b_nsfw_v2.safetensors:0.85" />
+      </label>
+      <label class="field">
+        <span>シード（任意・空欄 = ランダム）</span>
+        <input id="char-seed" type="number" min="0" step="1" />
+      </label>
+      <label class="field">
+        <span>基準画像（任意・R2V の既定参照になります）</span>
+        <input id="char-refimg" type="file" accept=".png,.jpg,.jpeg,.webp" multiple />
+        <div id="char-refimgs" class="char-refimgs"></div>
+      </label>
+      <label class="field">
+        <span>メモ（生成には使われない）</span>
+        <textarea id="char-notes" rows="2" placeholder="八重歯・右目下のほくろは崩さない"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button id="btn-char-cancel" class="btn btn-ghost" value="cancel" type="button">キャンセル</button>
+        <button id="btn-char-save" class="btn btn-primary" value="default" type="button">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="add-model-dialog" class="dialog">
     <form method="dialog" class="dialog-body">
