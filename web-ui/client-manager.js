@@ -169,6 +169,15 @@ function windowsPlan(spec, { model, workspace, prompt }) {
       return { exe: python, args, cwd: comfyRoot, display: `${q(python)} ${args.join(" ")}  (cwd: ${q(comfyRoot)})` };
     }
     case "DeepSeekHarness": {
+      // Mirror select-model.ps1 Open-DeepSeekHarnessClient: dsh's llm-deepseek
+      // adapter reads DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY at process start.
+      // Pointing them at the recovery gateway makes the harness use the local
+      // llama.cpp model and skips the "Add an API key" onboarding gate.
+      const dshEnv = {
+        DEEPSEEK_BASE_URL: baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl.replace(/\/$/, "")}/v1`,
+        DEEPSEEK_API_KEY: "not-needed",
+      };
+      const envNote = `DEEPSEEK_BASE_URL=${dshEnv.DEEPSEEK_BASE_URL} DEEPSEEK_API_KEY=${dshEnv.DEEPSEEK_API_KEY}`;
       // Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
       // over npx; npx re-downloads the full ~450-package tree on every launch.
       // Node >=18.20 refuses to spawn .cmd/.bat shims directly (EINVAL, CVE
@@ -177,7 +186,13 @@ function windowsPlan(spec, { model, workspace, prompt }) {
       const dshPs1 = join(npmDir, "dsh.ps1");
       if (existsSync(dshPs1)) {
         const args = [...shellArgs, "-ExecutionPolicy", "Bypass", "-File", dshPs1, "web"];
-        return { exe: "powershell.exe", args, cwd: root, display: `powershell.exe ${args.map(q).join(" ")}` };
+        return {
+          exe: "powershell.exe",
+          args,
+          cwd: root,
+          env: dshEnv,
+          display: `[${envNote}] powershell.exe ${args.map(q).join(" ")}`,
+        };
       }
       const dshCmd = join(npmDir, "dsh.cmd");
       if (existsSync(dshCmd)) {
@@ -185,17 +200,32 @@ function windowsPlan(spec, { model, workspace, prompt }) {
           exe: "cmd.exe",
           args: ["/d", "/s", "/c", `"${dshCmd}" web`],
           cwd: root,
+          env: dshEnv,
           spawnOptions: { windowsVerbatimArguments: true },
-          display: `cmd.exe /c ${q(dshCmd)} web`,
+          display: `[${envNote}] cmd.exe /c ${q(dshCmd)} web`,
         };
       }
       const npxArgs = ["--yes", "@deepseek-ai/dsh@latest", "web"];
       if (process.platform === "win32") {
         // npx.cmd hits the same EINVAL restriction — let PowerShell resolve it.
-        const script = `npx ${npxArgs.join(" ")}`;
-        return { exe: "powershell.exe", args: [...shellArgs, "-Command", script], cwd: root, display: `powershell.exe -Command "${script}"` };
+        // Set env inside the child so -File/-Command launches inherit it even
+        // when spawn's process.env merge is stripped by a shell wrapper.
+        const script = `$env:DEEPSEEK_BASE_URL='${dshEnv.DEEPSEEK_BASE_URL}'; $env:DEEPSEEK_API_KEY='${dshEnv.DEEPSEEK_API_KEY}'; npx ${npxArgs.join(" ")}`;
+        return {
+          exe: "powershell.exe",
+          args: [...shellArgs, "-Command", script],
+          cwd: root,
+          env: dshEnv,
+          display: `powershell.exe -Command "${script}"`,
+        };
       }
-      return { exe: "npx", args: npxArgs, cwd: root, display: `npx ${npxArgs.join(" ")}` };
+      return {
+        exe: "npx",
+        args: npxArgs,
+        cwd: root,
+        env: dshEnv,
+        display: `[${envNote}] npx ${npxArgs.join(" ")}`,
+      };
     }
     default:
       return null;
@@ -250,6 +280,7 @@ export function createClientManager({ upstream = () => null } = {}) {
           cwd: plan.cwd,
           detached: true,
           stdio: "ignore",
+          env: { ...process.env, ...(plan.env || {}) },
           ...(plan.spawnOptions || {}),
         });
         child.unref();
