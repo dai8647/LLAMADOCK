@@ -32,7 +32,7 @@
           "flags": [],
           "per_model": true,
           "advanced": false,
-          "help": "Single engine since 2026-08-30: the Unsloth llama.cpp HIP build (b10687, gfx110X). Auto and Unsloth both resolve to it."
+          "help": "Single engine since 2026-08-30: Unsloth llama.cpp with bundled ROCm/HIP (b10909). Auto and Unsloth both resolve to it. Required for qwen4exp / Qwen3.8-Flash-Next."
         },
         {
           "id": "preset",
