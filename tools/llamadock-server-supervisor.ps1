@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$ServerPath,
@@ -68,6 +68,72 @@ if (Test-Path -LiteralPath $rocmRoot) {
             $env:PATH = "$rocmBin;$env:PATH"
         }
     }
+}
+
+# Expert Laguna HIP builds load ROCm from the wheel-restored tree, not from
+# Program Files. Prepend it when present so llama-server-impl (ggml-hip /
+# amdhip64_7) resolves at process start.
+$lagunaRocm = if ($env:LLAMADOCK_LAGUNA_ROCM) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_LAGUNA_ROCM)
+}
+else {
+    "C:\Users\dai86\rocm-sdk-core\_rocm_sdk_core"
+}
+if (Test-Path -LiteralPath $lagunaRocm) {
+    $env:ROCM_PATH = $lagunaRocm
+    $env:HIP_PATH = $lagunaRocm
+    if ([string]::IsNullOrWhiteSpace($env:HIP_PLATFORM)) { $env:HIP_PLATFORM = "amd" }
+    if ([string]::IsNullOrWhiteSpace($env:HCC_AMDGPU_TARGET)) { $env:HCC_AMDGPU_TARGET = "gfx1101" }
+    $lagunaBins = @(
+        (Join-Path $lagunaRocm "bin"),
+        (Join-Path $lagunaRocm "lib\llvm\bin")
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+    if ($lagunaBins.Count -gt 0) {
+        $env:PATH = (($lagunaBins -join ";") + ";" + $env:PATH)
+    }
+    # FreeToken hot-expert: HOST_BANK=1 pins all experts at load (Disk 100% / ROCm error).
+    if ($ServerPath -match "llama-cpp-turboquant-experts-laguna") {
+        if ($env:LLAMA_MOE_HOST_BANK -ne "0") { $env:LLAMA_MOE_HOST_BANK = "0" }
+        if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_HOST_PIN)) { $env:LLAMA_MOE_HOST_PIN = "0" }
+        if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_SLOT_STATS)) { $env:LLAMA_MOE_SLOT_STATS = "1" }
+        if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_GPU_BANK_PRECREATE)) { $env:LLAMA_MOE_GPU_BANK_PRECREATE = "0" }
+        Write-SupervisorLog "Laguna env: ROCm=$lagunaRocm HOST_BANK=$($env:LLAMA_MOE_HOST_BANK) SLOT_STATS=$($env:LLAMA_MOE_SLOT_STATS) BANK_PRECREATE=$($env:LLAMA_MOE_GPU_BANK_PRECREATE) HIP_TARGET=$($env:HCC_AMDGPU_TARGET)" "info"
+        Write-SupervisorLog "Laguna log keys: grep 'compute_buffer: device=' and 'moe_hot_expert:' in llama-server stderr/stdout" "info"
+        Write-SupervisorLog "Laguna PATH head: $($env:PATH.Substring(0, [Math]::Min(180, $env:PATH.Length)))" "info"
+    }
+}
+
+# Memory guard for Laguna Flash-Next: engine reply records WS~61GB / FreeRAM 0.3GB
+# at 8K hot-expert. Auto-restart stays OFF; kill on tight FreeRAM so the box
+# does not thrash. Poll only while ServerPath is Laguna.
+function Watch-LagunaMemory {
+    param([int]$ServerPid = 0, [int]$MinFreeMB = 2048, [int]$Seconds = 180)
+    if ($ServerPath -notmatch "llama-cpp-turboquant-experts-laguna") { return }
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 3
+        $proc = if ($ServerPid -gt 0) { Get-Process -Id $ServerPid -ErrorAction SilentlyContinue } else { $null }
+        if (-not $proc) {
+            $proc = Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+        if (-not $proc) { return }
+        $os = Get-CimInstance Win32_OperatingSystem
+        $freeMB = [int]($os.FreePhysicalMemory / 1024)
+        $wsMB = [int]($proc.WorkingSet64 / 1MB)
+        if ($freeMB -lt $MinFreeMB) {
+            Write-SupervisorLog "MEMORY GUARD: FreeRAM ${freeMB}MB < ${MinFreeMB}MB (WS ${wsMB}MB) — killing llama-server PID $($proc.Id). No auto-restart." "warn"
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+            return
+        }
+        if ($proc.HasExited) { return }
+        # Stop watching once the model is clearly resident and still has headroom.
+        if ($freeMB -gt ($MinFreeMB * 2) -and $wsMB -gt 1024 -and (Test-PortListening -Port $UpstreamPort)) { return }
+    }
+}
+
+function Test-PortListening {
+    param([int]$Port)
+    return [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
 function Write-SupervisorLog {
@@ -259,6 +325,24 @@ try {
     Save-SupervisorStatus -ServerPid ([string]$server.Id) -GatewayPid ([string]$gateway.Id) -State "running"
 
     while ($true) {
+        # Laguna Flash-Next memory guard (engine reply 2026-09-18): 8K hot-expert
+        # reached WS~61GB / FreeRAM 0.3GB. Kill on tight RAM; never auto-restart.
+        if ($ServerPath -match "llama-cpp-turboquant-experts-laguna" -and $server -and -not $server.HasExited) {
+            $osMem = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if ($osMem) {
+                $freeMB = [int]($osMem.FreePhysicalMemory / 1024)
+                if ($freeMB -gt 0 -and $freeMB -lt 2048) {
+                    $wsMB = 0
+                    try { $wsMB = [int]($server.WorkingSet64 / 1MB) } catch { }
+                    Write-SupervisorLog "MEMORY GUARD: FreeRAM ${freeMB}MB < 2048MB (server WS ${wsMB}MB) — killing llama-server PID $($server.Id). Auto-restart stays off." "warn"
+                    Record-SupervisorEvent -Type "memory_guard_kill" -Detail "free_mb=$freeMB ws_mb=$wsMB"
+                    try { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue } catch { }
+                    $server = $null
+                    $stopping = $true
+                    break
+                }
+            }
+        }
         if (Test-Path -LiteralPath $flagPath) {
             $request = Get-Content -LiteralPath $flagPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $flagPath -Force -ErrorAction SilentlyContinue

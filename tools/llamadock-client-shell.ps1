@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("Cline", "OpenCode", "Pi")]
     [string]$Client,

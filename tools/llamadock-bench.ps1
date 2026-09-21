@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$ServerPath,
     [Parameter(Mandatory=$true)][string]$ModelPath,
     [string]$ModelId = "bench-model",

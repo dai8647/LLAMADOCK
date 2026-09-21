@@ -69,6 +69,20 @@ Clineのweb検索は、Windowsで`curl`をMCPコマンドとして渡さず、�
 
 Open WebUIの検索スイッチは明示的な検索要求なので、クエリ生成を無効にし、入力文をそのまま検索語としてSerper結果を取得する。モデル設定には`stream: true`を固定保存しない（内部の検索クエリ生成がSSEになり、JSONを期待するOpen WebUI検索処理と衝突するため）。通常チャットのストリーミングはクライアント指定で維持する。
 
+## Expert Laguna + Flash-Next（2026-09-18 / エンジン返信反映）
+
+- エンジン選択: select-model.ps1 で **[1] Laguna hot-expert**（Flash-Next 既定）/ **[2] Unsloth HIP**
+- バイナリ: `build-stage1\bin\` の **`llama.dll` + `llama-server-impl.dll` + `llama-cli-impl.dll`**（exe stub 可）  
+  HEAD `ffdcc41` / 返信 `laguna-engine-reply-to-llamadock-2026-09-18.md`
+- 既定フラグ: `--moe-hot-expert -ngl 99`、**ctx 既定 4K（2–4K 推奨）**、HOST_BANK=0、SLOT_STATS=1、GPU_BANK_PRECREATE=0
+- **8K + hot-expert はメモリ事故実績あり**（WS~61GB / FreeRAM 0.3GB → kill）。8K を選ぶ場合は警告表示
+- 確認ログ: **`compute_buffer: device=`**（ROCm0 なら GPU / no GPU なら HIP 失敗）と **`moe_hot_expert:`**（hit_rate）
+- 逼迫時: supervisor のメモリガードが **即 kill・自動再起動しない**（AutoRestart は既定 OFF）
+- reasoning: 新 DLL なら `--reasoning-effort` 可。kwargs 併用可。help に無ければ自動除去
+- サンプラー: Unsloth Flash-Next 推奨（THINK / INSTRUCT）
+- SpecMode: ngram-simple / ngram-mod / MTP+ngram（`-md` 自動）
+- GPU 実測: **2K–4K で 1 回のみ・ユーザー OK 待ち**（エンジン側）
+
 ## ロールバック
 
 作業ブランチは `codex/llamadock-computer-20260718`。Phase 0バックアップは `C:\Users\dai86\AppData\Local\LlamaDock\backups\phase0-20260718-061521`。UIだけ戻す場合は `select-model.ps1` のComputer呼出しを旧 `open-webui-start.ps1` に戻し、モデル設定は変更しない。

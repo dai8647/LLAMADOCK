@@ -432,6 +432,16 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - 未コミット: tools/h3chat-restart.log.err（再起動ログ、コミット対象外）
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
 
+## 2026-09-21 Qwen Image 2.1 Uncensored GGUF モデル切替
+
+- **切り替え元**: `C:\Users\dai86\Downloads\abenzerpsQwen-Image-2.1-Uncensored-GGUF\`
+- **切り替え先**: ComfyUI `models\` ディレクトリ
+  - `models\checkpoints\qwen-image-2.1-Q4_K_M.gguf` (4.6GB)
+  - `models\vae\qwen_image_2.1_vae_bf16.safetensors` (675MB)
+  - `models\text_encoders\qwen3vl_8b_int8_convrot.safetensors` (9.35GB)
+- 元のDownloadsフォルダは削除済み（切り取り移動）
+- 古いQwen Imageモデルの確認：ComfyUI `models\` 内に既存のQwen Imageモデルファイルはなし（`qwen3vl_4b_heretic_fp8.safetensors` はQwen3-VL-4BモデルでQwen Imageではないため保持）
+
 ## 2026-08-28 ボタン無反応のサイレント失敗を全修正（commit 7f29fdd）
 
 - 報告: 「🎬 このプロンプトで生成 ▶」が出たが押しても何も起きない
