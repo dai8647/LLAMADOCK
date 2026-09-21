@@ -1,4 +1,4 @@
-param()
+﻿param()
 $root = Split-Path $PSScriptRoot -Parent
 $checks = @(
     @{ Label="Profiles"; Path=(Join-Path $root "config\profiles.json") },

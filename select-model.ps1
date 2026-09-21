@@ -20,8 +20,11 @@ param(
     [string]$McpMode = "Prompt",
     [ValidateSet("Prompt", "On", "Off")]
     [string]$FlashAttentionMode = "Prompt",
-    [ValidateSet("Prompt", "Off", "MtpNextN")]
+    [ValidateSet("Prompt", "Off", "MtpNextN", "NgramSimple", "NgramMod", "MtpNgramMod")]
     [string]$SpecMode = "Prompt",
+    # MTP draft tokens (--spec-draft-n-max). Unsloth starts at 2; Flash-Next
+    # guide used 5. Try 1..6 on this hardware. 0 = engine default only.
+    [int]$SpecDraftNMax = 2,
     # PLE n-gram / per-layer embedding lazy disk read (--lazy-mode).
     # Qwen3.8-Flash-Next (qwen4exp) marks the huge PLE table TENSOR_READ_LAZY;
     # "on" streams rows from the GGUF on demand (FreeToken PR #311 equivalent)
@@ -59,8 +62,12 @@ param(
     [string]$ExistingServerMode = "Prompt",
     [ValidateSet("Prompt", "Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
     [string]$ClientMode = "Prompt",
-    [ValidateSet("Auto", "Unsloth")]
-    [string]$EngineMode = "Auto",
+    # Engine picker. Prompt = interactive menu (default for full launches).
+    # Auto = Unsloth, except Flash-Next/qwen4exp which defaults to Laguna
+    # hot-expert (measured ~13.5 t/s vs ~5 t/s Unsloth n-cpu-moe path).
+    # Explicit Laguna/Unsloth skip the menu.
+    [ValidateSet("Prompt", "Auto", "Unsloth", "Laguna")]
+    [string]$EngineMode = "Prompt",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
     [switch]$SkipOpenBrowser,
@@ -131,7 +138,70 @@ elseif (Test-Path "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-ser
 else {
     "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 }
+
+# Expert Laguna (llama-cpp-turboquant-experts-laguna) — FreeToken-style
+# --moe-hot-expert. Measured Flash-Next decode: ~13.5 t/s @2k ctx on
+# RX 7800 XT vs ~5 t/s on the Unsloth n-cpu-moe path. Uses the same
+# llama-server-impl.dll as llama-cli; path override via LLAMADOCK_LAGUNA_SERVER.
+$LagunaServerPath = if ($env:LLAMADOCK_LAGUNA_SERVER) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_LAGUNA_SERVER)
+}
+elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-server.exe") {
+    "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-server.exe"
+}
+elseif (Test-Path "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-cli.exe") {
+    # Fallback: CLI stub is not used for server mode, but keep a stable hint path.
+    "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-server.exe"
+}
+else {
+    "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-server.exe"
+}
+
+    # Laguna HIP builds need the wheel-restored ROCm tree (not Program Files).
+$LagunaRocmRoot = if ($env:LLAMADOCK_LAGUNA_ROCM) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_LAGUNA_ROCM)
+}
+else {
+    "C:\Users\dai86\rocm-sdk-core\_rocm_sdk_core"
+}
+
+function Set-LagunaRocmEnvironment {
+    # Handoff env: HOST_BANK=1 pins every expert at load → CPU~95% / Disk 100%.
+    # HOST_PIN off unless explicitly overridden. PATH must include the wheel ROCm.
+    if (-not (Test-Path -LiteralPath $LagunaRocmRoot)) { return }
+    $env:ROCM_PATH = $LagunaRocmRoot
+    $env:HIP_PATH = $LagunaRocmRoot
+    $env:HIP_PLATFORM = "amd"
+    if ([string]::IsNullOrWhiteSpace($env:HCC_AMDGPU_TARGET)) {
+        $env:HCC_AMDGPU_TARGET = "gfx1101"
+    }
+    $env:HIP_VISIBLE_DEVICES = "0"
+    $rocmBin = Join-Path $LagunaRocmRoot "bin"
+    $llvmBin = Join-Path $LagunaRocmRoot "lib\llvm\bin"
+    $prepend = @($rocmBin, $llvmBin) | Where-Object { Test-Path -LiteralPath $_ }
+    if ($prepend.Count -gt 0) {
+        $env:PATH = (($prepend -join ";") + ";" + $env:PATH)
+    }
+    if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_HOST_BANK) -or $env:LLAMA_MOE_HOST_BANK -eq "1") {
+        $env:LLAMA_MOE_HOST_BANK = "0"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_HOST_PIN)) {
+        $env:LLAMA_MOE_HOST_PIN = "0"
+    }
+    # Engine reply 2026-09-18: hit/miss in llama-server via llama.dll stats.
+    if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_SLOT_STATS)) {
+        $env:LLAMA_MOE_SLOT_STATS = "1"
+    }
+    # Bank precreate is OFF by default on ffdcc41+; pin it off so a leftover
+    # env cannot re-enable the 8K memory blow-up path.
+    if ([string]::IsNullOrWhiteSpace($env:LLAMA_MOE_GPU_BANK_PRECREATE)) {
+        $env:LLAMA_MOE_GPU_BANK_PRECREATE = "0"
+    }
+}
+
 $ServerPath = $UnslothServerPath
+$script:ActiveEngineName = "Unsloth"
+$script:LagunaHotExpert = $false
 
 function Ensure-UnslothCudaRuntime {
     # ggml-cuda.dll imports cublas64_13 / nvcudart_hybrid64. Unsloth's Release
@@ -635,9 +705,38 @@ function Test-PortBusy {
 
 function Get-RequiredEngine {
     param([object]$Model)
-    # Single engine since 2026-08-30: Unsloth's llama.cpp HIP build (bundled
-    # ROCm) runs every supported arch including qwen4exp / MTP GGUFs.
+    # Default engine by model family. Flash-Next (qwen4exp) is expert-heavy:
+    # Laguna --moe-hot-expert is the measured fastest path (~13.5 t/s).
+    # Everything else stays on Unsloth HIP (stable, lazy-mode, general GGUF).
+    $text = "$($Model.Name) $($Model.FullName)"
+    if ($text -match "(?i)qwen4exp|Flash[-_ ]?Next|qwen3\.8[-_ ]?flash") {
+        return "Laguna"
+    }
     return "Unsloth"
+}
+
+function Resolve-EnginePaths {
+    param([string]$Engine)
+    switch ($Engine) {
+        "Laguna" {
+            if (-not (Test-Path -LiteralPath $LagunaServerPath)) {
+                Write-Host "ERROR: Laguna llama-server not found:" -ForegroundColor Red
+                Write-Host "  $LagunaServerPath" -ForegroundColor Red
+                Write-Host "Build tools\\server (llama-server) in llama-cpp-turboquant-experts-laguna\\build-stage1," -ForegroundColor Yellow
+                Write-Host "or set LLAMADOCK_LAGUNA_SERVER to llama-server.exe." -ForegroundColor Yellow
+                exit 1
+            }
+            Set-LagunaRocmEnvironment
+            $script:ActiveEngineName = "Laguna"
+            $script:LagunaHotExpert = $true
+            return $LagunaServerPath
+        }
+        default {
+            $script:ActiveEngineName = "Unsloth"
+            $script:LagunaHotExpert = $false
+            return $UnslothServerPath
+        }
+    }
 }
 
 function Get-ModelNote {
@@ -2108,6 +2207,7 @@ $hardware = Get-HardwareEstimate
 
 $runtimeCandidates = @(
     [PSCustomObject]@{ Name = "Unsloth"; Path = $UnslothServerPath }
+    [PSCustomObject]@{ Name = "Laguna (hot-expert)"; Path = $LagunaServerPath }
 )
 
 # ComfyUI is a model-independent workspace. Keep it at the front door so a
@@ -2251,12 +2351,33 @@ $isLikelyMoeModel = $selectedModelText -match "(?i)MOE|Mixtral|8X4B|4X7B|8x4B|4x
 $isDeepSeek = $selectedModelText -match "(?i)DeepSeek"
 # qwen4exp (Qwen3.8-Flash-Next): huge PLE n-gram table marked TENSOR_READ_LAZY.
 $isQwen4Exp = $selectedModelText -match "(?i)qwen4exp|Flash[-_ ]?Next|qwen3\.8[-_ ]?flash"
-if ($EngineMode -ne "Auto") {
+
+# Engine selection: explicit param wins; Prompt shows a menu; Auto uses
+# Get-RequiredEngine (Laguna for Flash-Next, else Unsloth).
+if ($EngineMode -eq "Unsloth" -or $EngineMode -eq "Laguna") {
     $requiredEngine = $EngineMode
 }
+elseif ($EngineMode -eq "Auto") {
+    # keep Get-RequiredEngine result
+}
+elseif (-not $DryRun -and -not $isQuickLaunch -and $EngineMode -eq "Prompt") {
+    $defaultEngineLabel = $requiredEngine
+    $lagunaOk = Test-Path -LiteralPath $LagunaServerPath
+    $unslothOk = Test-Path -LiteralPath $UnslothServerPath
+    Write-Host ""
+    Write-Host "Runtime engine (Enter = $defaultEngineLabel):" -ForegroundColor Green
+    Write-Host " [1] Laguna hot-expert  — Flash-Next 最速 (実測 ~13.5 t/s @2k)  $(if ($lagunaOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
+    Write-Host " [2] Unsloth HIP        — 従来パス (lazy-mode / 一般 GGUF / MTP 試験)  $(if ($unslothOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
+    $engineDefaultNum = if ($requiredEngine -eq "Laguna") { "1" } else { "2" }
+    do {
+        $engineInput = Read-Host "Select engine (1-2), Enter=$engineDefaultNum"
+        if ([string]::IsNullOrWhiteSpace($engineInput)) { $engineInput = $engineDefaultNum }
+        $engineValid = $engineInput -in @("1", "2")
+    } while (-not $engineValid)
+    $requiredEngine = if ($engineInput -eq "1") { "Laguna" } else { "Unsloth" }
+}
 
-# Single engine (Unsloth HIP, bundled ROCm) since 2026-08-30: no engine selection menu.
-$ServerPath = $UnslothServerPath
+$ServerPath = Resolve-EnginePaths -Engine $requiredEngine
 
 $modelNote = Get-ModelNote -Model $selected
 
@@ -2382,9 +2503,15 @@ else {
 Write-Host ""
 
 if (-not (Test-Path $ServerPath)) {
-    Write-Host "エラー: Unsloth llama-server が見つかりません:" -ForegroundColor Red
+    Write-Host "エラー: $requiredEngine の llama-server が見つかりません:" -ForegroundColor Red
     Write-Host $ServerPath -ForegroundColor Red
-    Write-Host "Unsloth Desktop をインストールするか、LLAMADOCK_UNSLOTH_SERVER に llama-server.exe のパスを設定してください。" -ForegroundColor Red
+    if ($requiredEngine -eq "Laguna") {
+        Write-Host "Laguna: build-stage1 に llama-server.exe を置くか、LLAMADOCK_LAGUNA_SERVER を設定してください。" -ForegroundColor Yellow
+        Write-Host "  例: build-stage1\bin\llama-server.exe (Unsloth の stub + Laguna llama-server-impl.dll でも可)" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "Unsloth Desktop をインストールするか、LLAMADOCK_UNSLOTH_SERVER に llama-server.exe のパスを設定してください。" -ForegroundColor Yellow
+    }
     exit 1
 }
 
@@ -2432,6 +2559,12 @@ $maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModel
 $recommendedDefaultTokens = if ($isDeepSeek) {
     # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
     16384
+}
+elseif ($script:LagunaHotExpert -and $isQwen4Exp) {
+    # Engine reply 2026-09-18: 8K + hot-expert blew up (WS~61GB / FreeRAM 0.3GB)
+    # after a memory incident. Safe window for the next GPU probe is 2K–4K.
+    # Peak record was 2K (~13.5 t/s); 4K is the agent-friendly safe default.
+    4096
 }
 else {
     # 32K flat default (2026-08-24): coder agents run auto-compaction, so a
@@ -2886,8 +3019,15 @@ elseif ($isLikelyMoeModel) {
 }
 
 # Auto-calculate CPU MoE layers
-if ($cpuMoeMode -eq "Auto") {
-    $modelSizeGB = [math]::Round($selected.SizeMB / 1024, 1)
+if ($script:LagunaHotExpert -and $isQwen4Exp) {
+    # hot-expert owns expert placement (RAM + VRAM hot bank). Do not also
+    # emit --n-cpu-moe / --cpu-moe — those fight the FreeToken-style layout.
+    $selectedCpuMoe = "0"
+    if (-not $isQuickLaunch) {
+        Write-Host "CPU MoE layers: off — Laguna --moe-hot-expert handles expert placement" -ForegroundColor Green
+    }
+}
+elseif ($cpuMoeMode -eq "Auto") {
     # Prefer the VRAM detected at startup (nvidia-smi / Win32_VideoController);
     # fall back to engine-based estimates only when detection failed.
     $detectedVramGB = if ($hardware.PrimaryGpu -and $hardware.PrimaryGpu.VramGB -gt 0) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
@@ -2910,13 +3050,14 @@ if ($cpuMoeMode -eq "Auto") {
                 Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
             }
         }
-        elseif ($isQwen4Exp) {
+        elseif ($isQwen4Exp -and -not $script:LagunaHotExpert) {
             # Size is dominated by the 51B PLE n-gram table (lazy disk), not MoE
             # experts. Ratio-based auto produced ~39 and measured 3.2 t/s on
             # RX 7800 XT; 4 layers CPU-MoE measured 5.3 t/s (2026-09-15).
+            # Laguna hot-expert is handled above and never reaches this branch.
             $selectedCpuMoe = "4"
             if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto (4) - Flash-Next 実測最速（PLE は lazy でディスク側）" -ForegroundColor Yellow
+                Write-Host "CPU MoE layers: Auto (4) - Unsloth Flash-Next path (PLE lazy on disk)" -ForegroundColor Yellow
             }
         }
         else {
@@ -2989,7 +3130,9 @@ elseif (-not $DryRun -and -not $isQuickLaunch) {
     # Coding clients default to thinking off: the Cline CLI already forces
     # --thinking none and agentic tool loops only slow down when the model
     # spends tokens reasoning first. Pick any other option to override.
-    $defaultReasoning = if ($ClientMode -in @("Cline", "OpenCode")) { "off" } else { "low" }
+    $defaultReasoning = if ($script:LagunaHotExpert -and $isQwen4Exp) { "off" }
+        elseif ($ClientMode -in @("Cline", "OpenCode")) { "off" }
+        else { "low" }
     $defaultReasoningIndex = [array]::IndexOf(@($reasoningOptions.Value), $defaultReasoning) + 1
     do {
         $reasoningInput = Read-Host "Select reasoning mode (1-$($reasoningOptions.Count)), or press Enter for $defaultReasoning"
@@ -3029,6 +3172,21 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
         }
         default  { Write-Host "WARNING: unknown reasoning mode '$selectedReasoningValue', ignoring." -ForegroundColor Yellow }
     }
+    # Laguna engine reply (2026-09-18): --reasoning-effort works on the new
+    # stage1 server build; chat-template-kwargs may be used alongside.
+    # Only strip effort when the live binary's --help lacks the flag.
+    if ($script:LagunaHotExpert) {
+        $engineHelpReasoning = ""
+        try {
+            if (Test-Path -LiteralPath $ServerPath) {
+                $engineHelpReasoning = (& $ServerPath --help 2>&1 | Out-String)
+            }
+        }
+        catch { $engineHelpReasoning = "" }
+        if ($effectiveReasoningEffort -and $engineHelpReasoning -and $engineHelpReasoning -notmatch "reasoning-effort") {
+            $effectiveReasoningEffort = ""
+        }
+    }
     if ($effectiveReasoningMode) {
         $reasoningSummary = "--reasoning $effectiveReasoningMode"
         if ($effectiveReasoningEffort) { $reasoningSummary += " --reasoning-effort $effectiveReasoningEffort" }
@@ -3062,16 +3220,37 @@ if (-not $DryRun -and -not $isQuickLaunch) {
 # model card + llama.cpp issues): coding works best at temp 0.6 / top-k 20
 # / top-p 0.95 / min-p 0.05; a 512-token repeat window covers phrase loops
 # that 256 misses.
-$samplerPresetOptions = @(
+$samplerPresetOptions = @()
+if ($isQwen4Exp) {
+    # Unsloth Qwen3.8-Flash-Next recommended settings
+    # https://unsloth.ai/docs/models/qwen3.8-next — hybrid thinking model.
+    $samplerPresetOptions += [PSCustomObject]@{
+        Label = "Flash-Next THINK (Unsloth) - temp 1.0 / top-p 0.95 / top-k 20 / min-p 0 / presence 0 / rep 1.0"
+        Value = "flash-next-think"
+    }
+    $samplerPresetOptions += [PSCustomObject]@{
+        Label = "Flash-Next INSTRUCT (Unsloth) - temp 0.7 / top-p 0.80 / top-k 20 / min-p 0 / presence 1.5 / rep 1.0"
+        Value = "flash-next-instruct"
+    }
+}
+$samplerPresetOptions += @(
     [PSCustomObject]@{ Label = "Qwen 推奨（コード向け）- temp 0.6 / top-k 20 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)"; Value = "qwen-code" },
     [PSCustomObject]@{ Label = "チャット向け - temp 0.8 / top-p 0.95 / min-p 0.05 + repeat 1.1 (window 512)"; Value = "chat" },
     [PSCustomObject]@{ Label = "繰り返し対策のみ - repeat 1.1 (window 512)"; Value = "repeat-only" },
     [PSCustomObject]@{ Label = "Off（llama.cpp デフォルト）"; Value = "off" }
 )
 
+# Flash-Next hybrid-thinking default (Unsloth): thinking ON → think sampler;
+# thinking OFF → instruct sampler (presence_penalty 1.5). qwen-code is for
+# older Qwen coding cards, not Flash-Next.
+$flashNextThinking = $isQwen4Exp -and $effectiveReasoningMode -and $effectiveReasoningMode -ne "off"
+
 $effectiveSamplerPreset = ""
 if (-not [string]::IsNullOrWhiteSpace($SamplerPreset)) {
     $effectiveSamplerPreset = $SamplerPreset.Trim().ToLower()
+}
+elseif ($isQwen4Exp -and -not $advancedSettingsMenu) {
+    $effectiveSamplerPreset = if ($flashNextThinking) { "flash-next-think" } else { "flash-next-instruct" }
 }
 elseif (-not $DryRun -and $advancedSettingsMenu) {
     Write-Host "Sampler（出力調整）preset:" -ForegroundColor Green
@@ -3079,11 +3258,15 @@ elseif (-not $DryRun -and $advancedSettingsMenu) {
         Write-Host " [$($i+1)] $($samplerPresetOptions[$i].Label)"
     }
     Write-Host ""
-    $defaultSampler = "qwen-code"
+    $defaultSampler = if ($isQwen4Exp) { $(if ($flashNextThinking) { "flash-next-think" } else { "flash-next-instruct" }) } else { "qwen-code" }
+    $defaultSamplerIndex = 1
+    for ($i = 0; $i -lt $samplerPresetOptions.Count; $i++) {
+        if ($samplerPresetOptions[$i].Value -eq $defaultSampler) { $defaultSamplerIndex = $i + 1; break }
+    }
     do {
         $samplerInput = Read-Host "Select sampler preset (1-$($samplerPresetOptions.Count)), or press Enter for $defaultSampler"
         if ([string]::IsNullOrWhiteSpace($samplerInput)) {
-            $samplerSelection = 1
+            $samplerSelection = $defaultSamplerIndex
             $samplerValid = $true
         }
         else {
@@ -3095,13 +3278,25 @@ elseif (-not $DryRun -and $advancedSettingsMenu) {
 }
 elseif (-not $DryRun) {
     # Quick launch: default to the recommended preset.
-    $effectiveSamplerPreset = "qwen-code"
+    $effectiveSamplerPreset = if ($isQwen4Exp) { $(if ($flashNextThinking) { "flash-next-think" } else { "flash-next-instruct" }) } else { "qwen-code" }
 }
 
 # Resolve effective sampler values (preset values, overridden by explicit params).
-$presetTemp = 0; $presetTopK = 0; $presetTopP = 0; $presetMinP = 0
-$presetRepeat = ""; $presetRepeatLastN = 0
+# min-p: $null = omit flag; numeric (including 0.0) = pass explicitly.
+# presence_penalty: only pass when > 0 (Unsloth Flash-Next instruct uses 1.5).
+$presetTemp = 0; $presetTopK = 0; $presetTopP = 0; $presetMinP = $null
+$presetRepeat = ""; $presetRepeatLastN = 0; $presetPresence = 0
 switch ($effectiveSamplerPreset) {
+    "flash-next-think" {
+        # Unsloth thinking-mode recs for Qwen3.8-Flash-Next
+        $presetTemp = 1.0; $presetTopK = 20; $presetTopP = 0.95; $presetMinP = 0.0
+        $presetPresence = 0.0; $presetRepeat = "1.0"; $presetRepeatLastN = 0
+    }
+    "flash-next-instruct" {
+        # Unsloth non-thinking recs: tighter top_p + presence_penalty 1.5
+        $presetTemp = 0.7; $presetTopK = 20; $presetTopP = 0.80; $presetMinP = 0.0
+        $presetPresence = 1.5; $presetRepeat = "1.0"; $presetRepeatLastN = 0
+    }
     "qwen-code"   { $presetTemp = 0.6; $presetTopK = 20; $presetTopP = 0.95; $presetMinP = 0.05; $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
     "chat"        { $presetTemp = 0.8;                       $presetTopP = 0.95; $presetMinP = 0.05; $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
     "repeat-only" {                                                                                     $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
@@ -3114,14 +3309,17 @@ $effectiveTopP = if ($TopP -gt 0) { $TopP } else { $presetTopP }
 $effectiveMinP = if ($MinP -gt 0) { $MinP } else { $presetMinP }
 $effectiveRepeatPenalty = if (-not [string]::IsNullOrWhiteSpace($RepeatPenalty)) { $RepeatPenalty } else { $presetRepeat }
 $effectiveRepeatLastN = if ($RepeatLastN -gt 0) { $RepeatLastN } else { $presetRepeatLastN }
+$effectivePresencePenalty = $presetPresence
+if ($null -ne $effectiveRepeatPenalty -and [string]::IsNullOrWhiteSpace($effectiveRepeatPenalty)) { $effectiveRepeatPenalty = "" }
 
 $samplerSummary = @()
 if ($effectiveSamplerPreset) { $samplerSummary += "preset=$effectiveSamplerPreset" }
 if ($effectiveTemperature -gt 0) { $samplerSummary += "temp=$effectiveTemperature" }
 if ($effectiveTopK -gt 0) { $samplerSummary += "top-k=$effectiveTopK" }
 if ($effectiveTopP -gt 0) { $samplerSummary += "top-p=$effectiveTopP" }
-if ($effectiveMinP -gt 0) { $samplerSummary += "min-p=$effectiveMinP" }
-if ($effectiveRepeatPenalty) { $samplerSummary += "repeat=$effectiveRepeatPenalty/w$effectiveRepeatLastN" }
+if ($null -ne $effectiveMinP) { $samplerSummary += "min-p=$effectiveMinP" }
+if ($effectivePresencePenalty -gt 0) { $samplerSummary += "presence=$effectivePresencePenalty" }
+if ($effectiveRepeatPenalty) { $samplerSummary += "repeat=$effectiveRepeatPenalty$(if ($effectiveRepeatLastN -gt 0) { "/w$effectiveRepeatLastN" })" }
 
 # Prompt-cache KV reuse (--cache-reuse). Coding-agent workloads resend the
 # same long prefix every turn; KV shifting reuses it instead of re-prefilling.
@@ -3187,6 +3385,28 @@ if ($samplerSummary) {
 if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
     $effectiveChatTemplateKwargs = $ChatTemplateKwargs
 }
+
+# Flash-Next / hybrid thinking: Unsloth recommends controlling reasoning depth
+# via chat-template-kwargs reasoning_effort, NOT --reasoning-effort (Laguna
+# rejects that flag). Map low/medium/high -> kwargs; leave off/on as --reasoning.
+if ($isQwen4Exp -and [string]::IsNullOrWhiteSpace($ChatTemplateKwargs)) {
+    $effortKwargs = $null
+    switch ($selectedReasoningValue) {
+        "low"    { $effortKwargs = '{"reasoning_effort":"low"}' }
+        "medium" { $effortKwargs = '{"reasoning_effort":"medium"}' }
+        "high"   { $effortKwargs = '{"reasoning_effort":"xhigh"}' }
+        default  { }
+    }
+    if ($effortKwargs) {
+        $effectiveChatTemplateKwargs = $effortKwargs
+        $effectiveReasoningEffort = ""
+        $effectiveReasoningMode = "on"
+        if (-not $isQuickLaunch) {
+            Write-Host "Reasoning effort: chat-template-kwargs $effortKwargs（--reasoning-effort は使わない）" -ForegroundColor Green
+            Write-Host ""
+        }
+    }
+}
 if ([string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs) -and $ClientMode -eq "LlamaAgent") {
     $effectiveChatTemplateKwargs = '{"enable_thinking":false}'
     if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode)) {
@@ -3234,14 +3454,20 @@ if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode) -and $ClientMode -in @
 $effectiveKCacheType = $selectedKCache.Type
 $effectiveVCacheType = $selectedVCache.Type
 
-# qwen4exp / Flash-Next on this Unsloth HIP build: FA has no kernel for the
-# K/V pair q8_0+q4_0 and silently converts both to f16 (slow). Force V=q8_0
-# so FA stays on the quantized path (measured 2026-09-15 on RX 7800 XT).
-if ($isQwen4Exp -and $effectiveVCacheType -eq "q4_0") {
+# KV type notes
+# - Unsloth HIP + Flash-Next: FA has no kernel for q8_0+q4_0 and silently
+#   converts both to f16 (slow). Force V=q8_0 on that engine only.
+# - Laguna (TurboQuant fork): supports q8_0 / q4_0 / f16 and turbo2/3/4.
+#   KV quantization works; handoff measured turbo2+FA slightly worse on the
+#   hot-expert path (~11.5 t/s) so q8_0 stays the safe default.
+if ($isQwen4Exp -and -not $script:LagunaHotExpert -and $effectiveVCacheType -eq "q4_0") {
     $effectiveVCacheType = "q8_0"
     if (-not $isQuickLaunch) {
-        Write-Host "KV cache V: q8_0 (Flash-Next は q8_0+q4_0 で FA カーネルが無く f16 変換になるため)" -ForegroundColor Yellow
+        Write-Host "KV cache V: q8_0 (Unsloth では Flash-Next の q8_0+q4_0 で FA が f16 変換になるため)" -ForegroundColor Yellow
     }
+}
+elseif ($script:LagunaHotExpert -and $isQwen4Exp -and -not $isQuickLaunch) {
+    Write-Host "KV cache: Laguna は量子化 KV 対応（q8_0/q4_0/turbo2-3-4）。既定は q8_0。turbo は長ctx省VRAM用（速度はほぼ同等〜やや低下）" -ForegroundColor DarkGray
 }
 
 # Keep prompt-cache RAM explicit. Long-context and larger-model runs receive
@@ -3311,23 +3537,47 @@ if ($flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", 
     exit 1
 }
 
-if ($SpecMode -eq "Prompt") {
-    $modelIsMtp = $selected.Name -match "(?i)MTP"
+# External MTP draft (Unsloth shared-Q8_0 etc.) sitting next to the main GGUF.
+# Flash-Next GSQ-RCO bodies often have no built-in NextN tensors; -md still works
+# when a shared MTP file is present.
+$mtpDraftPath = $null
+try {
+    $mtpDraftPath = Get-ChildItem -LiteralPath (Split-Path -Parent $selected.FullName) -Filter "mtp-*.gguf" -File -ErrorAction SilentlyContinue |
+        Sort-Object Length -Descending | Select-Object -First 1
+}
+catch { $mtpDraftPath = $null }
+$modelIsMtpBuiltIn = $selected.Name -match "(?i)MTP"
+$modelHasMtpDraft = [bool]$mtpDraftPath
+$modelCanMtp = $modelIsMtpBuiltIn -or $modelHasMtpDraft
 
+if ($SpecMode -eq "Prompt") {
     Write-Host "Speculative decoding mode:" -ForegroundColor Green
     Write-Host " [1] Off - normal decoding"
-    if ($modelIsMtp) {
-        Write-Host " [2] MTP/NextN - combined *_MTP.gguf self-draft (recommended for this model)" -ForegroundColor Cyan
+    if ($modelCanMtp) {
+        Write-Host " [2] MTP/NextN --spec-type draft-mtp (Unsloth: n-max 2〜5)  【MTP あり】" -ForegroundColor Cyan
+        if ($mtpDraftPath) { Write-Host "     draft: $($mtpDraftPath.Name)" -ForegroundColor DarkGray }
     }
     else {
-        Write-Host " [2] MTP/NextN - combined *_MTP.gguf self-draft"
+        Write-Host " [2] MTP/NextN - MTP テンソル/draft GGUF が見つかりません"
+    }
+    Write-Host " [3] ngram-simple - 文脈 n-gram 投機（draft 不要・短文では効果小）"
+    Write-Host " [4] ngram-mod - Unsloth Desktop の Ngram 系に相当（--spec-type ngram-mod）" -ForegroundColor Cyan
+    if ($modelCanMtp) {
+        Write-Host " [5] MTP + ngram-mod - --spec-type draft-mtp,ngram-mod（Strix Halo 実測スタック）" -ForegroundColor Cyan
     }
     Write-Host ""
 
-    $maxSpecChoice = 2
+    $specChoices = [ordered]@{
+        1 = "Off"
+        2 = "MtpNextN"
+        3 = "NgramSimple"
+        4 = "NgramMod"
+        5 = "MtpNgramMod"
+    }
+    $maxSpecChoice = if ($modelCanMtp) { 5 } else { 4 }
     do {
-        $defaultSpecChoice = if ($modelIsMtp) { 2 } else { 1 }
-        $defaultSpecLabel = if ($defaultSpecChoice -eq 2) { "MTP/NextN" } else { "Off" }
+        $defaultSpecChoice = if ($modelIsMtpBuiltIn) { 2 } elseif ($isQwen4Exp) { 4 } else { 1 }
+        $defaultSpecLabel = $specChoices[[int]$defaultSpecChoice]
         $specInput = Read-Host "Select speculative mode (1-$maxSpecChoice), or press Enter for $defaultSpecLabel"
         if ([string]::IsNullOrWhiteSpace($specInput)) {
             $specSelection = $defaultSpecChoice
@@ -3339,25 +3589,29 @@ if ($SpecMode -eq "Prompt") {
         }
     } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt $maxSpecChoice)
 
-    if ($specSelection -eq 1) { $SpecMode = "Off" }
-    else { $SpecMode = "MtpNextN" }
+    if (-not $specChoices.Contains($specSelection)) { $specSelection = 1 }
+    $SpecMode = $specChoices[[int]$specSelection]
+    if ($SpecMode -eq "MtpNgramMod" -and -not $modelCanMtp) { $SpecMode = "NgramMod" }
+    if ($SpecMode -eq "MtpNextN" -and -not $modelCanMtp) { $SpecMode = "Off" }
 }
 
 if (-not $isQuickLaunch) {
     Write-Host "Speculative decoding mode: $SpecMode" -ForegroundColor Green
-    if ($SpecMode -eq "MtpNextN") {
-        # Measured 2026-08-22: draft-mtp is O(n^2) in prompt length. Fast for
-        # short prompts (<300 tok: ~16-29 t/s) but degrades hard on long ones
-        # (>5K tok: ~3-6 t/s). Acceptance also swings daily (0.36-0.78).
+    if ($SpecMode -in @("MtpNextN", "MtpNgramMod")) {
         Write-Host "  note: MTP helps short prompts; for >5K-token contexts turn it Off" -ForegroundColor Yellow
-        Write-Host "  (long-prompt decode drops to ~3-6 t/s). Coding with big files: use Off." -ForegroundColor Yellow
+        Write-Host "  (long-prompt decode can drop hard). Coding with big files: use Off." -ForegroundColor Yellow
+        if ($SpecDraftNMax -gt 0) { Write-Host "  draft n-max: $SpecDraftNMax (Unsloth start=2, Flash-Next guide=5)" -ForegroundColor DarkGray }
+    }
+    if ($SpecMode -in @("NgramSimple", "NgramMod", "MtpNgramMod")) {
+        Write-Host "  ngram: draft 不要。再現性のあるコード/長文より、繰り返しの多い出力で効きやすい" -ForegroundColor DarkGray
     }
     Write-Host ""
 }
 
-if ($SpecMode -eq "MtpNextN" -and $selected.Name -notmatch "(?i)MTP") {
-    Write-Host "ERROR: MTP/NextN mode expects a combined *_MTP.gguf model." -ForegroundColor Red
-    Write-Host "Selected model: $($selected.Name)" -ForegroundColor Red
+if ($SpecMode -in @("MtpNextN", "MtpNgramMod") -and -not $modelCanMtp) {
+    Write-Host "ERROR: MTP mode needs built-in *_MTP.gguf or a sibling mtp-*.gguf draft." -ForegroundColor Red
+    Write-Host "Selected: $($selected.Name)" -ForegroundColor Red
+    if ($mtpDraftPath) { Write-Host "Draft found: $($mtpDraftPath.FullName)" -ForegroundColor Yellow }
     exit 1
 }
 
@@ -3422,21 +3676,45 @@ $modelShort = $modelLeaf -replace "-\d{5}-of-\d{5}$", "" -replace "-", "_"
 # it in host RAM. "on" forces it (even below the 4 GiB auto threshold);
 # "auto" lets the engine decide; "off" loads everything eagerly.
 $effectiveLazyMode = "auto"
-if (-not [string]::IsNullOrWhiteSpace($LazyMode) -and $LazyMode -ne "Prompt") {
+if ($script:LagunaHotExpert) {
+    # Laguna hot-expert path: leave PLE on SSD mmap (handoff rule). Do not
+    # force --lazy-mode (flag may be absent) and never mlock/-ot pin shard2.
+    $effectiveLazyMode = "off"
+    Write-Host "PLE n-gram: SSD mmap (Laguna hot-expert; do not mlock / -ot PLE=CPU)" -ForegroundColor Green
+}
+elseif (-not [string]::IsNullOrWhiteSpace($LazyMode) -and $LazyMode -ne "Prompt") {
     $effectiveLazyMode = $LazyMode.Trim().ToLower()
 }
 elseif ($isQwen4Exp) {
     $effectiveLazyMode = "on"
 }
-if ($isQwen4Exp -and $effectiveLazyMode -ne "off") {
+if (-not $script:LagunaHotExpert -and $isQwen4Exp -and $effectiveLazyMode -ne "off") {
     Write-Host "PLE n-gram: lazy disk read (--lazy-mode $effectiveLazyMode) — テーブルは GGUF 上に置き、参照行だけ読み込み" -ForegroundColor Green
     Write-Host "  既定の mmap を維持すること。--no-mmap は PLE を RAM に全ロードしディスク100%の原因になる" -ForegroundColor DarkGray
 }
 
+# Laguna + Flash-Next: force dense GPU offload and no thinking unless user set them.
+# Handoff fastest: --moe-hot-expert -ngl 99 -c 2048 -t 16 --reasoning off
+if ($script:LagunaHotExpert -and $isQwen4Exp) {
+    if ($NglLayers -le 0) {
+        $serverOffload = "99"
+    }
+    # Default thinking OFF for Laguna Flash-Next unless user explicitly chose On/Budget.
+    if ($selectedReasoningValue -in @("low", "medium", "high") -or [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
+        if ($selectedReasoningValue -ne "on" -and $selectedReasoningValue -ne "budget") {
+            $effectiveReasoningMode = "off"
+            $effectiveReasoningEffort = ""
+        }
+    }
+    if ($selectedContext -and $selectedContext.Tokens -gt 4096 -and -not $isQuickLaunch) {
+        Write-Host "WARN: Laguna hot-expert + ctx>$($selectedContext.Tokens) はメモリ事故の実績あり（8K で WS~61GB / FreeRAM 逼迫）。2K–4K 推奨。" -ForegroundColor Yellow
+        Write-Host "  FreeRAM が急減したら llama-server を即 kill（自動再起動しない）。" -ForegroundColor Yellow
+    }
+    Write-Host "Engine flags: Laguna --moe-hot-expert (HOST_BANK=0, dense→VRAM, expert RAM+hot bank)" -ForegroundColor Green
+}
+
 # Start server
 $startFilePath = $ServerPath
-$args = @()
-
 $args = @(
     "-m", $selected.FullName,
     "-a", $modelShort,
@@ -3450,6 +3728,10 @@ $args = @(
     "-fa", "$flashAttention",
     "--jinja"
 )
+
+if ($script:LagunaHotExpert -and $isQwen4Exp) {
+    $args += "--moe-hot-expert"
+}
 
 $args += "--no-ui"
 
@@ -3474,11 +3756,16 @@ if ($effectiveLazyMode -and $effectiveLazyMode -ne "auto") {
     }
 }
 
-# CPU threads. Engine default is 6 which leaves half of a 12-thread box idle
-# on CPU-bound MoE decode. Flash-Next measured +0.6 t/s at -t 11 (2026-09-15).
+# CPU threads. Laguna hot-expert handoff used -t 16 (H2D / remap). Unsloth
+# Flash-Next measured +0.6 t/s at -t 11 (2026-09-15).
 if ($isQwen4Exp) {
-    $logical = [Environment]::ProcessorCount
-    $threadN = [math]::Max(4, $logical - 1)
+    if ($script:LagunaHotExpert) {
+        $threadN = 16
+    }
+    else {
+        $logical = [Environment]::ProcessorCount
+        $threadN = [math]::Max(4, $logical - 1)
+    }
     $args += @("-t", "$threadN", "-tb", "$threadN")
 }
 
@@ -3515,6 +3802,59 @@ if ($effectiveReasoningBudget -gt 0) {
     $args += @("--reasoning-budget", "$effectiveReasoningBudget")
 }
 
+# Final safety pass: drop flags the live engine does not accept. Laguna
+# rejects --reasoning-effort at argv parse time (exit before bind), which
+# looked like "stuck waiting for server".
+function Get-EngineHelpCache {
+    param([string]$Exe)
+    if (-not (Test-Path -LiteralPath $Exe)) { return "" }
+    if (-not $script:EngineHelpCache) { $script:EngineHelpCache = @{} }
+    $key = $Exe.ToLowerInvariant()
+    if ($script:EngineHelpCache.ContainsKey($key)) { return $script:EngineHelpCache[$key] }
+    $oldPath = $env:PATH
+    try {
+        if ($script:LagunaHotExpert -and (Test-Path -LiteralPath $LagunaRocmRoot)) {
+            $env:PATH = "$LagunaRocmRoot\bin;$LagunaRocmRoot\lib\llvm\bin;$env:PATH"
+        }
+        $script:EngineHelpCache[$key] = (& $Exe --help 2>&1 | Out-String)
+    }
+    catch {
+        $script:EngineHelpCache[$key] = ""
+    }
+    finally {
+        $env:PATH = $oldPath
+    }
+    return $script:EngineHelpCache[$key]
+}
+
+function Remove-UnsupportedEngineArgs {
+    param([string[]]$ArgList, [string]$Exe)
+    $help = Get-EngineHelpCache -Exe $Exe
+    if ([string]::IsNullOrWhiteSpace($help)) { return ,$ArgList }
+    $dropFlags = @()
+    foreach ($flag in @("--reasoning-effort", "--lazy-mode", "--spec-draft-n-max", "--moe-gpu-expert-global-lru")) {
+        if ($help -notmatch [regex]::Escape($flag)) { $dropFlags += $flag }
+    }
+    if ($dropFlags.Count -eq 0) { return ,$ArgList }
+    $out = New-Object System.Collections.Generic.List[string]
+    $skipNext = $false
+    for ($i = 0; $i -lt $ArgList.Count; $i++) {
+        if ($skipNext) { $skipNext = $false; continue }
+        $a = $ArgList[$i]
+        $drop = $false
+        foreach ($flag in $dropFlags) {
+            if ($a -eq $flag) { $drop = $true; $skipNext = $true; break }
+            if ($a.StartsWith("$flag=")) { $drop = $true; break }
+        }
+        if ($drop) {
+            Write-Host "NOTE: エンジン未対応フラグを除去: $a" -ForegroundColor Yellow
+            continue
+        }
+        $out.Add($a)
+    }
+    return ,$out.ToArray()
+}
+
 $args += @("--cache-ram", "$effectiveCacheRamMiB")
 
 if (-not [string]::IsNullOrWhiteSpace($selectedMoeExperts)) {
@@ -3536,8 +3876,10 @@ if ($isDeepSeek) {
 if ($effectiveTemperature -gt 0) { $args += @("--temp", "$effectiveTemperature") }
 if ($effectiveTopK -gt 0) { $args += @("--top-k", "$effectiveTopK") }
 if ($effectiveTopP -gt 0) { $args += @("--top-p", "$effectiveTopP") }
-if ($effectiveMinP -gt 0) { $args += @("--min-p", "$effectiveMinP") }
-if (-not [string]::IsNullOrWhiteSpace($effectiveRepeatPenalty)) {
+# min-p 0.0 is intentional for Flash-Next — pass when preset set a value.
+if ($null -ne $effectiveMinP) { $args += @("--min-p", "$effectiveMinP") }
+if ($effectivePresencePenalty -gt 0) { $args += @("--presence-penalty", "$effectivePresencePenalty") }
+if (-not [string]::IsNullOrWhiteSpace($effectiveRepeatPenalty) -and $effectiveRepeatPenalty -ne "1.0") {
     $args += @("--repeat-penalty", $effectiveRepeatPenalty)
     if ($effectiveRepeatLastN -gt 0) { $args += @("--repeat-last-n", "$effectiveRepeatLastN") }
 }
@@ -3545,18 +3887,53 @@ if (-not [string]::IsNullOrWhiteSpace($effectiveRepeatPenalty)) {
 if ($effectiveCacheReuse -gt 0) { $args += @("--cache-reuse", "$effectiveCacheReuse") }
 $args += @("--prio", "$effectivePriorityValue")
 
-if ($SpecMode -eq "MtpNextN") {
-    # MTP self-draft: do NOT pass -md (same model). The spec_mtp branch in
-    # llama.cpp creates a lightweight draft context from model_tgt directly,
-    # avoiding a second full model load that would double memory usage.
-    $args += @(
-        "--spec-type", "draft-mtp",
-        "--spec-draft-n-max", "2",
-        "--spec-draft-n-min", "1",
-        "-ngld", "$serverOffload",
-        "-ctkd", "$effectiveKCacheType",
-        "-ctvd", "$effectiveVCacheType"
-    )
+if ($SpecMode -ne "Off") {
+    $specArgs = @()
+    switch ($SpecMode) {
+        "MtpNextN" {
+            $specArgs += @("--spec-type", "draft-mtp")
+            if ($SpecDraftNMax -gt 0) {
+                $specArgs += @("--spec-draft-n-max", "$SpecDraftNMax", "--spec-draft-n-min", "1")
+            }
+        }
+        "NgramSimple" {
+            # Unsloth/llama.cpp ngram self-spec: no draft model required.
+            $specArgs += @("--spec-type", "ngram-simple")
+        }
+        "NgramMod" {
+            $specArgs += @("--spec-type", "ngram-mod")
+        }
+        "MtpNgramMod" {
+            # Community Flash-Next stack (Unsloth Desktop "MTP / Ngram").
+            $specArgs += @("--spec-type", "draft-mtp,ngram-mod")
+            if ($SpecDraftNMax -gt 0) {
+                $specArgs += @("--spec-draft-n-max", "$SpecDraftNMax", "--spec-draft-n-min", "2")
+            }
+        }
+    }
+    # Built-in NextN models need no -md; shared external draft (Flash-Next) does.
+    if ($SpecMode -in @("MtpNextN", "MtpNgramMod") -and -not $modelIsMtpBuiltIn -and $mtpDraftPath) {
+        $specArgs += @("-md", $mtpDraftPath.FullName)
+    }
+    # Only append flags the live engine actually supports (Laguna/Unsloth probe).
+    $engineHelp = Get-EngineHelpCache -Exe $startFilePath
+    $supported = @()
+    $skipNext = $false
+    for ($i = 0; $i -lt $specArgs.Count; $i++) {
+        if ($skipNext) { $skipNext = $false; $supported += $specArgs[$i]; continue }
+        $a = $specArgs[$i]
+        $flag = ($a -split "=")[0]
+        if ($engineHelp -and $engineHelp -notmatch [regex]::Escape($flag) -and $flag -like "--*") {
+            Write-Host "NOTE: speculative flag not in engine help, skipping: $a" -ForegroundColor Yellow
+            if ($i + 1 -lt $specArgs.Count -and $specArgs[$i + 1] -notlike "-*") { $skipNext = $true }
+            continue
+        }
+        $supported += $a
+    }
+    if ($supported.Count -gt 0) { $args += $supported }
+    if (-not $isQuickLaunch) {
+        Write-Host "Speculative args: $($supported -join ' ')" -ForegroundColor DarkGray
+    }
 }
 
 if ($CpuFfnLayers -ne "") {
@@ -3815,6 +4192,10 @@ else {
     Remove-Item Env:\LLAMA_ARG_CHAT_TEMPLATE_KWARGS -ErrorAction SilentlyContinue
 }
 $proc = $null
+# Drop flags the live engine rejects (e.g. Laguna has no --reasoning-effort).
+# Must run after the full argv is assembled — llama-server exits on unknown
+# args before binding :8080, which used to look like "stuck waiting".
+$args = Remove-UnsupportedEngineArgs -ArgList $args -Exe $startFilePath
 $serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"
 New-Item -ItemType Directory -Path (Split-Path -Parent $serverArgumentsPath) -Force | Out-Null
 Write-Utf8NoBom -Path $serverArgumentsPath -Value ($args | ConvertTo-Json -Compress)
@@ -3853,9 +4234,23 @@ Write-Host "Waiting for server to be ready..." -NoNewline -ForegroundColor Yello
 # publish /v1/models. Keep the normal path quick, but do not make the user
 # think a heavy model failed while it is still loading.
 $maxWait = if ($selectedModelSizeGB -ge 50) { 180 } elseif ($selectedModelSizeGB -ge 20) { 120 } else { 60 }
+# Laguna Flash-Next is ~70GB multi-part: allow a longer load window.
+if ($script:LagunaHotExpert -and $isQwen4Exp -and $maxWait -lt 240) { $maxWait = 240 }
 $ready = $false
 for ($i = 0; $i -lt $maxWait; $i++) {
     Start-Sleep -Seconds 2
+    # Supervisor died (argv error / crash) — stop waiting instead of spinning.
+    if ($proc -and $proc.HasExited) {
+        Write-Host ""
+        Write-Host "ERROR: supervisor exited (code $($proc.ExitCode)). Check logs\supervisor.log and the latest llama-server-*.stderr.log" -ForegroundColor Red
+        $stderr = Get-ChildItem (Join-Path $PSScriptRoot "logs") -Filter "llama-server-*.stderr.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($stderr) {
+            Write-Host "Last server stderr ($($stderr.Name)):" -ForegroundColor Yellow
+            Get-Content -LiteralPath $stderr.FullName -Tail 20
+        }
+        break
+    }
     # llama-server publishes the -a alias as the model id, so we can verify the
     # freshly started server is actually serving the selected model.
     $expectedReadyModel = $modelShort

@@ -61,8 +61,8 @@
  },
  {
   "pattern": "(?i)qwen4exp|Flash[-_ ]?Next|qwen3[.]8[-_ ]?flash",
-  "note": "Qwen3.8-Flash-Next (qwen4exp): 125B-A6B + 51B PLE n-gram + 4B MTP（この IQ2_XXS 轉換には MTP レイヤー無し）。Unsloth の TENSOR_READ_LAZY で PLE をディスク行読込。LlamaDock は --lazy-mode on / -t 11 / --n-cpu-moe 4 を自動付与。RX 7800 XT 96GB 実測: n-cpu-moe 4 で tg 約 5.3 t/s（3 回平均 5.27）、常駐 66GB、ディスク 1% 未満。ratio 既定の 39 では 3.2 t/s に落ちる。V は q8_0（q4_0 は FA カーネル無しで f16 変換）。",
-  "warning": "Experts Laguna / AtomicBot では qwen4exp 未対応。Unsloth HIP 必須。--spec-type draft-mtp はこの GGUF では失敗（MTP 層なし）。ngram 系投機は短文ユニークプロンプトで逆に遅い。メモリ節約したいなら n-cpu-moe 16（tg 約 4.9 / WS 48GB）。",
+  "note": "Qwen3.8-Flash-Next (qwen4exp): Laguna + --moe-hot-expert 既定。サンプラーは Unsloth 推奨（THINK / INSTRUCT）。推測デコードメニュー: Off / MTP / ngram-simple / **ngram-mod** / MTP+ngram-mod。Unsloth Desktop の Ngram 系は ngram-mod に相当。MTP は mtp-*.gguf があれば -md で付与可（--spec-draft-n-max 既定2、ガイドでは5）。",
+  "warning": "ngram は短文では効果が小さいことがある。長文コーディング + MTP は逆に遅いことがある。reasoning は chat-template-kwargs の reasoning_effort で付ける（再ビルド中の Laguna でも --reasoning-effort は使わない）。",
   "recommended_preset": "PiCoding"
  }
 ]

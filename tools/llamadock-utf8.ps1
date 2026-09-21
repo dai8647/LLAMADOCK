@@ -1,4 +1,4 @@
-# Shared UTF-8 boundary helpers for Windows PowerShell 5.1.
+﻿# Shared UTF-8 boundary helpers for Windows PowerShell 5.1.
 # PowerShell 5.1 may encode a string Body with the active Windows code page.
 # Local model APIs must receive explicit UTF-8 bytes for JSON requests.
 
