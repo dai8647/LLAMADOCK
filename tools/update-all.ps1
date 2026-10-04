@@ -10,7 +10,6 @@
 #   2. custom_nodes (git 管理)  git pull — ComfyUI-GGUF / Spectrum-MiniMax-H3 / ClipProj
 #      (ComfyUI-LlamaDock はローカル手作りノードなので対象外)
 #   3. pip 依存                 .venv の requirements.txt 再インストール (差分のみ)
-#   4. sd.cpp                   update-sdcpp.ps1 を呼び出し (GitHub Releases)
 #
 # 注意:
 #   - ComfyUI が稼働中だと更新ファイルがロックされる事がある。実行前に ComfyUI を
@@ -87,11 +86,11 @@ if ($comfyRunning -and -not $Check) {
 }
 
 # 1. ComfyUI 本体
-Write-Host "[1/4] ComfyUI 本体" -ForegroundColor Cyan
+Write-Host "[1/3] ComfyUI 本体" -ForegroundColor Cyan
 Update-GitRepo -Path $ComfyRoot -Name "ComfyUI"
 
 # 2. custom_nodes (git 管理のみ)
-Write-Host "[2/4] custom_nodes" -ForegroundColor Cyan
+Write-Host "[2/3] custom_nodes" -ForegroundColor Cyan
 $nodes = Get-ChildItem -Path (Join-Path $ComfyRoot "custom_nodes") -Directory -ErrorAction SilentlyContinue
 foreach ($n in $nodes) {
     if ($n.Name -eq "ComfyUI-LlamaDock") { continue }   # ローカル手作り
@@ -100,7 +99,7 @@ foreach ($n in $nodes) {
 
 # 3. pip 依存
 if (-not $SkipPip) {
-    Write-Host "[3/4] pip 依存 (ComfyUI .venv)" -ForegroundColor Cyan
+    Write-Host "[3/3] pip 依存 (ComfyUI .venv)" -ForegroundColor Cyan
     $pip = Join-Path $ComfyRoot ".venv\Scripts\python.exe"
     if (Test-Path -LiteralPath $pip) {
         $req = Join-Path $ComfyRoot "requirements.txt"
@@ -123,15 +122,8 @@ if (-not $SkipPip) {
         Write-Host "  .venv python が見つからない: $pip" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "[3/4] pip 依存 (スキップ指定)" -ForegroundColor DarkGray
+    Write-Host "[3/3] pip 依存 (スキップ指定)" -ForegroundColor DarkGray
 }
-
-# 4. sd.cpp
-Write-Host "[4/4] sd.cpp" -ForegroundColor Cyan
-$sdArgs = @()
-if ($Check) { $sdArgs += "-Check" }
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here "update-sdcpp.ps1") @sdArgs
-if ($LASTEXITCODE -ne 0) { $script:failed += "sd.cpp" }
 
 # まとめ
 Write-Host ""

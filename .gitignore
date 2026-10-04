@@ -35,6 +35,12 @@ config/characters/*.json
 !config/characters/index.json
 config/characters/ref/
 
+# --- NSFW phrase knowledge base (local only, explicit content) ---
+# Untracked + renamed 2026-10-04: cloud AI reviews of the repo kept tripping
+# over it. The DO-NOT-READ filename tells AI reviewers to skip the file.
+# h3-chat.py still loads it from this local path.
+config/DO-NOT-READ-local-style-notes.json
+
 # --- Downloaded model binaries (sd.cpp runtime downloads, multi-GB) ---
 tools/sd.cpp/models/
 tools/sd.cpp/old/

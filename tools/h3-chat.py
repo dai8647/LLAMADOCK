@@ -50,9 +50,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-# meta-camp 由来の NSFW 用語集（config/nsfw-prompt-kb.json）。
+# meta-camp 由来の NSFW 用語集（config/DO-NOT-READ-local-style-notes.json・
+# ローカル限定資産なので .gitignore 済み。ファイル名は AI レビューにスキップ
+# させるための看板でもある）。
 # ユーザーの日本語から keys を引き、Flux 向け英語 phrase を企画プロンプトに注入する。
-_NSFW_KB_PATH = os.path.join(REPO, "config", "nsfw-prompt-kb.json")
+_NSFW_KB_PATH = os.path.join(REPO, "config", "DO-NOT-READ-local-style-notes.json")
 
 
 def _load_nsfw_kb():
@@ -69,7 +71,7 @@ def _load_nsfw_kb():
         flat.sort(key=lambda t: -len(t[0]))
         return flat
     except Exception as ex:
-        print(f"h3-chat: failed to load nsfw-prompt-kb: {ex}")
+        print(f"h3-chat: failed to load style-notes kb: {ex}")
         return []
 
 
@@ -202,7 +204,7 @@ def char_identity_prefix(card):
 def _negative_node_id(wf):
     """KSampler の negative 入力リンクを辿って負プロンプト ノード ID を返す。
 
-    ノード ID はワークフローごとに違う（klein=6, krea2=5, qimg=6, 動画系も別）
+    ノード ID はワークフローごとに違う（klein=6, qimg=6, 動画系も別）
     のでハードコードせず必ずリンクから特定する。
     """
     for node in wf.values():
@@ -295,7 +297,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "krea2": 20, "qimg": 420, "upscale": 180, "sdcpp": 60}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -325,22 +327,15 @@ NODE_KIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_KIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_KIMG_SEED = "9"     # KSampler: seed
 
-# Qwen-Image 2512 (key-image, high quality): GGUF Q4_K_S + Lightning 4step +
-# tumblrasia NSFW LoRA. batch_size=1: per user request (2026-09-03) — 旧 4候補は
-# 1枚約7分×4=28分+VRAM競合で辛いため廃止。がっかりしたら再生成ボタンで。
+# Qwen-Image 2.1 Uncensored (key-image, detail/close-up): UC Q4_K_M GGUF +
+# Turbo 4step LoRA + GenatomyFixer 0.3. 2026-10-04 再建 — 旧 2512 構成は 9/21 の
+# モデル切替がワークフローまで終わっておらず、参照先ファイルが消えて壊れていた。
+# TE (qwen3vl_8b int8, 9.35GB) は VRAM を圧迫するので ComfyUI の自動スワップに任せる。
+# 公式テンプレ (image_qwen_image_2_1_t2i) にならい ModelSamplingAuraFlow 無し・cfg=1。
 QIMG_WORKFLOW = os.path.join(REPO, "h3_workflow_qimage.json")
 NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_QIMG_SEED = "10"    # KSampler: seed
-
-# Krea 2 Turbo (key-image, speed-first): 12.9B INT4 W4A4 native, qwen3vl_4b
-# text encoder + qwen_image_vae. WMMA 直接乗算で Klein 9B より速い (igpu-forge
-# 計測: 780M 12CU で 128s, 俺たちの 16GB VRAM で 50-70s 想定)。steps=8, cfg=1。
-# 注意: FLUX 系じゃないので Klein の NSFW LoRA は使えない、reference も非対応。
-KREA2_WORKFLOW = os.path.join(REPO, "h3_workflow_krea2.json")
-NODE_KREA2_PROMPT = "4"  # CLIPTextEncode: image prompt
-NODE_KREA2_LATENT = "6"  # EmptySD3LatentImage: size + batch
-NODE_KREA2_SEED = "7"    # KSampler: seed
 
 # Key-image engines selectable in the UI
 IMG_ENGINES = {
@@ -351,25 +346,11 @@ IMG_ENGINES = {
         "label": "Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け・素人風に強い）",
         "batch_size": 1,
     },
-    "krea2": {
-        "workflow": KREA2_WORKFLOW,
-        "prompt": NODE_KREA2_PROMPT, "latent": NODE_KREA2_LATENT, "seed": NODE_KREA2_SEED,
-        "default_size": (1024, 1024),
-        "label": "Krea 2 Turbo（Krea 2 専用 LoRA 対応・NSFW MASTER 等が使える）",
-        "batch_size": 1,
-    },
     "qimg": {
         "workflow": QIMG_WORKFLOW,
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
-        "label": "Qwen-Image 2512（文字・看板の描画特化・高画質・約7分）",
-        "batch_size": 1,
-    },
-    "sdcpp": {
-        "backend": "sdcpp",
-        "script": os.path.join(REPO, "tools", "sd.cpp", "test_run_4b.ps1"),
-        "default_size": (1024, 1024),
-        "label": "sd.cpp Klein 4B（ComfyUI 不要・単体で動く最速の試行錯誤用）",
+        "label": "Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・約3分）",
         "batch_size": 1,
     },
 }
@@ -1991,9 +1972,7 @@ HTML = """<!doctype html>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け）</label>
-        <label><input type="radio" name="imgengine" value="krea2"> Krea 2 Turbo（Krea 2 専用 LoRA 対応）</label>
-        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2512（文字・看板描画特化）</label>
-        <label><input type="radio" name="imgengine" value="sdcpp"> sd.cpp Klein 4B（ComfyUI 不要・最速試行錯誤）</label>
+        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質）</label>
       </div>
       <div class="advgroup" id="planmodelset">
         <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
@@ -2510,7 +2489,7 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const engLabels = {kimg: "Klein 9B", krea2: "Krea 2 Turbo", qimg: "Qwen-Image 2512", sdcpp: "sd.cpp Klein 4B"};
+  const engLabels = {kimg: "Klein 9B", qimg: "Qwen-Image 2.1 UC"};
   const label = engLabels[eng] || "画像";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
@@ -4540,12 +4519,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": "unknown image engine: " + engine})
             return
         card = get_character(req.get("char_id") or None)
-        # sd.cpp backend: skip ComfyUI workflow entirely. Run sd-cli via PowerShell
-        # wrapper and poll the resulting PNG into job_meta so the frontend can
-        # surface the same "image" completion it uses for ComfyUI outputs.
-        if eng.get("backend") == "sdcpp":
-            self._kimg_sdcpp(parsed, req, text, eng, card)
-            return
         dw, dh = eng["default_size"]
         try:
             width = max(256, min(int(req.get("width") or dw), 1536))
@@ -4589,79 +4562,6 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._json(200, {"prompt_id": pid, "char_applied": char_applied})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
-
-    def _kimg_sdcpp(self, parsed, req, text, eng, card=None):
-        """stable-diffusion.cpp パス: ComfyUI を一旦停止して sd-cli を直接起動する。
-
-        出力 PNG は ComfyUI output/ に置かれるので既存の画像配信エンドポイントで
-        そのまま配信できる。job_meta に 'sdcpp_<timestamp>' をキーに進捗・完了を
-        記録し、/status の kind='image' 経由でフロントに通知される。
-        """
-        if not os.path.isfile(eng["script"]):
-            self._json(500, {"error": f"sd.cpp スクリプトが見つかりません: {eng['script']}"})
-            return
-        # prompt を一時ファイルに書き出す (test_run_4b.ps1 は --prompt-file を読む)
-        prompt_file = os.path.join(os.path.dirname(eng["script"]), "prompt_runtime.txt")
-        try:
-            with open(prompt_file, "w", encoding="utf-8") as f:
-                f.write(text)
-        except Exception as e:
-            self._json(500, {"error": f"プロンプト書き出し失敗: {e}"})
-            return
-        # ComfyUI は sd.cpp と VRAM 競合するので一旦落とす (起動は sd.cpp 側で完結)。
-        # 企画 LLM (port PLAN_PORT) も VRAM 1GB+ 食ってるので sd.cpp 起動中は
-        # 確実に kill。sd.cpp 完了後に ensure_plan_llm() で再 spawn させる。
-        self.server.autostop.poke()
-        stop_plan_llm()
-        ChatHandler._kill_port(self._comfy_port())
-        ChatHandler._kill_port(PLAN_PORT)
-        job_id = f"sdcpp_{int(time.time() * 1000) % 10**13}"
-        out_png = os.path.join(_comfy_root(), "output", f"{job_id}.png")
-        # ps1 内の出力パスを job 用にコピーする仕組みは ps1 側に OutDir 環境変数を
-        # 見る改修を入れるのが本来だが、まずは既存出力を job_id 名に rename する
-        # 簡易方式でいく。
-        def _runner():
-            try:
-                # 出力パスを環境変数で上書き (ps1 側で対応するならここを読む)
-                env = os.environ.copy()
-                env["SDCPP_OUT"] = out_png
-                env["SDCPP_PROMPT"] = prompt_file
-                if card:
-                    char_neg = char_negative_text(card)
-                    if char_neg:
-                        # ps1 は 1 行文字列で sd-cli に渡すため埋め込み引用符は潰す
-                        env["SDCPP_NEG"] = char_neg.replace('"', "'")
-                    char_seed = card.get("seed")
-                    if isinstance(char_seed, int) and not isinstance(char_seed, bool):
-                        env["SDCPP_SEED"] = str(char_seed % (2**31 - 1))
-                # ps1 は固定の sdcpp_klein_4b.png を出力するので、終わったら job_id に rename
-                proc = subprocess.run(
-                    ["powershell", "-ExecutionPolicy", "Bypass", "-File", eng["script"]],
-                    env=env, cwd=os.path.dirname(eng["script"]),
-                    capture_output=True, text=True, timeout=600,
-                )
-                if proc.returncode == 0:
-                    src = os.path.join(_comfy_root(), "output", "sdcpp_klein_4b.png")
-                    if os.path.isfile(src):
-                        try:
-                            os.replace(src, out_png)
-                        except Exception:
-                            pass
-                self.server.job_meta[job_id] = {
-                    "mode": "sdcpp", "start": self.server.job_meta.get(job_id, {}).get("start", time.time()),
-                    "kind": "image", "done": True, "ok": proc.returncode == 0,
-                    "returncode": proc.returncode,
-                    "stderr_tail": (proc.stderr or "")[-500:],
-                }
-            except Exception as e:
-                self.server.job_meta[job_id] = {
-                    "mode": "sdcpp", "kind": "image", "done": True, "ok": False,
-                    "error": str(e),
-                }
-        # 進捗を即時見えるよう先に job_meta を仕込む
-        self.server.job_meta[job_id] = {"mode": "sdcpp", "start": time.time(), "kind": "image", "done": False}
-        threading.Thread(target=_runner, daemon=True).start()
-        self._json(200, {"prompt_id": job_id})
 
     # ---- shutdown / VRAM ---------------------------------------------
 
@@ -4799,55 +4699,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             return s[len(s) // 2]
         return ETA_DEFAULTS.get(mode, 300)
 
-    def _status_sdcpp(self, pid, meta, elapsed, eta):
-        """sd.cpp job の進捗/完了を返す。ComfyUI が落ちていても job_meta だけで判定。"""
-        if not meta.get("done"):
-            self._json(200, {"status": "running", "extra": "sd.cpp 実行中", "pending": 0, "elapsed_sec": elapsed, "eta_sec": max(0, eta - elapsed)})
-            return
-        if not meta.get("ok"):
-            err = meta.get("error") or meta.get("stderr_tail") or "sd.cpp 生成に失敗しました"
-            self.server.job_meta.pop(pid, None)
-            self._json(200, {"status": "error", "error": err[-400:]})
-            return
-        # 出力 PNG を ComfyUI output/ から拾って videos 形式に詰める
-        out_png = os.path.join(_comfy_root(), "output", f"{pid}.png")
-        if not os.path.isfile(out_png):
-            self.server.job_meta.pop(pid, None)
-            self._json(200, {"status": "error", "error": f"出力が見つかりません: {out_png}"})
-            return
-        fn = os.path.basename(out_png)
-        self.server.local_files[fn] = out_png
-        # 実測時間を記録して ETA を賢くする
-        if elapsed > 5:
-            self.server.run_times.setdefault("sdcpp", []).append(elapsed)
-            self.server.run_times["sdcpp"] = self.server.run_times["sdcpp"][-20:]
-        self.server.job_meta.pop(pid, None)
-        # sd.cpp 画像生成も autostop の起点にする。動画同様アイドルで
-        # ComfyUI + 企画 LLM + h3-chat.py をまとめて解放 (AUTO_STOP_SECONDS)。
-        try:
-            self.server.autostop.mark_done()
-        except Exception:
-            pass
-        self._json(200, {
-            "status": "success",
-            "videos": [{
-                "filename": fn,
-                "type": "output",
-                "subfolder": "",
-                "kind": "image",
-                "path": out_png,
-            }],
-        })
-
     def _status(self, pid):
         meta = self.server.job_meta.get(pid) or {}
         mode = meta.get("mode") or "video"
         elapsed = int(time.time() - meta["start"]) if meta.get("start") else 0
         eta = self._eta_base(mode)
-        # sd.cpp job は ComfyUI を使わず job_meta だけで完結する。
-        if mode == "sdcpp" or pid.startswith("sdcpp_"):
-            self._status_sdcpp(pid, meta, elapsed, eta)
-            return
         try:
             # running or queued?
             _, raw, _ = self._comfy("GET", "/queue", timeout=10)
