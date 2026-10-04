@@ -432,6 +432,34 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - 未コミット: tools/h3chat-restart.log.err（再起動ログ、コミット対象外）
 - 反映には h3-chat 再起動が必要（GPU 使用中のため今回は再起動せず）
 
+## 2026-10-04 画像エンジン 2 本化 — Qwen-Image 2.1 UC 再建 + KB 非公開化 + 整理
+
+- **9/21 の切替は中途半端だった**: 移動した GGUF はハッシュ照合の結果「素の base」で
+  UC ではなかった。ワークフロー (h3_workflow_qimage.json) も 2512 のまま参照先が
+  消えて壊れていた（qimg と krea2 が死んでいた）。
+- **qimg 再建 (2.1 UC)**: `diffusion_models/qwen-image-2.1-UC-Q4_K_M.gguf` (4.6GB・
+  abenzerps の UC 版を SHA256 照合済みで DL) + `loras/Qwen-Image-2.1-turbo-4step.safetensors`
+  (340MB・RunningHub) → `GenatomyFixer@0.3` (LoRA キーは 2.1 命名で一致確認済み)。
+  4step / cfg1 / euler-simple / 1344×768。公式テンプレにならい ModelSamplingAuraFlow 無し。
+- **ComfyUI 0.34→0.38 + ComfyUI-GGUF を city96→leejet fork へ**: 2.1 の
+  `TextEncodeQwenImage21` ノードと sd.cpp 変換 GGUF (arch kv 無し) の自動判定に必須。
+  **次回の ComfyUI 再起動から有効**。
+- **画像エンジンを 2 本に**: Klein 9B (主力・スマホ写真系) + Qwen-Image 2.1 UC
+  (局所描写・検閲なし)。krea2 (VAE 不足で死亡) と sd.cpp を UI・コードから削除
+  (_kimg_sdcpp / _status_sdcpp も削除)。ETA qimg=180s は初回実測で校正すること。
+- **NSFW KB 非公開化**: `config/nsfw-prompt-kb.json` →
+  `config/DO-NOT-READ-local-style-notes.json` に改名し git 追跡から外した
+  (クラウド AI レビュー対策。先頭に `_ai_notice` を追加)。h3-chat はローカルパスで
+  従来どおり読む。履歴には旧名で残っている (完全消去は filter-repo が必要)。
+- **整理 (ゴミ箱へ・復元可)**: 未使用 workflow 12 個 (bench/clipproj/fast/super/turbo
+  の非 audio 版 + src) / `tools/sd.cpp` フォルダ (15GB) / `flux-2-klein-base-9b-fp8`
+  (9.6GB 未参照) / `klein_base_turbo_r128` (1.3GB 未参照) / 素の 2.1 base GGUF (4.6GB)。
+  `klein_base_naturalbeauty_v2` (317MB) は計画書の実験用に残置。
+  旧 stash は `logs/stash-backup-20261004.patch` に退避して drop。
+- **計画書**: `docs/ero-upgrade-plan-2026-10-04.md` (エロ強化の優先順・検証プロトコル)
+- 検証: py_compile / クライアントハーネス 97/97 / キャラ固定 26/26。
+  反映には h3-chat (と ComfyUI) の再起動が必要。
+
 ## 2026-09-21 Qwen Image 2.1 Uncensored GGUF モデル切替
 
 - **切り替え元**: `C:\Users\dai86\Downloads\abenzerpsQwen-Image-2.1-Uncensored-GGUF\`

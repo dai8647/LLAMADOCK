@@ -105,12 +105,8 @@ check("PLAN_SYSTEM untouched (has smartphone trigger)",
 check("PLAN_SYSTEM untouched (no char text leaked)",
       "キャラ固定" not in m.PLAN_SYSTEM)
 
-# --- sdcpp env contract (ps1 reads SDCPP_NEG / SDCPP_SEED) --------------------
-ps1_path = os.path.join(os.path.dirname(m.__file__), "sd.cpp", "test_run_4b.ps1")
-with open(ps1_path, encoding="utf-8") as f:
-    ps1 = f.read()
-check("ps1: SDCPP_NEG wired", "SDCPP_NEG" in ps1 and "--negative-prompt" in ps1)
-check("ps1: SDCPP_SEED overrides -s 42", "$seedArg = if ($env:SDCPP_SEED)" in ps1)
+# --- sdcpp env contract -------------------------------------------------------
+# (2026-10-04 sdcpp エンジン廃止に伴い test_run_4b.ps1 ごと削除。契約テストも廃止。)
 
 shutil.rmtree(tmp)
 m.CHARACTERS_DIR = old_dir
