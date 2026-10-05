@@ -54,7 +54,7 @@ PLAN_SYSTEM = (
     "衣服は脱がずにずらす(shirt lifted, skirt pulled up, panties pulled aside, bra still worn)、部位だけちらっと見せる。"
     "全裸シーンでも直視させない: 顔をフレームから切る(cropped out of frame, face hidden by hair)、視線を逸らす(looking down, looking away)、"
     "鏡越し(mirror reflection)、隙間越し、後ろ姿から振り返る(over-the-shoulder glance)で遠回しに見せる。"
-    "被写体は japanese woman, petite, slender, fair skin を基本とし、ヌードでは natural pubic hair を指定する(剃毛は洋物っぽくなる)。"
+    "被写体は japanese woman, petite, slender, fair skin を基本とし、陰毛はキャラの年齢感に合わせる(成熟した成人なら natural pubic hair、若年・小柄スタイルなら hairless)。同一プロンプトで毛の指定を矛盾させない。"
     "表情の主軸は羞恥: light blush on cheeks, gaze down, biting lip, embarrassed smile。"
     "誇張した展示ポーズより、日常の動作の途中を撮った空気(undressing mid-motion, after-bath towel, checking phone on bed)が日本的官能の核。"
     "【被写体のバリエーション】毎回同じ顔・同じ体型に固定しない。企画ごとに髪型(黒髪ロング/ショート/ボブ/ポニーテール/巻き髪/ツインテール)、"
@@ -65,15 +65,18 @@ PLAN_SYSTEM = (
     "順序は固定: ①被写体と人数(1girl, solo 等) → ②体型・胸・尻・肌の特徴 → ③ポーズと体の向き(spread legs, lying on back, looking at viewer 等) → "
     "④行為・露出の具体部 → ⑤カメラ(距離・アングル: close-up, from above, low angle, wide shot, pov) → ⑥背景を1語レベルで(bedroom, shower room, park 等) → "
     "⑦照明(natural window light, dim warm lamp light, harsh direct flash 等) → ⑧質感タグ(smartphone photo, candid, natural skin texture, slight grain)。"
-    "長さは60〜100語。she is や the scene shows のような完全文・接続詞は書かない。日本語は1語も入れない。"
+    "長さは80〜130語。she is や the scene shows のような完全文・接続詞は書かない。日本語は1語も入れない。"
+    "全部の要素を入れると長くなるときは、形容詞や背景の装飾を削り、人数・体の向き・四肢の位置関係・行為の接触面を最優先で残す。"
     "「〜している場面」のような物語説明は禁止。動画ではなく静止画として固まる一瞬のポーズを選ぶ。複数人なら人数を明記する(1boy 1girl 等)。"
     "【体位・行為の正確さ】mating press, prone bone, full nelson, piledriver, reverse cowgirl など体位は学習済みの正式英語名で呼ぶ。"
     "その上で「誰のどの部位がどこにあるか」を1文足す(side view showing both bodies, her legs over his shoulders, her hand gripping the sheets 等)。"
     "フェラ・手コキ・素股など行為系は接触面を具体化する(lips wrapped around the shaft, penis sliding between her clenched thighs)。"
-    "playing, being intimate のような曖昧な一般語は禁止。局部を含む画は全身より接写寄りのカメラ選択(detailed close-up of genitals, from below 等)のほうが破綻しない。"
+    "playing, being intimate のような曖昧な一般語は禁止。"
+    "【構図は1カット1原則】1枚の[IMG_PROMPT]には全身ショットか接写ショットのどちらか一方を選ぶ(両方のカメラ指示を混ぜない)。"
+    "手足の破綻が心配なシーン(膝立ち・四つん這い・抱き着き・複数人)は全身寄りにして四肢の接続を全部見せ、局部の精密さが欲しいシーンは接写にして背景と四肢を省く。"
     "【四肢の行き先を明記】膝立ち・四つん這い・抱き着きなど体が折れるポーズでは、腕や脚がどこについているかを必ず英語で書く"
     "(kneeling on the floor beside him, her legs folded under her thighs, both bare feet visible in frame, his hand resting on her back 等)。"
-    "フレーム端で腕・脚が切れると別人の手足のように見えるので、全身と手足の先端がフレームに収まる構図を優先する。"
+    "フレーム端で腕・脚が切れると別人の手足のように見える。全身ショットでは手足の先端までフレームに収め、接写ショットでは切った部分の接続先を文で補足する(her legs folded under her, out of frame 等)。"
     "照れ・赤面は light blush on cheeks / faint blush と書く。blushing 単独・red face・flushed face・deep blush は顔全体が真っ赤に発色するので禁止。blush を入れるのは照れシーンだけで、他の感情には書かない。"
     "強度は誇張ではなく具体で出す: 形容詞を積むほど模型っぽくなるので、行為・部位・角度を実名で書き、肌や表情には red, deep, perfect のような色の強調語を使わない。"
     "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
@@ -192,6 +195,37 @@ def _inject_n5fw(text):
     if not _needs_n5fw(text):
         return text
     return "n5fw, " + text.lstrip()
+
+
+OPENER = "This is a candid photograph taken with a smartphone of"
+
+
+def _enforce_opener(text):
+    """スマホ写真トリガー句 (OPENER) が無ければ先頭に機械付与する。
+
+    プランナー LLM が素通りすることがあり (10パターン実測で 2/10)、
+    Klein のスマホ写真 LoRA の効きがブレる原因になるので生成前に保証する。
+    n5fw プレフィックスがある場合はその後ろに挿入する。
+    """
+    if not text:
+        return text
+    stripped = text.lstrip()
+    prefix = ""
+    body = stripped
+    m = re.match(r"n5fw\s*,\s*", stripped, re.I)
+    if m:
+        prefix = m.group(0)
+        body = stripped[m.end():]
+    if body.lower().startswith(OPENER.lower()):
+        return text
+    return prefix + OPENER + " " + body.lstrip()
+
+
+def _dedup_person_tags(text):
+    """1girl 1girl / 1girl, 1girl のような人数タグの重複を潰す。"""
+    if not text:
+        return text
+    return re.sub(r"\b(1girl|1boy|solo)\b(\s*,\s*|\s+)\1\b", r"\1", text, flags=re.I)
 
 
 
@@ -337,4 +371,4 @@ AUDIO_SYSTEM = (
 )
 
 
-__all__ = ['HERE', 'REPO', 'PLAN_SYSTEM', 'TOOL_CALL_RE', 'PROMPT_ARG_RE', 'TOOL_KV_RE', 'TAG_REF_RE', '_clean_plan_reply', '_best_tag_match', 'GEN_PARAM_RE', '_strip_gen_params', 'N5FW_TRIGGERS', '_needs_n5fw', '_inject_n5fw', '_unclosed_tag', '_tool_prompt', 'IMG_FINAL_RE', 'VIDEO_KEYWORDS', '_looks_like_final', 'FINAL_RE', 'FINAL_JA_RE', 'IMG_JA_RE', 'AUDIO_SET_RE', 'AUDIO_KEYS', '_parse_audio_set', 'AUDIO_SYSTEM']
+__all__ = ['HERE', 'REPO', 'PLAN_SYSTEM', 'TOOL_CALL_RE', 'PROMPT_ARG_RE', 'TOOL_KV_RE', 'TAG_REF_RE', '_clean_plan_reply', '_best_tag_match', 'GEN_PARAM_RE', '_strip_gen_params', 'N5FW_TRIGGERS', '_needs_n5fw', '_inject_n5fw', '_unclosed_tag', '_tool_prompt', 'IMG_FINAL_RE', 'VIDEO_KEYWORDS', '_looks_like_final', 'FINAL_RE', 'FINAL_JA_RE', 'IMG_JA_RE', 'AUDIO_SET_RE', 'AUDIO_KEYS', '_parse_audio_set', 'AUDIO_SYSTEM', '_enforce_opener', '_dedup_person_tags', 'OPENER']
