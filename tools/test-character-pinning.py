@@ -14,6 +14,17 @@ spec = importlib.util.spec_from_file_location("h3chat", "tools/h3-chat.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
+# 2026-10-04 リファクタリング: キャラ機能は tools/h3chat_characters.py に分離。
+# 実行関数は自モジュールのグローバル (CHARACTERS_DIR) を読むので、テストの
+# 差し替えは chars_mod 側に対して行う。m には同名関数を束縛し直しておく。
+chars_mod = importlib.util.module_from_spec(
+    importlib.util.spec_from_file_location("h3chat_characters", "tools/h3chat_characters.py"))
+chars_mod.__spec__.loader.exec_module(chars_mod)
+chars_mod.CHARACTERS_DIR = m.CHARACTERS_DIR
+for _n in ("_load_characters", "get_character", "char_summary_text", "char_negative_text",
+           "char_identity_prefix", "_apply_char_loras", "_append_negative", "_char_id_ok"):
+    setattr(m, _n, getattr(chars_mod, _n))
+
 passed = failed = 0
 
 
@@ -29,8 +40,8 @@ def check(name, cond, detail=""):
 
 # --- loader / id validation -------------------------------------------------
 tmp = tempfile.mkdtemp()
-old_dir = m.CHARACTERS_DIR
-m.CHARACTERS_DIR = tmp
+old_dir = chars_mod.CHARACTERS_DIR
+chars_mod.CHARACTERS_DIR = tmp
 
 good = {"id": "akari", "name": "あかり", "summary": "japanese woman, mid-20s",
         "negative": "blonde hair", "lora": {"kimg": [{"name": "a.safetensors", "strength": 0.85}]},
@@ -109,7 +120,7 @@ check("PLAN_SYSTEM untouched (no char text leaked)",
 # (2026-10-04 sdcpp エンジン廃止に伴い test_run_4b.ps1 ごと削除。契約テストも廃止。)
 
 shutil.rmtree(tmp)
-m.CHARACTERS_DIR = old_dir
+chars_mod.CHARACTERS_DIR = old_dir
 
 print(f"\n{passed} passed, {failed} failed")
 raise SystemExit(1 if failed else 0)

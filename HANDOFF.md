@@ -460,6 +460,31 @@ FPS 24fps 修正済み（映像 5.17s = 音声 5.17s、同期確認済み）。
 - 検証: py_compile / クライアントハーネス 97/97 / キャラ固定 26/26。
   反映には h3-chat (と ComfyUI) の再起動が必要。
 
+## 2026-10-04 全体リファクタリング — h3-chat.py のモジュール分割
+
+- **tools/h3-chat.py を 4909 行 → 1946 行に分割**。純粋ユーティリティを
+  `tools/h3chat_*.py` 7 モジュールへ分離（各モジュール末尾に `__all__` を生成、
+  shim 側は star import で全名を再公開するので既存の呼び出し・テスト互換）:
+  - `h3chat_kb.py` — NSFW 用語集の読み込み/マッチ/システムノート
+  - `h3chat_characters.py` — キャラ固定ライブラリ + negative/LoRA 機械適用
+  - `h3chat_video.py` — PyAV ユーティリティ（最終フレーム/サイズ/結合）
+  - `h3chat_planllm.py` — 企画 LLM の発見・spawn/stop/switch・VRAM ガード
+  - `h3chat_prompting.py` — PLAN_SYSTEM + タグ解析 + n5fw + tweak 解析
+  - `h3chat_sessions.py` — セッション永続化（ファイル I/O のみ）
+  - `h3chat_page.py` — チャット UI の HTML/CSS/JS（純データ 1664 行）
+- h3-chat.py 自体はエントリポイント + ChatHandler + ワークフロー定数 + 実行状態
+  (SESSION / PLAN_HISTORY / _AutoStop)。shim が `sys.path.insert(0, HERE)` するので
+  spec_from_file_location 経由の import も動く。
+- 実行状態の可変グローバル (ACTIVE_SESSION 辞書 / PLAN_HISTORY) は共有オブジェクト
+  として渡るのでハンドラからの item 代入はそのまま動く。PLAN_PROC はハンドラから
+  直接参照しない（関数経由のみ）。
+- テスト 3 本を新構成に追従: クライアントハーネスは `h3chat_page.py` から
+  `<script>` を抽出、キャラ固定テストは `h3chat_characters` モジュールを別ロードして
+  CHARACTERS_DIR を差し替え。
+- 検証: py_compile 8 ファイル / 旧トップレベル名 152 個の完全カバレッジ確認 /
+  star export 漏れなし / `--help` 起動 / クライアント 97/97・キャラ 26/26・タグ 9/9。
+- 反映には h3-chat 再起動が必要（挙動は不変のリファクタリング）。
+
 ## 2026-09-21 Qwen Image 2.1 Uncensored GGUF モデル切替
 
 - **切り替え元**: `C:\Users\dai86\Downloads\abenzerpsQwen-Image-2.1-Uncensored-GGUF\`
