@@ -61,7 +61,7 @@ cd C:\Users\dai86\Documents\ComfyUI
 | 種類 | ファイル | サイズ | 備考 |
 |---|---|---|---|
 | DiT（GGUF） | `unet\pornmasterFlux2Klein_v4TurboBf16-Q8_0.gguf` | 9.5GB | `ComfyUI-GGUF` の UnetLoaderGGUF でロード。Z-Image Turbo の代替 |
-| テキストエンコーダ | `text_encoders\qwen_3_8b_fp8mixed.safetensors` | 約 4.5GB | CLIPLoader type=`flux2` |
+| テキストエンコーダ | `text_encoders\flux2-klein-9b-uncensored-q4_k_m.gguf` | 5.0GB | CLIPLoaderGGUF type=`flux2`（旧 `qwen_3_8b_fp8mixed` は 2026-10-05 現行ワークフロー不使用につき削除） |
 | VAE | `vae\flux2-vae.safetensors` | 約 320MB | |
 | NSFW LoRA | `loras\flux_klein_9b_nsfw_v2.safetensors` | 165MB | `diroverflo/FLux_Klein_9B_NSFW` v2（Klein 9B 用） |
 | VAE（兼用） | `vae\ae.safetensors` | 335MB | FLUX 系共通 AE |
