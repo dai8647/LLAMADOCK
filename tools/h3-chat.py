@@ -82,7 +82,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "qfix": 300, "upscale": 180}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -122,14 +122,6 @@ NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_QIMG_SEED = "10"    # KSampler: seed
 
-# Qwen-Image 2.1 UC 品質モード (qfix): 同じ 2.1 UC モデルに e-n-v-y Fix LoRA
-# (解剖学・品質の修正特化) を乗せ、素の 20step / cfg3.0 / sgm_uniform で回す。
-# cfg>1 なのでネガティブプロンプト (deformed genitalia 等) が実効力を持つ。
-# turbo 4step より遅いが局部・手指の破綻に強い。推奨設定は Fix 配布 wf より。
-QFIX_WORKFLOW = os.path.join(REPO, "h3_workflow_qimage_fix.json")
-NODE_QFIX_PROMPT = "5"
-NODE_QFIX_LATENT = "7"
-NODE_QFIX_SEED = "10"
 
 # Key-image engines selectable in the UI
 IMG_ENGINES = {
@@ -149,13 +141,6 @@ IMG_ENGINES = {
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
         "label": "Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・約3分）",
-        "batch_size": 1,
-    },
-    "qfix": {
-        "workflow": QFIX_WORKFLOW,
-        "prompt": NODE_QFIX_PROMPT, "latent": NODE_QFIX_LATENT, "seed": NODE_QFIX_SEED,
-        "default_size": (1344, 768),
-        "label": "Qwen 2.1 UC 品質モード（Fix LoRA・約3分・体型指定が薄まる）",
         "batch_size": 1,
     },
 }
