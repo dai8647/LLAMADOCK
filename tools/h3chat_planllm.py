@@ -390,8 +390,10 @@ def _spawn_plan_llm():
             # model so the planner can see the confirmed key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     else:
+        # --mlock は Unsloth CUDA ビルド (b11160) で "invalid argument" になり
+        # プランナー spawn が即死する (2026-10-05 実測) ので外した。
         args += [
-            "-ngl", "0", "--mlock",
+            "-ngl", "0",
             # This 4B model is not a reasoning model: when the Qwen3.5 chat
             # template injects a think-block opener it "thinks" by re-reading
             # its own system prompt, burns the whole token budget, then
