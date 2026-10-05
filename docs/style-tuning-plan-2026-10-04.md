@@ -1,4 +1,6 @@
-# エロ表現強化 計画書（2026-10-04）
+# スタイル・描写精度チューニング 計画書（2026-10-04）
+
+（R18向けローカル創作スタックの画風・解剖学・キャラ多様性の改善計画）
 
 16GB VRAM / GPU は他 AI と共用のため **検証・比較生成は ComfyUI 単独で動く時間帯に** 実施する。
 画像エンジンは本日から **2 本**（Klein 9B / Qwen-Image 2.1 UC）。krea2・sd.cpp は廃止済み。
@@ -39,7 +41,7 @@
   `cat: "motion"` カテゴリを新設し、`[FINAL_PROMPT]` 用の体の動き・リズム・継続時間の
   英語 phrase（thrusting rhythm, continuous motion, slow grind 等）を 20〜30 語追加する。
   注入先は `_nsfw_kb_system_note` の IMG_PROMPT 用文面と FinalPrompt 用で分岐が必要
-- 汎用キー（足・尻・汗 等）の非エロ文での誤爆は hint 追加のみで実害小 → 放置でよい
+- 汎用キー（足・尻・汗 等）の非対象文での誤爆は hint 追加のみで実害小 → 放置でよい
 
 ## 4. 動画側（GPU 必要）
 
