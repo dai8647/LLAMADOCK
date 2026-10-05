@@ -65,6 +65,8 @@ from h3chat_prompting import *   # noqa: F401,F403
 from h3chat_sessions import *    # noqa: F401,F403
 from h3chat_page import *        # noqa: F401,F403
 
+import h3chat_planllm as planllm  # 実行中に変わる企画LLM状態はモジュール属性経由で読む
+
 
 WORKFLOWS = {
     # 32B Heretic encoder: best Japanese / detailed-prompt fidelity
@@ -311,7 +313,7 @@ def _stop_stack(server):
     except Exception:
         pass
     ChatHandler._kill_port(ChatHandler._comfy_port_of(server))
-    ChatHandler._kill_port(PLAN_PORT)
+    ChatHandler._kill_port(planllm.PLAN_PORT)
     threading.Timer(1.5, server.shutdown).start()
 
 
@@ -550,9 +552,9 @@ class ChatHandler(BaseHTTPRequestHandler):
         """List installed planning-LLM candidates + the current selection."""
         self._json(200, {
             "current": {
-                "path": PLAN_MODEL_PATH, "mmproj": PLAN_MMPROJ_PATH,
-                "gpu": PLAN_GPU, "vision": PLAN_HAS_VISION, "port": PLAN_PORT,
-                "bin": PLAN_SERVER_BIN,
+                "path": planllm.PLAN_MODEL_PATH, "mmproj": planllm.PLAN_MMPROJ_PATH,
+                "gpu": planllm.PLAN_GPU, "vision": planllm.PLAN_HAS_VISION, "port": planllm.PLAN_PORT,
+                "bin": planllm.PLAN_SERVER_BIN,
             },
             "running": _plan_alive(),
             "external": bool(self.server.plan_url),
@@ -573,20 +575,20 @@ class ChatHandler(BaseHTTPRequestHandler):
         resp = {
             "ok": True,
             "current": {
-                "path": PLAN_MODEL_PATH, "mmproj": PLAN_MMPROJ_PATH,
-                "gpu": PLAN_GPU, "vision": PLAN_HAS_VISION, "port": PLAN_PORT,
-                "bin": PLAN_SERVER_BIN,
+                "path": planllm.PLAN_MODEL_PATH, "mmproj": planllm.PLAN_MMPROJ_PATH,
+                "gpu": planllm.PLAN_GPU, "vision": planllm.PLAN_HAS_VISION, "port": planllm.PLAN_PORT,
+                "bin": planllm.PLAN_SERVER_BIN,
             },
             "note": "切り替えました。次のメッセージから新しいモデルで起動します。",
         }
         if self.server.plan_url:
             # 選択を優先: 外部エンドポイントを解除して自前起動に切り替える。
             # 外部プランナー（--plan-url が指す llama-server）を停止してから
-            # 次メッセージで選択モデルを PLAN_PORT に起動する。
+            # 次メッセージで選択モデルを planllm.PLAN_PORT に起動する。
             try:
-                ext_port = int(urllib.parse.urlparse(self.server.plan_url).port or PLAN_PORT)
+                ext_port = int(urllib.parse.urlparse(self.server.plan_url).port or planllm.PLAN_PORT)
             except Exception:
-                ext_port = PLAN_PORT
+                ext_port = planllm.PLAN_PORT
             self.server.plan_url = None
             ChatHandler._kill_port(ext_port)
             resp["note"] = ("外部エンドポイントを停止し、選択したモデルで自前起動に切り替えました。"
@@ -899,7 +901,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         endpoint = self._plan_endpoint()
         if not endpoint:
-            if PLAN_GPU and self._comfy_busy():
+            if planllm.PLAN_GPU and self._comfy_busy():
                 self._json(503, {"error": "ComfyUI が生成中のため GPU 企画 LLM を起動できません。生成完了後に再度お送りください。"})
             else:
                 self._json(503, {"error": "企画 LLM を起動できませんでした（モデルまたは llama-server が見つかりません）"})
@@ -1081,7 +1083,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         endpoint = self._plan_endpoint()
         if not endpoint:
-            if PLAN_GPU and self._comfy_busy():
+            if planllm.PLAN_GPU and self._comfy_busy():
                 self._json(503, {"error": "ComfyUI が生成中のため GPU 企画 LLM を起動できません。生成完了後に再度お送りください。"})
             else:
                 self._json(503, {"error": "企画 LLM を起動できませんでした"})
@@ -1113,7 +1115,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         """Return the planning-LLM base URL to use.
 
         Prefers the configured --plan-url when it is actually alive; if that
-        endpoint is dead, fall through to the auto path (PLAN_PORT / GPU 8191)
+        endpoint is dead, fall through to the auto path (planllm.PLAN_PORT / GPU 8191)
         so a leftover --plan-url 8190 does not pin the UI to a corpse while the
         GPU planner is running on 8191.
         """
@@ -1124,17 +1126,17 @@ class ChatHandler(BaseHTTPRequestHandler):
             # it before the load starts. When a generation is in flight we can
             # neither unload its models (it would break the run) nor fit the
             # planner beside them, so refuse until the queue drains.
-            if PLAN_GPU and not _plan_alive():
+            if planllm.PLAN_GPU and not _plan_alive():
                 if self._comfy_busy():
                     print("h3-chat: ComfyUI 生成中のため GPU 企画 LLM の起動を延期します")
                     return None
                 self._free_comfy()
             # Give a first-request spawn a short window to come up. The gpu27b
             # planner cold-loads in ~10s but gets a longer window for safety.
-            if ensure_plan_llm(wait_seconds=90 if PLAN_GPU else 30):
-                return PLAN_URL_DEFAULT
+            if ensure_plan_llm(wait_seconds=90 if planllm.PLAN_GPU else 30):
+                return planllm.PLAN_URL_DEFAULT
             return None
-        return PLAN_URL_DEFAULT if _plan_alive() else None
+        return planllm.PLAN_URL_DEFAULT if _plan_alive() else None
 
     def _attach_plan_image(self, text, image_fn, note=None):
         """Attach image_fn as a base64 image part so a vision-capable planning
@@ -1143,7 +1145,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         local_files) or an absolute path (reference-image picker). When `note`
         is given it is prepended to the text part (only if the image actually
         attaches) so the planner knows what the image is for."""
-        if not (image_fn and PLAN_HAS_VISION):
+        if not (image_fn and planllm.PLAN_HAS_VISION):
             return text
         abspath = self.server.local_files.get(image_fn) or image_fn
         if not os.path.isfile(abspath):
@@ -1211,7 +1213,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         # available — the confirmed key image, or the reference image the user
         # picked via 🗂 — so the planner can see it while planning/revising,
         # not only after confirmation. Planners without a vision projector
-        # (PLAN_HAS_VISION false) get the prompt text only.
+        # (planllm.PLAN_HAS_VISION false) get the prompt text only.
         ref_note = None
         if image_fn and not is_confirm:
             if stage in ("chat", "image"):
@@ -1723,7 +1725,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         stopped = ["ComfyUI"]
         self._kill_port(self._comfy_port())
         if scope == "all":
-            self._kill_port(PLAN_PORT)
+            self._kill_port(planllm.PLAN_PORT)
             stopped.append("企画 LLM")
             # respond first, then stop the chat server itself
             threading.Timer(1.5, self.server.shutdown).start()
@@ -1904,12 +1906,12 @@ def main():
     print(f"h3-chat: Klein 9B = {KIMG_WORKFLOW}")
     print(f"h3-chat: Qwen    = {QIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['fast']} など（キー画像→参照 LoRA）")
-    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(PLAN_PORT) + ', GPU 27B)' if PLAN_GPU else 'auto (8190, CPU 4B)')} (engine: {PLAN_ENGINE})")
+    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(planllm.PLAN_PORT) + ', GPU 27B)' if planllm.PLAN_GPU else 'auto (8190, CPU 4B)')} (engine: {planllm.PLAN_ENGINE})")
     # Bring up the planning LLM in the background so the first plan-mode
     # message does not have to wait for the model load (~10-60s on CPU).
     # gpu27b mode starts on demand instead: preloading it would hold 14GB of
     # VRAM while ComfyUI may still be generating.
-    if not server.plan_url and not PLAN_GPU:
+    if not server.plan_url and not planllm.PLAN_GPU:
         threading.Thread(target=ensure_plan_llm, kwargs={"wait_seconds": 180}, daemon=True).start()
     print("h3-chat: Ctrl+C で停止")
     try:
