@@ -1318,6 +1318,10 @@ class ChatHandler(BaseHTTPRequestHandler):
                 img_prompt = _strip_gen_params(img_prompt)
                 # GenatomyFixer 用に NSFW プロンプトの先頭に n5fw, を自動付与
                 img_prompt = _inject_n5fw(img_prompt)
+                # スマホ写真トリガー句の保証 + 人数タグ重複の排除 (10パターン実測で
+                # opener 欠落 2/10・1girl 重複 1/10 だったので機械保証にする)
+                img_prompt = _enforce_opener(img_prompt)
+                img_prompt = _dedup_person_tags(img_prompt)
             if final_prompt:
                 final_prompt = _strip_gen_params(final_prompt)
             # 動画プロンプトの日本語説明（[FINAL_PROMPT_JA]、[FINAL_PROMPT] と対）を
