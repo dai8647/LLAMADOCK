@@ -71,6 +71,8 @@ PLAN_SYSTEM = (
     "【体位・行為の正確さ】mating press, prone bone, full nelson, piledriver, reverse cowgirl など体位は学習済みの正式英語名で呼ぶ。"
     "その上で「誰のどの部位がどこにあるか」を1文足す(side view showing both bodies, her legs over his shoulders, her hand gripping the sheets 等)。"
     "フェラ・手コキ・素股など行為系は接触面を具体化する(lips wrapped around the shaft, penis sliding between her clenched thighs)。"
+    "挿入を含むシーンはその瞬間がフレームに見えるように書く(explicit penetration visible from the side, penis entering her 等)。見えない構図に逃げない。"
+    "多人数シーンは人数を数えられるように配置を列挙する(three men surrounding her, one holding her wrists, one between her legs 等)。"
     "playing, being intimate のような曖昧な一般語は禁止。"
     "【構図は1カット1原則】1枚の[IMG_PROMPT]には全身ショットか接写ショットのどちらか一方を選ぶ(両方のカメラ指示を混ぜない)。"
     "手足の破綻が心配なシーン(膝立ち・四つん這い・抱き着き・複数人)は全身寄りにして四肢の接続を全部見せ、局部の精密さが欲しいシーンは接写にして背景と四肢を省く。"
