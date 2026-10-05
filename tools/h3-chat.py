@@ -297,7 +297,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "upscale": 180}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "qfix": 480, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -337,6 +337,15 @@ NODE_QIMG_PROMPT = "5"   # CLIPTextEncode: image prompt
 NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_QIMG_SEED = "10"    # KSampler: seed
 
+# Qwen-Image 2.1 UC 品質モード (qfix): 同じ 2.1 UC モデルに e-n-v-y Fix LoRA
+# (解剖学・品質の修正特化) を乗せ、素の 20step / cfg3.0 / sgm_uniform で回す。
+# cfg>1 なのでネガティブプロンプト (deformed genitalia 等) が実効力を持つ。
+# turbo 4step より遅いが局部・手指の破綻に強い。推奨設定は Fix 配布 wf より。
+QFIX_WORKFLOW = os.path.join(REPO, "h3_workflow_qimage_fix.json")
+NODE_QFIX_PROMPT = "5"
+NODE_QFIX_LATENT = "7"
+NODE_QFIX_SEED = "10"
+
 # Key-image engines selectable in the UI
 IMG_ENGINES = {
     "kimg": {
@@ -345,12 +354,23 @@ IMG_ENGINES = {
         "default_size": (1024, 1024),
         "label": "Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け・素人風に強い）",
         "batch_size": 1,
+        # 体型バリエーション: bodyweight concept slider (正負両方向のスライダー)。
+        # 生成ごとにこの範囲で強度をランダム化して同じ顔・体型のワンパターンを防ぐ。
+        # リクエストで bodyweight を明示すれば固定できる。
+        "random_lora": {"node": "15", "low": -1.2, "high": 1.2},
     },
     "qimg": {
         "workflow": QIMG_WORKFLOW,
         "prompt": NODE_QIMG_PROMPT, "latent": NODE_QIMG_LATENT, "seed": NODE_QIMG_SEED,
         "default_size": (1344, 768),
         "label": "Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・約3分）",
+        "batch_size": 1,
+    },
+    "qfix": {
+        "workflow": QFIX_WORKFLOW,
+        "prompt": NODE_QFIX_PROMPT, "latent": NODE_QFIX_LATENT, "seed": NODE_QFIX_SEED,
+        "default_size": (1344, 768),
+        "label": "Qwen 2.1 UC 品質モード（Fix LoRA・局部の破綻しにくい・約8分）",
         "batch_size": 1,
     },
 }
@@ -1264,12 +1284,19 @@ PLAN_SYSTEM = (
     "被写体は japanese woman, petite, slender, fair skin を基本とし、ヌードでは natural pubic hair を指定する(剃毛は洋物っぽくなる)。"
     "表情の主軸は羞恥: light blush on cheeks, gaze down, biting lip, embarrassed smile。"
     "誇張した展示ポーズより、日常の動作の途中を撮った空気(undressing mid-motion, after-bath towel, checking phone on bed)が日本的官能の核。"
+    "【被写体のバリエーション】毎回同じ顔・同じ体型に固定しない。企画ごとに髪型(黒髪ロング/ショート/ボブ/ポニーテール/巻き髪/ツインテール)、"
+    "体型(グラマー/スレンダー/むっちり/小柄巨乳/ぽっちゃり)、年齢感(20前半/20代後半/30代/人妻/熟女)、雰囲気(清楚/ギャル/地味/クール/甘え)を"
+    "少なくとも2軸は変える。ユーザー指定がなければ自分で前回と違う組み合わせを選び、hair length, hair style, body type を英語タグに明記する。"
     "【画像プロンプトの書式・最重要】[IMG_PROMPT] は物語の散文ではなく、拡散モデルが直接解釈する英語タグ列で書く。"
     "順序は固定: ①被写体と人数(1girl, solo 等) → ②体型・胸・尻・肌の特徴 → ③ポーズと体の向き(spread legs, lying on back, looking at viewer 等) → "
     "④行為・露出の具体部 → ⑤カメラ(距離・アングル: close-up, from above, low angle, wide shot, pov) → ⑥背景を1語レベルで(bedroom, shower room, park 等) → "
     "⑦照明(natural window light, dim warm lamp light, harsh direct flash 等) → ⑧質感タグ(smartphone photo, candid, natural skin texture, slight grain)。"
     "長さは60〜100語。she is や the scene shows のような完全文・接続詞は書かない。日本語は1語も入れない。"
     "「〜している場面」のような物語説明は禁止。動画ではなく静止画として固まる一瞬のポーズを選ぶ。複数人なら人数を明記する(1boy 1girl 等)。"
+    "【体位・行為の正確さ】mating press, prone bone, full nelson, piledriver, reverse cowgirl など体位は学習済みの正式英語名で呼ぶ。"
+    "その上で「誰のどの部位がどこにあるか」を1文足す(side view showing both bodies, her legs over his shoulders, her hand gripping the sheets 等)。"
+    "フェラ・手コキ・素股など行為系は接触面を具体化する(lips wrapped around the shaft, penis sliding between her clenched thighs)。"
+    "playing, being intimate のような曖昧な一般語は禁止。局部を含む画は全身より接写寄りのカメラ選択(detailed close-up of genitals, from below 等)のほうが破綻しない。"
     "照れ・赤面は light blush on cheeks / faint blush と書く。blushing 単独・red face・flushed face・deep blush は顔全体が真っ赤に発色するので禁止。blush を入れるのは照れシーンだけで、他の感情には書かない。"
     "強度は誇張ではなく具体で出す: 形容詞を積むほど模型っぽくなるので、行為・部位・角度を実名で書き、肌や表情には red, deep, perfect のような色の強調語を使わない。"
     "【第1段階: キー画像】被写体・背景・構図・雰囲気・ライティングを具体化する。"
@@ -1973,6 +2000,7 @@ HTML = """<!doctype html>
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け）</label>
         <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質）</label>
+        <label><input type="radio" name="imgengine" value="qfix"> Qwen 2.1 UC 品質モード（Fix LoRA・破綻しにくい・低速）</label>
       </div>
       <div class="advgroup" id="planmodelset">
         <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
@@ -2489,7 +2517,7 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const engLabels = {kimg: "Klein 9B", qimg: "Qwen-Image 2.1 UC"};
+  const engLabels = {kimg: "Klein 9B", qimg: "Qwen-Image 2.1 UC", qfix: "Qwen 2.1 UC 品質"};
   const label = engLabels[eng] || "画像";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
@@ -4548,6 +4576,16 @@ class ChatHandler(BaseHTTPRequestHandler):
             if isinstance(char_seed, int) and not isinstance(char_seed, bool):
                 wf[eng["seed"]]["inputs"]["seed"] = char_seed % (2**31 - 1)
                 char_applied.append("seed固定")
+        rl = eng.get("random_lora")
+        if rl:
+            try:
+                bw = req.get("bodyweight")
+                strength = float(bw) if bw is not None else random.uniform(rl["low"], rl["high"])
+                strength = max(-4.0, min(4.0, strength))
+                wf[rl["node"]]["inputs"]["strength_model"] = round(strength, 2)
+                char_applied.append(f"体型スライダー{strength:+.1f}")
+            except Exception:
+                pass
         self.server.autostop.poke()
         # gpu27b planner: free its VRAM before the image model loads.
         stop_plan_llm()
