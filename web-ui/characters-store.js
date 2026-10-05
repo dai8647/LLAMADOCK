@@ -28,8 +28,8 @@ function cleanTags(value) {
 function cleanLora(value) {
   if (!value || typeof value !== "object") return {};
   const out = {};
-  // 2026-10-04: 画像エンジン 2 本化に合わせ縮小 (旧 krea2 は廃止)
-  for (const engine of ["kimg", "qimg"]) {
+  // 2026-10-04: エンジンは kimg / qimg / qfix (品質モード) の 3 本
+  for (const engine of ["kimg", "qimg", "qfix"]) {
     const list = value[engine];
     if (!Array.isArray(list)) continue;
     const entries = [];

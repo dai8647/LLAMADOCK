@@ -62,3 +62,39 @@
 - 比較は必ず **seed 固定 + プロンプト固定 + 1 変数**。複数同時に変えない
 - 実測値（所要秒）は ETA_DEFAULTS に反映してコミットまでやる
 - h3-chat.py / ワークフロー JSON 変更後は h3-chat 再起動が必要（GPU 空き時に）
+
+---
+
+## 7. 追補（同日・第2回）: AI顔対策とバリエーション機構
+
+方向性の結論: **LoRA を増やすのではなく「レバーを増やしてランダムに回す」**。チェーンは 3〜4 本が限界、それ以上は画風が溶ける。
+
+### 導入済み（本日）
+
+| LoRA | サイズ | 組み込み先 | 役割 |
+|---|---|---|---|
+| klein_slider_anatomy (Civitai v1.5 相当) | 19MB | kimg チェーン3段目 @0.8 | 解剖学・品質の修正（チンコの形崩れ対策の Klein 側） |
+| klein_slider_bodyweight | 19MB | kimg チェーン4段目 **生成ごとに ±1.2 でランダム** | 体型バリエーションの機械的レバー。`bodyweight` をリクエストで明示すれば固定可 |
+| klein_slider_detail | 19MB | 未接続（予備） | ディテール増強。I2I 向き |
+| qwen-image-2.1-fix-1.0-comfy | 106MB | qfix エンジン @1.0 | 2.1 の生成問題全体の修正。20step/cfg3/sgm_uniform・cfg>1 なのでネガティブ有効 |
+
+kimg の生成ラベルに「体型スライダー±x.x」が出る（char_applied 経由）。
+
+### 未導入の候補（Civitai・実測してから採用）
+
+- **Klein Bust Slider** (160👍) / **Klein Crowd Slider** — 同じスライダー方式
+- **[KLEIN 9b] Mystic 2 Realism** (165👍) — "switch to realistic style" で現実寄り。**fixed 版**を使うこと（初版は ComfyUI で shape error の報告あり）
+- **Klein-9b-Turn2Real** (342👍) — I2I で "reskin this into a real photo"（既存画のリスキン用・T2I ではない）
+- **Qwen Image 2.1 Fix v2.0** (108👍) — v1 より強いが専用サンプラー `ComfyUI-DPMpp-2M-Sharp` (envy-ai) の導入が前提
+- **PornMaster Qwen 2.1 Age Slider** (141👍・3MB) — 年齢感のスライダー。Qwen Research License（非商用注意）
+
+### 色んなパターンを作る仕組み（LoRA以外の2層）
+
+1. **プロンプト層（導入済み）**: PLAN_SYSTEM に①体位は正式英語名+部位の位置関係を1文（mating press 等）、②企画ごとに髪型・体型・年齢感・雰囲気の2軸を変える指示を追加。KB は 189→**485語**（romptn mania 5218 のカタログから厳選。素股=thighjob、イラマチオ、フルネルソン、まんぐり返しなど正規体位名と構図説明つき）。※KB はローカルファイルなのでこの変更は git に載らない
+2. **顔バンク層（運用）**: 良い顔が出たらキャラカード `config/characters/<id>.json` の refImages に登録 → R2V でその顔を系列として固定。Web GUI で CRUD 可。見本カードは user 判断で作らず、実運用で育てる
+
+### 校正タスク（GPU 空き時・§1 に追加）
+
+- kimg: anatomy 0.6 / 0.8 / 1.0 比較、bodyweight -1.2 / 0 / +1.2 の体型変化を目視確認
+- qimg (turbo 4step) vs qfix (20step cfg3) の局部描画比較 — 破綻率で使い分けを決める
+- Qwen Fix v2.0 + DPMpp-2M-Sharp を入れるかは qfix の実測後
