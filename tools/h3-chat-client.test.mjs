@@ -8,7 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const src = readFileSync(path.join(repo, "tools", "h3-chat.py"), "utf-8");
+// 2026-10-04 リファクタリング: HTML/JS は tools/h3chat_page.py に分離された。
+const src = readFileSync(path.join(repo, "tools", "h3chat_page.py"), "utf-8");
 const js = src.match(/<script>([\s\S]*)<\/script>/)[1];
 
 function makeEl(id) {
