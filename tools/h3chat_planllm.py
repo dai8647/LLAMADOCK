@@ -468,7 +468,7 @@ def stop_plan_llm():
         # allow an immediate re-spawn on the next plan message
         PLAN_LAST_TRY = 0.0
     # belt and suspenders: also kill whatever answers on the plan port
-    ChatHandler._kill_port(PLAN_PORT)
+    _kill_port(PLAN_PORT)
 
 
 def ensure_plan_llm(wait_seconds=120):
@@ -530,13 +530,13 @@ def switch_plan_model(path, mmproj=None, gpu=None):
                 except Exception:
                     pass
         PLAN_PROC = None
-        ChatHandler._kill_port(PLAN_PORT)
+        _kill_port(PLAN_PORT)
         PLAN_MODEL_PATH = path
         PLAN_MMPROJ_PATH = mmproj or ""
         PLAN_GPU = bool(gpu)
         PLAN_PORT = 8191 if PLAN_GPU else 8190
         PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
-        ChatHandler._kill_port(PLAN_PORT)   # stale leftover on the new port
+        _kill_port(PLAN_PORT)   # stale leftover on the new port
         PLAN_HAS_VISION = bool(PLAN_MMPROJ_PATH)
         # CPU<->GPU の切替でも同一エンジン（Unsloth）を使うため再解決のみ
         # （env 指定が優先）。
@@ -561,4 +561,25 @@ SESSION = {
 }
 
 
-__all__ = ['HERE', 'REPO', 'PLAN_GPU', 'PLAN_PORT', 'PLAN_URL_DEFAULT', 'MODEL_SCAN_ROOT', 'GPU_AUTO_MAX_GB', '_find_mmproj', 'scan_plan_models', '_auto_plan_model', '_resolve_plan_model', '_GPU_BIN_CANDIDATES', '_CPU_BIN_CANDIDATES', '_resolve_plan_bin', 'PLAN_MODEL_PATH', 'PLAN_MMPROJ_PATH', 'PLAN_SERVER_BIN', '_plan_engine_label', 'PLAN_ROCM_BIN', 'PLAN_HAS_VISION', 'PLAN_START_LOCK', 'PLAN_SETTINGS', 'PLAN_ENGINE', 'PLAN_PROC', 'PLAN_LAST_TRY', '_plan_alive', '_url_alive', '_gpu_used_mib', '_other_llama_servers', '_warn_if_vram_tight', '_ensure_plan_cuda_runtime', '_spawn_plan_llm', 'stop_plan_llm', 'ensure_plan_llm', 'switch_plan_model', 'NODE_PROMPT', 'NODE_SEED', 'SESSION']
+def _kill_port(port):
+    """Kill the process LISTENING on the given local port.
+
+    netstat on a Japanese Windows emits CP932 bytes; decode with
+    errors="replace" (we only need ASCII tokens: port, LISTENING, PID).
+    """
+    try:
+        res = subprocess.run(["netstat", "-ano"], capture_output=True, timeout=15)
+        out = (res.stdout or b"").decode("utf-8", errors="replace")
+        pids = set()
+        for line in out.splitlines():
+            if f":{port}" in line and "LISTENING" in line.upper():
+                parts = line.split()
+                if parts and parts[-1].isdigit():
+                    pids.add(parts[-1])
+        for pid in pids:
+            subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+
+__all__ = ['HERE', 'REPO', 'PLAN_GPU', 'PLAN_PORT', 'PLAN_URL_DEFAULT', 'MODEL_SCAN_ROOT', 'GPU_AUTO_MAX_GB', '_find_mmproj', 'scan_plan_models', '_auto_plan_model', '_resolve_plan_model', '_GPU_BIN_CANDIDATES', '_CPU_BIN_CANDIDATES', '_resolve_plan_bin', 'PLAN_MODEL_PATH', 'PLAN_MMPROJ_PATH', 'PLAN_SERVER_BIN', '_plan_engine_label', 'PLAN_ROCM_BIN', 'PLAN_HAS_VISION', 'PLAN_START_LOCK', 'PLAN_SETTINGS', 'PLAN_ENGINE', 'PLAN_PROC', 'PLAN_LAST_TRY', '_plan_alive', '_url_alive', '_gpu_used_mib', '_other_llama_servers', '_warn_if_vram_tight', '_ensure_plan_cuda_runtime', '_spawn_plan_llm', 'stop_plan_llm', 'ensure_plan_llm', 'switch_plan_model', 'NODE_PROMPT', 'NODE_SEED', 'SESSION', '_kill_port']

@@ -1735,24 +1735,9 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _kill_port(port):
-        """Kill the process LISTENING on the given local port."""
-        try:
-            # netstat on a Japanese Windows emits CP932 bytes; decoding as
-            # UTF-8 crashes the reader thread and silently kills the whole
-            # cleanup, so read raw bytes and decode with errors="replace"
-            # (we only need ASCII tokens: port, LISTENING, PID).
-            res = subprocess.run(["netstat", "-ano"], capture_output=True, timeout=15)
-            out = (res.stdout or b"").decode("utf-8", errors="replace")
-            pids = set()
-            for line in out.splitlines():
-                if f":{port}" in line and "LISTENING" in line.upper():
-                    parts = line.split()
-                    if parts and parts[-1].isdigit():
-                        pids.add(parts[-1])
-            for pid in pids:
-                subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, timeout=15)
-        except Exception:
-            pass
+        # 2026-10-05 モジュール分割: 実装は h3chat_planllm._kill_port に一本化
+        # (switch_plan_model が split 前は同じモジュールだった staticmethod を直接呼ぶため)
+        _kill_port(port)
 
     @staticmethod
     def _comfy_port_of(server):
