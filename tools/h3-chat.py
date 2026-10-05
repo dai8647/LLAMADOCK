@@ -82,7 +82,7 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "qfix": 480, "upscale": 180}
+ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "qfix": 300, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
@@ -155,7 +155,7 @@ IMG_ENGINES = {
         "workflow": QFIX_WORKFLOW,
         "prompt": NODE_QFIX_PROMPT, "latent": NODE_QFIX_LATENT, "seed": NODE_QFIX_SEED,
         "default_size": (1344, 768),
-        "label": "Qwen 2.1 UC 品質モード（Fix LoRA・局部の破綻しにくい・約8分）",
+        "label": "Qwen 2.1 UC 品質モード（Fix LoRA・約3分・体型指定が薄まる）",
         "batch_size": 1,
     },
 }
