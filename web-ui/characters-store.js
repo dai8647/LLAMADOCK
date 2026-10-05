@@ -28,8 +28,8 @@ function cleanTags(value) {
 function cleanLora(value) {
   if (!value || typeof value !== "object") return {};
   const out = {};
-  // 2026-10-04: エンジンは kimg / qimg / qfix (品質モード) の 3 本
-  for (const engine of ["kimg", "qimg", "qfix"]) {
+  // 2026-10-04: エンジンは kimg / qimg の 2 本 (qfix は 2026-10-05 user 判定で撤退)
+  for (const engine of ["kimg", "qimg"]) {
     const list = value[engine];
     if (!Array.isArray(list)) continue;
     const entries = [];
