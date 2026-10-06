@@ -84,11 +84,11 @@ WORKFLOWS = {
 # Estimated generation time (seconds) used for the remaining-time display
 # before real measurements exist for this session. Updated live from actual
 # run times (see _status / job_meta).
-ETA_DEFAULTS = {"high": 540, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "upscale": 180}
+ETA_DEFAULTS = {"high": 360, "quick": 240, "lite": 540, "quicklite": 150, "fast": 900, "fast_quick": 360, "kimg": 30, "qimg": 180, "upscale": 180}
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
-    "fast": "最高画質 spectrum", "high": "高精度 32B",
+    "fast": "最高画質 spectrum", "high": "高画質 48f（軽量TE）",
     "fast_quick": "高画質 spectrum・短尺", "quick": "クイック 32B",
     "lite": "軽量 4B", "quicklite": "最速 4B",
 }
