@@ -65,8 +65,9 @@ param(
     # Engine picker. Prompt = interactive menu (default for full launches).
     # Auto = Unsloth, except Flash-Next/qwen4exp which defaults to Laguna
     # hot-expert (measured ~13.5 t/s vs ~5 t/s Unsloth n-cpu-moe path).
-    # Explicit Laguna/Unsloth skip the menu.
-    [ValidateSet("Prompt", "Auto", "Unsloth", "Laguna")]
+    # Explicit Laguna/Unsloth/Strata skip the menu. Strata = Niko1221/Strata
+    # on Windows HIP (win-hip-0131), served by its own serve/server.py.
+    [ValidateSet("Prompt", "Auto", "Unsloth", "Laguna", "Strata")]
     [string]$EngineMode = "Prompt",
     [switch]$SkipClineAuth,
     [switch]$SkipClineOpen,
@@ -164,6 +165,21 @@ $LagunaRocmRoot = if ($env:LLAMADOCK_LAGUNA_ROCM) {
 else {
     "C:\Users\dai86\rocm-sdk-core\_rocm_sdk_core"
 }
+
+# Strata engine (2026-10-01): Niko1221/Strata built for Windows HIP / gfx1101 on the
+# win-hip-0131 branch (engine 0.1.33 + the chunked-window/prequeue workarounds; see
+# C:\Users\dai86\Strata\STRATA-HANDOFF.md 9.31-9.33). Not a llama-server: its own
+# serve/server.py fronts the engine on :8080 and speaks /v1/chat/completions, so the
+# gateway (tools/llamadock-proxy.mjs) works unchanged in front of it.
+$StrataRoot = if ($env:LLAMADOCK_STRATA_ROOT) {
+    [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_STRATA_ROOT)
+}
+else {
+    "C:\Users\dai86\Strata"
+}
+$StrataExe = Join-Path $StrataRoot "build-hip\strata.exe"
+$StrataConfig = Join-Path $StrataRoot "strata-q2_0.json"
+$StrataPython = Join-Path $StrataRoot ".venv\Scripts\python.exe"
 
 function Set-LagunaRocmEnvironment {
     # Handoff env: HOST_BANK=1 pins every expert at load → CPU~95% / Disk 100%.
@@ -731,6 +747,20 @@ function Resolve-EnginePaths {
             $script:LagunaHotExpert = $true
             return $LagunaServerPath
         }
+        "Strata" {
+            foreach ($p in @($StrataExe, $StrataConfig, $StrataPython)) {
+                if (-not (Test-Path -LiteralPath $p)) {
+                    Write-Host "ERROR: Strata engine component not found:" -ForegroundColor Red
+                    Write-Host "  $p" -ForegroundColor Red
+                    Write-Host "Build C:\\Users\\dai86\\Strata (branch win-hip-0131) per STRATA-HANDOFF.md section 5," -ForegroundColor Yellow
+                    Write-Host "or set LLAMADOCK_STRATA_ROOT to the Strata checkout." -ForegroundColor Yellow
+                    exit 1
+                }
+            }
+            $script:ActiveEngineName = "Strata"
+            $script:LagunaHotExpert = $false
+            return $StrataExe
+        }
         default {
             $script:ActiveEngineName = "Unsloth"
             $script:LagunaHotExpert = $false
@@ -773,13 +803,13 @@ function Test-IsLlamaDockServerProcess {
 
     $procInfo = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $procInfo) { return $false }
-    if ($procInfo.ProcessName -notmatch "^(llama-server|node|python|pythonw|powershell|pwsh)$") {
+    if ($procInfo.ProcessName -notmatch "^(llama-server|node|python|pythonw|powershell|pwsh|strata)$") {
         return $false
     }
     try {
         $cimProc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
         if (-not $cimProc) { return $false }
-        return ([string]$cimProc.CommandLine -match "llama-server|llamadock|server-supervisor|gateway|mcp-server")
+        return ([string]$cimProc.CommandLine -match "llama-server|llamadock|server-supervisor|gateway|mcp-server|serve\.server|strata\.exe")
     }
     catch {
         return $false
@@ -1398,7 +1428,7 @@ function Open-PiClient {
 $script:ComfyProfileChoice = $null
 $script:ComfyFlagsChoice = ""
 $script:PlanModeChoice = $false
-$script:PlanModelChoice = "Qwen3.5"
+$script:PlanModelChoice = "Qwen3.8-27B-GPU"
 $script:StopAllOnExit = $false
 
 function Get-ComfyUITritonVersion {
@@ -1574,19 +1604,19 @@ function Select-ComfyUITuning {
                 "2" {
                     $script:ComfyProfileChoice = $fastProfile
                     $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.5"
+                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
                 }
                 "3" {
                     $script:ComfyProfileChoice = "default"
                     $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.5"
+                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
                 }
                 "4" {
                     $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
                     $script:ComfyProfileChoice = "custom"
                     $script:ComfyFlagsChoice = $rawFlags
                     $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.5"
+                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
                 }
                 default { $tuningValid = $false }
             }
@@ -1718,7 +1748,7 @@ function Select-PlanModel {
     foreach ($e in $menu) {
         if ($e.Key) {
             Write-Host (" [{0}] {1}" -f $idx, $e.Label)
-            if ($e.Key -eq "Qwen3.5") { $defaultIdx = $idx }
+            if ($e.Key -eq "Qwen3.8-27B-GPU") { $defaultIdx = $idx }
         }
         else {
             $tag = if ($e.Gpu) { "GPU" } else { "CPU" }
@@ -2354,7 +2384,7 @@ $isQwen4Exp = $selectedModelText -match "(?i)qwen4exp|Flash[-_ ]?Next|qwen3\.8[-
 
 # Engine selection: explicit param wins; Prompt shows a menu; Auto uses
 # Get-RequiredEngine (Laguna for Flash-Next, else Unsloth).
-if ($EngineMode -eq "Unsloth" -or $EngineMode -eq "Laguna") {
+if ($EngineMode -eq "Unsloth" -or $EngineMode -eq "Laguna" -or $EngineMode -eq "Strata") {
     $requiredEngine = $EngineMode
 }
 elseif ($EngineMode -eq "Auto") {
@@ -2364,17 +2394,19 @@ elseif (-not $DryRun -and -not $isQuickLaunch -and $EngineMode -eq "Prompt") {
     $defaultEngineLabel = $requiredEngine
     $lagunaOk = Test-Path -LiteralPath $LagunaServerPath
     $unslothOk = Test-Path -LiteralPath $UnslothServerPath
+    $strataOk = (Test-Path -LiteralPath $StrataExe) -and (Test-Path -LiteralPath $StrataConfig) -and (Test-Path -LiteralPath $StrataPython)
     Write-Host ""
     Write-Host "Runtime engine (Enter = $defaultEngineLabel):" -ForegroundColor Green
     Write-Host " [1] Laguna hot-expert  — Flash-Next 最速 (実測 ~13.5 t/s @2k)  $(if ($lagunaOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
     Write-Host " [2] Unsloth HIP        — 従来パス (lazy-mode / 一般 GGUF / MTP 試験)  $(if ($unslothOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
+    Write-Host " [3] Strata 0.1.33      — Windows HIP ネイティブ (win-hip-0131 / serve 独自API)  $(if ($strataOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
     $engineDefaultNum = if ($requiredEngine -eq "Laguna") { "1" } else { "2" }
     do {
-        $engineInput = Read-Host "Select engine (1-2), Enter=$engineDefaultNum"
+        $engineInput = Read-Host "Select engine (1-3), Enter=$engineDefaultNum"
         if ([string]::IsNullOrWhiteSpace($engineInput)) { $engineInput = $engineDefaultNum }
-        $engineValid = $engineInput -in @("1", "2")
+        $engineValid = $engineInput -in @("1", "2", "3")
     } while (-not $engineValid)
-    $requiredEngine = if ($engineInput -eq "1") { "Laguna" } else { "Unsloth" }
+    $requiredEngine = switch ($engineInput) { "1" { "Laguna" } "2" { "Unsloth" } "3" { "Strata" } }
 }
 
 $ServerPath = Resolve-EnginePaths -Engine $requiredEngine
@@ -2466,6 +2498,65 @@ elseif ($PresetMode -eq "DeepSeekHarness") {
     if ($McpMode -eq "Prompt") { $McpMode = "None" }
 }
 
+# ---- Strata engine: it is served from a strata-*.json config in the Strata
+# ---- checkout, so the llama.cpp model/vision/context/KV menus below do not
+# ---- apply. Each config binds one GGUF pair (its --native); the config whose
+# ---- bound model matches the selection is picked, and the context comes from
+# ---- that config's --max-context (Strata mmaps its experts, so the pinned-RAM
+# ---- ceiling the llama.cpp flow computes does not apply).
+if ($requiredEngine -eq "Strata") {
+    $strataCfgs = Get-ChildItem -LiteralPath $StrataRoot -Filter "strata-*.json" -File -ErrorAction SilentlyContinue
+    if (-not $strataCfgs) {
+        Write-Host "ERROR: no strata-*.json config found in $StrataRoot" -ForegroundColor Red
+        exit 1
+    }
+    $StrataConfig = $null
+    $strataNativeName = ""
+    foreach ($sc in $strataCfgs) {
+        try { $cfg = Get-Content -LiteralPath $sc.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+        $nativeIdx = [array]::IndexOf(@($cfg.args), "--native")
+        if ($nativeIdx -lt 0) { continue }
+        $nativeName = [IO.Path]::GetFileName([string]$cfg.args[$nativeIdx + 1])
+        $modelKey = $nativeName -replace "-0000[0-9]-of-0000[0-9]\.gguf$", ""
+        if ($modelKey -and "$($selected.Name)" -match [regex]::Escape($modelKey)) {
+            $StrataConfig = $sc.FullName
+            $strataNativeName = $nativeName
+            $strataMaxCtx = 32768
+            $ctxArgIdx = [array]::IndexOf(@($cfg.args), "--max-context")
+            if ($ctxArgIdx -ge 0) { $null = [int]::TryParse([string]$cfg.args[$ctxArgIdx + 1], [ref]$strataMaxCtx) }
+            break
+        }
+    }
+    if (-not $StrataConfig) {
+        Write-Host ""
+        Write-Host "ERROR: no Strata config binds the selected model '$($selected.Name)'." -ForegroundColor Red
+        Write-Host "Available Strata configs and the models they serve:" -ForegroundColor Yellow
+        foreach ($sc in $strataCfgs) {
+            try {
+                $cfg = Get-Content -LiteralPath $sc.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+                $nativeIdx = [array]::IndexOf(@($cfg.args), "--native")
+                if ($nativeIdx -ge 0) { Write-Host ("  {0}  ->  {1}" -f $sc.Name, [IO.Path]::GetFileName([string]$cfg.args[$nativeIdx + 1])) -ForegroundColor DarkGray }
+            } catch { }
+        }
+        Write-Host "Pick one of those models, or add a pack + config (see C:\Users\dai86\Strata\STRATA-HANDOFF.md)." -ForegroundColor Yellow
+        exit 1
+    }
+    $selectedContext = [PSCustomObject]@{
+        Label = "$([int]($strataMaxCtx / 1024))K"
+        Tokens = $strataMaxCtx
+        Note = "from $(Split-Path -Leaf $StrataConfig)"
+    }
+    $visionEnabled = $false
+    # llama-server-only menus: take silent defaults, their flags never reach Strata
+    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
+    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
+    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
+    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
+    if ($McpMode -eq "Prompt") { $McpMode = "None" }
+    if ($KCacheIndex -eq 0) { $KCacheIndex = 1 }
+    if ($VCacheIndex -eq 0) { $VCacheIndex = 1 }
+}
+
 if (-not $isQuickLaunch) {
     Write-Host ""
     Write-HardwareSummary -Hardware $hardware
@@ -2474,7 +2565,7 @@ if (-not $isQuickLaunch) {
     Write-Host "Runtime path  : $ServerPath" -ForegroundColor DarkGray
 }
 
-if ($modelNote -and -not $isQuickLaunch) {
+if ($modelNote -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host ""
     Write-Host "Model note: $($modelNote.note)" -ForegroundColor Cyan
     if ($modelNote.recommended_preset) {
@@ -2533,6 +2624,9 @@ if ($visionMmprojPath) {
     elseif ($envVision -eq "off") {
         Write-Host "Vision: off (adapter found, disabled via LLAMADOCK_VISION=off)" -ForegroundColor DarkGray
     }
+    elseif ($requiredEngine -eq "Strata") {
+        Write-Host "Vision: off (the Strata config is text-only; --mmproj is a llama-server flag)" -ForegroundColor DarkGray
+    }
     elseif (-not $DryRun -and -not $isQuickLaunch) {
         Write-Host ""
         Write-Host "Vision adapter found: $($visionMmprojPath.Name) ($mmprojSizeGB GB)" -ForegroundColor Green
@@ -2588,7 +2682,7 @@ $contextOptions = @(
     [PSCustomObject]@{ Label = "Custom"; Tokens = 0; Note = "enter token count manually" }
 )
 
-if (-not $isQuickLaunch) {
+if (-not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host "Context size:" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
         Write-Host ("検出 RAM: {0}GB / 選択モデル: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
@@ -2607,15 +2701,20 @@ if (-not $isQuickLaunch) {
     }
     Write-Host ""
 }
+elseif ($requiredEngine -eq "Strata" -and -not $isQuickLaunch) {
+    Write-Host "Context size:" -ForegroundColor Green
+    Write-Host (" {0} ({1} tokens) - from strata-q2_0.json (Strata mmaps its experts; the llama.cpp RAM ladder does not apply)" -f $selectedContext.Label, $selectedContext.Tokens) -ForegroundColor DarkGray
+    Write-Host ""
+}
 
-if ($ContextIndex -gt 0) {
+if ($requiredEngine -ne "Strata" -and $ContextIndex -gt 0) {
     $ctxSelection = $ContextIndex
     if ($ctxSelection -lt 1 -or $ctxSelection -gt $contextOptions.Count) {
         Write-Host "ERROR: ContextIndex out of range" -ForegroundColor Red
         exit 1
     }
 }
-else {
+elseif ($requiredEngine -ne "Strata") {
     do {
         $defaultContextLabel = "$([int]($recommendedDefaultTokens / 1024))K"
         $ctxInput = Read-Host "Select context size (1-$($contextOptions.Count)), or press Enter for $defaultContextLabel"
@@ -2630,8 +2729,10 @@ else {
     } while (-not $ctxValid -or $ctxSelection -lt 1 -or $ctxSelection -gt $contextOptions.Count)
 }
 
-$selectedContext = $contextOptions[$ctxSelection - 1]
-if ($selectedContext.Tokens -eq 0) {
+if ($requiredEngine -ne "Strata") {
+    $selectedContext = $contextOptions[$ctxSelection - 1]
+}
+if ($requiredEngine -ne "Strata" -and $selectedContext.Tokens -eq 0) {
     do {
         $customContextInput = Read-Host "Enter context tokens (example: 32768, 65536, 131072)"
         $customContextTokens = 0
@@ -2652,11 +2753,11 @@ if ($selectedContext.Tokens -eq 0) {
 if (-not $isQuickLaunch) {
     Write-Host ""
     Write-Host "Context: $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
-    if ($systemRamGB -gt 0) {
+    if ($systemRamGB -gt 0 -and $requiredEngine -ne "Strata") {
         Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
     }
 }
-if ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)) {
+if ($requiredEngine -ne "Strata" -and ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB))) {
     Write-Host "ERROR: Selected context is likely to exceed available RAM for this model." -ForegroundColor Red
     Write-Host "Selected: $($selectedContext.Tokens) tokens; ceiling: $maxContextTokensForRam tokens." -ForegroundColor Red
     Write-Host "Use a lower context or a smaller/lighter model." -ForegroundColor Red
@@ -2986,7 +3087,7 @@ $cpuMoeOptions = @(
     [PSCustomObject]@{ Label = "Custom"; Value = "Custom"; Note = "enter layer count" }
 )
 
-if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace($CpuMoeMode)) {
+if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace($CpuMoeMode) -and $requiredEngine -ne "Strata") {
     Write-Host "CPU MoE layers (--n-cpu-moe):" -ForegroundColor Green
     for ($i = 0; $i -lt $cpuMoeOptions.Count; $i++) {
         $opt = $cpuMoeOptions[$i]
@@ -3091,7 +3192,7 @@ if (-not $isQuickLaunch -and $selectedCpuMoe -ne "0") {
     Write-Host "CPU MoE layers: $selectedCpuMoe" -ForegroundColor Green
 }
 
-if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -not $isQuickLaunch) {
+if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     $kwargsDefaultLabel = "none"
     $kwargsInput = Read-Host "chat-template-kwargs JSON, or press Enter for $kwargsDefaultLabel"
     if (-not [string]::IsNullOrWhiteSpace($kwargsInput)) {
@@ -3121,7 +3222,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReasoningMode)) {
     $selectedReasoningValue = $ReasoningMode.Trim().ToLower()
     $selectedReasoningBudget = $ReasoningBudget
 }
-elseif (-not $DryRun -and -not $isQuickLaunch) {
+elseif (-not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host "Reasoning (thinking) mode:" -ForegroundColor Green
     for ($i = 0; $i -lt $reasoningOptions.Count; $i++) {
         Write-Host " [$($i+1)] $($reasoningOptions[$i].Label)"
@@ -3201,7 +3302,7 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
 # to the researched optimal values; entering the gate reveals the per-option
 # menus below. Everything is still reachable manually.
 $advancedSettingsMenu = $false
-if (-not $DryRun -and -not $isQuickLaunch) {
+if (-not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host "Advanced settings（詳細設定）:" -ForegroundColor Green
     Write-Host " [Enter] 最適設定のまま（推奨）"
     Write-Host " [1] 詳細設定を変更する"
@@ -4184,7 +4285,94 @@ function Test-GpuOffloadProbe {
 Wait-VramRelease -TimeoutSec 50
 Ensure-UnslothCudaRuntime -ServerExe $ServerPath
 
+# ---- Strata engine: start its own serve/server.py + the shared gateway, then
+# ---- skip the llama-server supervisor flow entirely below.
+$skipLlamaServerFlow = $false
+if ($requiredEngine -eq "Strata") {
+    $skipLlamaServerFlow = $true
+    $SkipGpuProbe = $true   # the GPU offload probe speaks llama-server's API
+    # LlamaDock model selection switches quants: each strata-*.json IS the fastest
+    # setting for its quant, and the config was already picked above by --native.
+    # If a Strata serve already runs on :8080 with the SAME quant, keep it; otherwise
+    # replace it, so the new config can bind :8080 instead of dying on it.
+    $strataQuant = ($strataNativeName -replace '-0000[0-9]-of-0000[0-9]\.gguf$', '') -replace '.*-', ''
+    $needStart = $true
+    try {
+        $live = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/v1/models' -TimeoutSec 3
+        $liveQuant = [string](@($live.data)[0].id) -replace '.*-', ''
+        if ($liveQuant -and $liveQuant -eq $strataQuant) { $needStart = $false }
+    } catch { }
+    if (-not $needStart) {
+        Write-Host "Strata is already serving the $strataQuant model on :8080 - keeping it." -ForegroundColor Green
+        try {
+            $null = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/health" -TimeoutSec 3
+        } catch {
+            $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+            $gatewayArgs = @(
+                (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
+                "--host", "127.0.0.1",
+                "--port", "$GatewayPort",
+                "--upstream", "http://127.0.0.1:8080",
+                "--log-dir", (Join-Path $PSScriptRoot "logs")
+            )
+            $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
+        }
+        $script:ClientBaseUrl = $GatewayBaseUrl
+    }
+    if ($needStart) {
+        $old8080 = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($old8080) { Stop-Process -Id $old8080.OwningProcess -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
+        Get-Process strata -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep 1
+    }
+    if ($needStart) {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $strataOut = Join-Path $PSScriptRoot "logs\strata-$stamp.stdout.log"
+    $strataErr = Join-Path $PSScriptRoot "logs\strata-$stamp.stderr.log"
+    Write-Host "Starting Strata (serve/server.py on :8080)..." -ForegroundColor Blue
+    $strataProc = Start-Process -FilePath $StrataPython `
+        -ArgumentList @("serve\server.py", "--engine", "strata", "--config", $StrataConfig, "--port", "8080") `
+        -WorkingDirectory $StrataRoot -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $strataOut -RedirectStandardError $strataErr
+    Write-Host "Starting the LlamaDock gateway (:8090 -> :8080)..." -ForegroundColor Blue
+    $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+    $gatewayArgs = @(
+        (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
+        "--host", "127.0.0.1",
+        "--port", "$GatewayPort",
+        "--upstream", "http://127.0.0.1:8080",
+        "--log-dir", (Join-Path $PSScriptRoot "logs")
+    )
+    $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
+    Write-Host "Waiting for Strata to be ready..." -NoNewline -ForegroundColor Yellow
+    $ready = $false
+    for ($i = 0; $i -lt 90; $i++) {
+        Start-Sleep -Seconds 2
+        if ($strataProc.HasExited) {
+            Write-Host ""
+            Write-Host "ERROR: the Strata server exited (code $($strataProc.ExitCode)). Check $strataErr" -ForegroundColor Red
+            break
+        }
+        try {
+            $null = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 5
+            $ready = $true
+            $script:ClientBaseUrl = $GatewayBaseUrl
+            Write-Host " Done!" -ForegroundColor Green
+            Write-Host "Strata engine console output: $strataOut" -ForegroundColor DarkGray
+            break
+        } catch { }
+        if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
+    }
+    if (-not $ready) {
+        Get-Process strata -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Save-RunResult -Model $selected -Engine "Strata" -Preset $PresetMode -Client $ClientMode -ContextTokens $selectedContext.Tokens -KCache $effectiveKCacheType -VCache $effectiveVCacheType -Offload $selectedOffload -FlashAttention $flashAttention -CacheRamMiB $effectiveCacheRamMiB -Status "fail" -Message "Strata server did not become ready"
+        exit 1
+    }
+    }
+}
+
 Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
+if (-not $skipLlamaServerFlow) {
 if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
     $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $effectiveChatTemplateKwargs
 }
@@ -4279,6 +4467,7 @@ for ($i = 0; $i -lt $maxWait; $i++) {
     }
     if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
 }
+}   # end of the llama-server supervisor flow (Strata started its own server above)
 
 if (-not $ready) {
     Write-Host ""
