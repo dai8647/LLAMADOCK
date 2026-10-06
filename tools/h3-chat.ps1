@@ -19,7 +19,7 @@
 
 param(
     [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Qwen3.5-A35B-GPU-Vision", "Custom", "Off")]
-    [string]$PlanModel = "Qwen3.5",
+    [string]$PlanModel = "Qwen3.8-27B-GPU",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
     [switch]$NoBrowser
