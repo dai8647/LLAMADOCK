@@ -76,7 +76,7 @@ def _match_nsfw_kb(text, limit=12):
 
 def _nsfw_kb_system_note(user_text):
     """企画 system に足す用語集ヒント（該当がなければ空文字）。"""
-    hits = _match_nsfw_kb(user_text)
+    hits = _match_nsfw_kb(user_text, limit=10)
     if not hits:
         return ""
     lines = [
@@ -86,6 +86,8 @@ def _nsfw_kb_system_note(user_text):
     for ja, phrase in hits:
         lines.append(f"- {ja} → {phrase}")
     lines.append(
+        "矛盾する語(巨乳×平坦、陰毛あり×hairless など)が並ぶときはユーザー文の意図に合わせて片側だけ選び、"
+        "年齢感・体型・陰毛の指定はキャラごとに1通りに統一する。"
         "組み合わせは自然な1つの英語タグ列にし、スマホ写真の語順（被写体→体型→ポーズ→行為→カメラ→背景→照明→質感）を守る。"
     )
     return "\n".join(lines)
