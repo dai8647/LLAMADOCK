@@ -1322,6 +1322,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                 # opener 欠落 2/10・1girl 重複 1/10 だったので機械保証にする)
                 img_prompt = _enforce_opener(img_prompt)
                 img_prompt = _dedup_person_tags(img_prompt)
+                # 未クローズ抽出の後尾に次タグ名 ([IMG_PROMPT_JA] 等) が
+                # くっついてくることがある (V1 実測) ので落とす
+                img_prompt = re.sub(r"\s*\[/?[A-Z_]+\]\s*$", "", img_prompt).rstrip()
             if final_prompt:
                 final_prompt = _strip_gen_params(final_prompt)
             # 動画プロンプトの日本語説明（[FINAL_PROMPT_JA]、[FINAL_PROMPT] と対）を
