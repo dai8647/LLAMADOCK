@@ -41,15 +41,15 @@ $planModels = @{
     # ときはここを更新するか、UI の企画 LLM モデル選択（/api/plan-models）か
     # select-model.ps1 の自動検出（Custom）を使う。
     "Qwen3.8-27B-GPU" = @{
-        Label = "Qwen3.8-27B Uncensored HauhauCS IQ3_M (GPU・企画フェーズのみ・視覚あり・11.9GB)"
-        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+        Label = "Qwen3.8-27B OrcaRouter Uncensored IQ3_XXS (GPU・企画フェーズのみ・視覚あり・9.7GB) 【デフォルト】"
+        Path = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-v2.0-qatfa.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\mmproj-Qwen3.8-27B-BF16.gguf"
         Gpu = $true
     }
     "Qwen3.8-27B-GPU-Vision" = @{
-        Label = "Qwen3.8-27B Uncensored HauhauCS IQ4_XS (GPU・企画フェーズのみ・視覚あり・14.6GB・高品質)"
-        Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\mmproj-Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-BF16.gguf"
+        Label = "Qwen3.8-27B OrcaRouter Uncensored IQ3_XXS (GPU・同モデル・視覚あり)"
+        Path = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-v2.0-qatfa.gguf"
+        Mmproj = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\mmproj-Qwen3.8-27B-BF16.gguf"
         Gpu = $true
     }
     "Qwen3.5-A35B-GPU-Vision" = @{
