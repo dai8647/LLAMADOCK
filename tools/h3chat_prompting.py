@@ -69,6 +69,7 @@ PLAN_SYSTEM = (
     "長さは80〜130語。she is や the scene shows のような完全文・接続詞は書かない。日本語は1語も入れない。"
     "全部の要素を入れると長くなるときは、形容詞や背景の装飾を削り、人数・体の向き・四肢の位置関係・行為の接触面を最優先で残す。"
     "「〜している場面」のような物語説明は禁止。動画ではなく静止画として固まる一瞬のポーズを選ぶ。複数人なら人数を明記する(1boy 1girl 等)。"
+    "not applicable や注記・理由の説明といったメタ文をプロンプト本体に書かない(タグ列のみ)。多人数を書いたら solo は消す。"
     "【体位・行為の正確さ】mating press, prone bone, full nelson, piledriver, reverse cowgirl など体位は学習済みの正式英語名で呼ぶ。"
     "その上で「誰のどの部位がどこにあるか」を1文足す(side view showing both bodies, her legs over his shoulders, her hand gripping the sheets 等)。"
     "フェラ・手コキ・素股など行為系は接触面を具体化する(lips wrapped around the shaft, penis sliding between her clenched thighs)。"
@@ -226,10 +227,20 @@ def _enforce_opener(text):
 
 
 def _dedup_person_tags(text):
-    """1girl 1girl / 1girl, 1girl のような人数タグの重複を潰す。"""
+    """人数タグの整合: 重複を潰し、多人数語があるのに solo が残る矛盾を除去する。
+
+    "1girl, solo, two men ..." の solo+複数人の矛盾は画像モデルに人数混乱を
+    起こす (2026-10-05 3動画実測: V3 では男性が完全に消失)。
+    """
     if not text:
         return text
-    return re.sub(r"\b(1girl|1boy|solo)\b(\s*,\s*|\s+)\1\b", r"\1", text, flags=re.I)
+    text = re.sub(r"\b(1girl|1boy|solo)\b(\s*,\s*|\s+)\1\b", r"\1", text, flags=re.I)
+    if re.search(r"\b(1boy|boys|men|man|three|four|two|3boys|2boys)\b", text, flags=re.I):
+        text = re.sub(r"\s*\bsolo\b,?\s*", " ", text, flags=re.I).replace("  ", " ")
+        text = re.sub(r"\(\s*,\s*", "(", text)
+        text = re.sub(r",\s*\)", ")", text)
+        text = re.sub(r"\(\s+", "(", text)
+    return text
 
 
 
