@@ -236,6 +236,240 @@ async function writeResponseBody(response, nodeResponse, controller, requestId) 
   }
 }
 
+// === COMPACTION FALLBACK: remove this whole section when DSH ships native compaction (env LLAMADOCK_COMPACTION=0 disables it) ===
+// Everything the fallback needs lives between these two markers: the kill switch,
+// the refusal matcher, the token estimator, the elision helper, the compaction
+// entry point, and the hook that the request path calls once.  Removing this
+// block plus that single call site restores the exact pre-compaction behavior.
+//
+// Trigger : upstream HTTP 400 whose message says the prompt leaves no room.
+// Action  : keep the leading system messages and the final user turn, elide
+//           oversized tool results, drop the oldest middle messages until the
+//           estimate fits (ctx - max_tokens - 512), then retry exactly once.
+// Honesty : every other status/body is forwarded untouched, and a second 400
+//           from the retry is forwarded untouched as well.
+const COMPACTION_ENV_FLAG = "LLAMADOCK_COMPACTION";          // "0" disables the feature entirely
+const COMPACTION_MARGIN_TOKENS = 512;                       // safety margin left for the template
+const COMPACTION_DEFAULT_MAX_TOKENS = 4096;                 // used when the request has no max_tokens
+const COMPACTION_ELIDE_ABOVE_CHARS = 32 * 1024;             // Unsloth's tool-result budget
+const COMPACTION_ELIDE_HEAD_CHARS = 2000;
+const COMPACTION_ELIDE_TAIL_CHARS = 2000;
+const COMPACTION_ELIDE_MARKER = "...[tool result elided]...";
+// Strata 0.1.40 answers: prompt (82668 tokens) leaves no room to answer in the
+// context (65536); requests are never truncated.  The context parentheses are
+// matched optionally so an engine that drops them still triggers the fallback.
+const COMPACTION_NO_ROOM_RE = /prompt \((\d+) tokens\) leaves no room to answer in the context \(?(\d+)\)?/;
+
+function compactionEnabled() {
+  return process.env[COMPACTION_ENV_FLAG] !== "0";
+}
+
+// Rough token estimate: JSON-stringified chars / 4.  Good enough — the retry's
+// own 400 is the ground truth, not this number.
+function estimateTokens(value) {
+  try {
+    return Math.ceil(JSON.stringify(value ?? null).length / 4);
+  } catch {
+    return 0;
+  }
+}
+
+function messageContentChars(message) {
+  if (typeof message?.content === "string") return message.content.length;
+  if (Array.isArray(message?.content)) {
+    return message.content.reduce(
+      (total, part) => total + (typeof part?.text === "string" ? part.text.length : JSON.stringify(part ?? null).length),
+      0,
+    );
+  }
+  if (message?.content == null) return 0;
+  try {
+    return JSON.stringify(message.content).length;
+  } catch {
+    return 0;
+  }
+}
+
+// Oversized content is kept but shortened to head + marker + tail.  Pass
+// threshold 0 to elide unconditionally (used only for a final user turn that
+// cannot fit the budget even by itself).
+function elideOversizedContent(message, threshold = COMPACTION_ELIDE_ABOVE_CHARS) {
+  if (!message || typeof message !== "object") return message;
+  if (messageContentChars(message) <= threshold) return message;
+  if (typeof message.content === "string") {
+    return {
+      ...message,
+      content: `${message.content.slice(0, COMPACTION_ELIDE_HEAD_CHARS)}${COMPACTION_ELIDE_MARKER}${message.content.slice(-COMPACTION_ELIDE_TAIL_CHARS)}`,
+    };
+  }
+  if (Array.isArray(message.content)) {
+    let changed = false;
+    const content = message.content.map((part) => {
+      if (typeof part?.text !== "string" || part.text.length <= threshold) return part;
+      changed = true;
+      return {
+        ...part,
+        text: `${part.text.slice(0, COMPACTION_ELIDE_HEAD_CHARS)}${COMPACTION_ELIDE_MARKER}${part.text.slice(-COMPACTION_ELIDE_TAIL_CHARS)}`,
+      };
+    });
+    return changed ? { ...message, content } : message;
+  }
+  return message;
+}
+
+// Returns { promptTokens, contextTokens } for the engine's context refusal, or
+// null for any other 400 (those must be forwarded untouched).
+function matchNoRoomRefusal(upstreamText) {
+  let payload = null;
+  try {
+    payload = JSON.parse(upstreamText);
+  } catch {
+    return null;
+  }
+  const message = typeof payload?.error?.message === "string"
+    ? payload.error.message
+    : typeof payload?.message === "string"
+      ? payload.message
+      : "";
+  const match = COMPACTION_NO_ROOM_RE.exec(message);
+  if (!match) return null;
+  return { promptTokens: Number(match[1]), contextTokens: Number(match[2]) };
+}
+
+// Compaction entry point: turns the upstream refusal + the request body into a
+// smaller body, or null when there is nothing worth a retry.
+function maybeCompactForContext(refusal, requestBody) {
+  const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+  if (messages.length === 0) return null;
+  const requestedMax = Number(requestBody.max_tokens ?? requestBody.max_completion_tokens);
+  const maxTokens = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : COMPACTION_DEFAULT_MAX_TOKENS;
+  const budget = refusal.contextTokens - maxTokens - COMPACTION_MARGIN_TOKENS;
+  if (budget <= 0) return null;
+
+  let systemCount = 0;
+  while (systemCount < messages.length && ["system", "developer"].includes(messages[systemCount]?.role)) {
+    systemCount += 1;
+  }
+  let finalUserIndex = -1;
+  for (let index = messages.length - 1; index >= systemCount; index -= 1) {
+    if (messages[index]?.role === "user") {
+      finalUserIndex = index;
+      break;
+    }
+  }
+  if (systemCount === 0 && finalUserIndex < 0) return null;
+
+  const prepared = messages.map((message) => elideOversizedContent(message));
+  const keep = new Set();
+  let used = 0;
+  for (let index = 0; index < systemCount; index += 1) {
+    keep.add(index);
+    used += estimateTokens(prepared[index]);
+  }
+
+  // The current turn is never dropped (Unsloth's rule).  It is only elided when
+  // it alone is bigger than the whole budget, because keeping it verbatim could
+  // not possibly fit and the retry would be a guaranteed second 400.
+  let trimmedFinalUser = false;
+  if (finalUserIndex >= 0) {
+    let size = estimateTokens(prepared[finalUserIndex]);
+    if (used + size > budget) {
+      prepared[finalUserIndex] = elideOversizedContent(messages[finalUserIndex], 0);
+      trimmedFinalUser = true;
+      size = estimateTokens(prepared[finalUserIndex]);
+    }
+    keep.add(finalUserIndex);
+    used += size;
+  }
+
+  // Unsloth-style oldest-drop: walk the rest newest -> oldest and keep whatever
+  // still fits, skipping (not stopping at) the ones that do not.
+  for (let index = messages.length - 1; index >= systemCount; index -= 1) {
+    if (index === finalUserIndex) continue;
+    const size = estimateTokens(prepared[index]);
+    if (used + size > budget) continue;
+    keep.add(index);
+    used += size;
+  }
+
+  // Oldest-drop can leave a tool result whose assistant tool_call is gone; such
+  // orphans are dropped so the chat template never sees an unmatched response.
+  for (let index = messages.length - 1; index >= systemCount; index -= 1) {
+    if (messages[index]?.role === "tool" && (index === 0 || !keep.has(index - 1))) keep.delete(index);
+  }
+
+  const keptMessages = [...keep].sort((a, b) => a - b).map((index) => prepared[index]);
+  const changed = trimmedFinalUser
+    || keptMessages.length !== messages.length
+    || prepared.some((message, index) => message !== messages[index]);
+  if (!changed) return null;
+
+  return {
+    body: Buffer.from(JSON.stringify({ ...requestBody, messages: keptMessages }), "utf8"),
+    kept: keptMessages.length - systemCount - (finalUserIndex >= 0 ? 1 : 0),
+    total: messages.length - systemCount - (finalUserIndex >= 0 ? 1 : 0),
+    estimatedTokens: used,
+    trimmedFinalUser,
+  };
+}
+
+// The single hook the request path calls.  Returns the response to forward:
+// the original one, or the retry's response when compaction fired.
+async function applyContextCompactionFallback(upstreamResponse, call) {
+  if (!compactionEnabled()) return upstreamResponse;
+  if (call.pathname !== "/v1/chat/completions") return upstreamResponse;
+  if (upstreamResponse.status !== 400 || !upstreamResponse.body) return upstreamResponse;
+
+  // The refusal arrives before any stream starts, so buffering is safe.
+  const upstreamText = await upstreamResponse.text();
+  const headers = new Headers(upstreamResponse.headers);
+  headers.delete("content-length");
+  const passthrough = new Response(upstreamText, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers,
+  });
+
+  const refusal = matchNoRoomRefusal(upstreamText);
+  if (!refusal) return passthrough;
+  let requestBody = null;
+  try {
+    requestBody = JSON.parse(call.body.toString("utf8"));
+  } catch {
+    requestBody = null;
+  }
+  const compacted = requestBody ? maybeCompactForContext(refusal, requestBody) : null;
+  if (!compacted) return passthrough;
+
+  const summary = `compaction: prompt ${refusal.promptTokens} > ctx ${refusal.contextTokens}; kept system + newest ${compacted.kept} of ${compacted.total} messages, est ~${compacted.estimatedTokens} tokens; retrying once`;
+  console.error(summary);
+  await record({
+    type: "compaction",
+    request_id: call.requestId,
+    prompt_tokens: refusal.promptTokens,
+    context_tokens: refusal.contextTokens,
+    kept_messages: compacted.kept,
+    droppable_messages: compacted.total,
+    estimated_tokens: compacted.estimatedTokens,
+    trimmed_final_user: compacted.trimmedFinalUser,
+  });
+
+  try {
+    return await fetch(`${UPSTREAM}${call.pathname}${call.search}`, {
+      method: call.method,
+      headers: call.headers,
+      body: compacted.body,
+      signal: call.signal,
+    });
+  } catch (error) {
+    // Client went away: keep the handler's existing 499 path.  Any other failure
+    // means the retry never reached the engine, so forward the original 400.
+    if (call.signal?.aborted || error?.name === "AbortError") throw error;
+    return passthrough;
+  }
+}
+// === END COMPACTION FALLBACK ===
+
 const server = http.createServer(async (request, response) => {
   const requestId = request.headers["x-request-id"] || randomUUID();
   const url = new URL(request.url || "/", `http://${request.headers.host || `${HOST}:${PORT}`}`);
@@ -361,11 +595,22 @@ const server = http.createServer(async (request, response) => {
       if (typeof value === "string") headers[key] = value;
     }
     headers["x-request-id"] = requestId;
-    const upstreamResponse = await fetch(`${UPSTREAM}${url.pathname}${url.search}`, {
+    let upstreamResponse = await fetch(`${UPSTREAM}${url.pathname}${url.search}`, {
       method: request.method,
       headers,
       body,
       signal: controller.signal,
+    });
+    // COMPACTION FALLBACK: this is the section's one call site. Delete this line
+    // (and change `let upstreamResponse` back to `const`) to remove the feature.
+    upstreamResponse = await applyContextCompactionFallback(upstreamResponse, {
+      pathname: url.pathname,
+      search: url.search,
+      method: request.method,
+      headers,
+      body,
+      signal: controller.signal,
+      requestId,
     });
     response.writeHead(upstreamResponse.status, copyResponseHeaders(upstreamResponse));
     await writeResponseBody(upstreamResponse, response, controller, requestId);
