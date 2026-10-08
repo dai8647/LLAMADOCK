@@ -1581,9 +1581,9 @@ function Select-ComfyUITuning {
     Write-Host ""
     Write-Host "ComfyUI tuning (MiniMax H3): フローはどれも同じ。変わるのは「生成速度」と「企画LLM」" -ForegroundColor Green
     Write-Host " [1] plan    - 高速化 + 企画LLMを自分で選ぶ【推奨】(Enter)"
-    Write-Host (" [2] {0}      - 高速化 + 企画LLMは自動（CPU 4B・Qwen3.5）" -f $fastProfile)
-    Write-Host " [3] default - 高速化なし（互換）+ 企画LLMは自動（CPU 4B）"
-    Write-Host " [4] custom  - 生のComfyUIフラグ + 企画LLMは自動（CPU 4B）"
+    Write-Host (" [2] {0}      - 高速化 + 企画LLMは既定（27B・GPU）" -f $fastProfile)
+    Write-Host " [3] default - 高速化なし（互換）+ 企画LLMは既定（27B・GPU）"
+    Write-Host " [4] custom  - 生のComfyUIフラグ + 企画LLMは既定（27B・GPU）"
     Write-Host (" ※高速化({0})={1}（ComfyUI 0.33+ / torch CUDA）" -f $fastProfile, $fastLabel) -ForegroundColor DarkGray
     Write-Host ""
     do {
@@ -1636,7 +1636,10 @@ function Get-PlanModelCandidates {
             $_.Name -notmatch "(?i)mmproj" -and
             $_.Name -notmatch "-of-" -and
             $_.Name -notmatch "(?i)DSpark" -and
-            $_.Name -notmatch "(?i)DFlash2"
+            $_.Name -notmatch "(?i)DFlash2" -and
+            $_.Name -notmatch "(?i)^mtp-" -and
+            $_.Name -notmatch "(?i)nextn" -and
+            $_.Name -notmatch "(?i)-draft-"
         }
     $list = @()
     foreach ($f in $files) {
@@ -1669,35 +1672,17 @@ function Get-PlanModelMenu {
     # もの）はファイルが実在するときだけ先頭に並べ、削除済みモデルがメニューに
     # 残り続けることがないようにする。残りはディスク走査（Get-PlanModelCandidates）
     # からの自動検出分。返却トークン契約:
-    #   Qwen3.5 / Qwen3.8-27B-GPU / Qwen3.8-27B-GPU-Vision /
-    #   Qwen3.5-A35B-GPU-Vision / Custom (+ $script:PlanModelCustom)
+    #   Qwen3.8-27B-GPU / Custom (+ $script:PlanModelCustom)
+    #   （Qwen3.5-4B / IQ4_XS / A35B キーは GGUF 削除に伴い 2026-10-08 廃止）
     $known = @(
         @{
-            Key  = "Qwen3.5"
-            Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
-            Gpu  = $false
-        },
-        @{
             Key  = "Qwen3.8-27B-GPU"
-            Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ3_M.gguf"
-            Gpu  = $true
-        },
-        @{
-            Key  = "Qwen3.8-27B-GPU-Vision"
-            Path = "C:\Users\dai86\.lmstudio\models\HauhauCS\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-MTP-GGUF\Qwen3.8-27B-Uncensored-HauhauCS-Aggressive-IQ4_XS.gguf"
-            Gpu  = $true
-        },
-        @{
-            Key  = "Qwen3.5-A35B-GPU-Vision"
-            Path = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S.gguf"
+            Path = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-v2.0-qatfa.gguf"
             Gpu  = $true
         }
     )
     $descByKey = @{
-        "Qwen3.5"                    = "Qwen3.5-4B - CPU・常駐・視覚対応（既定）"
-        "Qwen3.8-27B-GPU"            = "Qwen3.8-27B HauhauCS IQ3_M - GPU・企画フェーズのみ・視覚あり（11.9GB）"
-        "Qwen3.8-27B-GPU-Vision"     = "Qwen3.8-27B HauhauCS IQ4_XS - GPU・企画フェーズのみ・視覚あり（14.6GB・高品質）"
-        "Qwen3.5-A35B-GPU-Vision"    = "Huihui-Qwen3.5-A35B TQ3_4S - GPU・企画フェーズのみ・視覚あり（12.4GB・MoE）"
+        "Qwen3.8-27B-GPU"            = "Qwen3.8-27B OrcaRouter IQ3_XXS - GPU・企画フェーズのみ・視覚あり（9.7GB・既定）"
     }
 
     $menu = @()
@@ -1730,18 +1715,17 @@ function Get-PlanModelMenu {
 }
 
 function Select-PlanModel {
-    # Pick the planning LLM for plan mode. Qwen3.5-4B runs on CPU and stays
-    # resident (VRAM stays free, has vision). GPU models run during the
-    # planning phase only and are killed before every generation so the video
-    # model gets the VRAM back. The menu lists only files that actually exist:
-    # known models with dedicated launch keys first, then auto-detected GGUFs
-    # from .lmstudio\models (Get-PlanModelMenu).
+    # Pick the planning LLM for plan mode. GPU models (the 27B default) run
+    # during the planning phase only and are killed before every generation
+    # so the video model gets the VRAM back. The menu lists only files that
+    # actually exist: known models with dedicated launch keys first, then
+    # auto-detected GGUFs from .lmstudio\models (Get-PlanModelMenu).
     $menu = Get-PlanModelMenu
     Write-Host ""
     Write-Host "Planning LLM:" -ForegroundColor Green
     if ($menu.Count -eq 0) {
-        Write-Host " (GGUF モデルが見つかりません。既定の Qwen3.5 を使用します)" -ForegroundColor Yellow
-        return "Qwen3.5"
+        Write-Host " (GGUF モデルが見つかりません。企画モードなしで起動します)" -ForegroundColor Yellow
+        return "Off"
     }
     $idx = 1
     $defaultIdx = 1
@@ -1854,7 +1838,7 @@ function Start-H3Chat {
     # the user actually wants to see: a text box, not the ComfyUI node graph.
     # With plan mode ([1] plan in the tuning menu, or Enter) it delegates to
     # h3-chat.ps1,
-    # which also starts the planning LLM (llama-server, CPU-only) so the
+    # which also starts the planning LLM (llama-server, GPU 27B on demand) so the
     # conversation-to-video flow works out of the box.
     param([switch]$SkipOpenBrowser)
     $chatUrl = "http://127.0.0.1:8189"

@@ -13,13 +13,12 @@ can shape the video concept conversationally before generating. When the LLM
 wraps its final prompt in [FINAL_PROMPT]...[/FINAL_PROMPT], the UI offers a
 "generate with this plan" button.
 
-Two planning LLMs are supported:
-  - default: Qwen3.5-4B on CPU (-ngl 0, port 8190), resident, vision-capable.
-  - LLAMADOCK_PLAN_GPU=1: Qwen3.8-27B-Abliterated on GPU (-ngl all, port
-    8191). Started on demand for the planning phase only and killed before
-    every ComfyUI generation, so the 14GB planner and the video model never
-    fight over VRAM. No vision projector: the confirmed key image is handed
-    off as its prompt text.
+Planning LLM (2026-10-08 以降 27B 1本):
+  - 既定: Qwen3.8-27B on GPU (-ngl all, port 8191)。企画フェーズのみ必要時に
+    起動し、ComfyUI の生成前に必ず kill するので、プランナーと動画モデルが
+    VRAM を奪い合わない。mmproj 併用でキー画像を直接見られる。
+  - LLAMADOCK_PLAN_GPU=0 で CPU モード（port 8190・常駐）。4B 時代の設定で、
+    対応 GGUF が存在するときだけ意味がある。
 
 Reference mode (R2V): when a key image has been confirmed in plan mode,
 ticking the reference checkbox generates the video with MiniMaxH3ReferenceToVideo
@@ -69,12 +68,15 @@ import h3chat_planllm as planllm  # 実行中に変わる企画LLM状態はモ�
 
 
 WORKFLOWS = {
-    # 32B Heretic encoder: best Japanese / detailed-prompt fidelity
+    # 2026-10-08: テキストエンコーダは全ワークフロー qwen3vl_4b_heretic_fp8 +
+    # ClipProj に統一（32B TE は削除済み）。モードの差は LoRA/ステップ数と
+    # 解像度・尺だけ。
     "high": os.path.join(REPO, "h3_workflow_turbo_audio.json"),
     "quick": os.path.join(REPO, "h3_workflow_turbo_short_audio.json"),
-    # 4B Heretic encoder: lightest on VRAM
+    # lite/quicklite は 32B 時代の「軽量」枠。ファイルは high/quick と
+    # 実質同一（super = turbo と同設定）なので、旧セッション/API 互換のため
+    # のエイリアスとして残す。UI からは選べない。
     "lite": os.path.join(REPO, "h3_workflow_super_audio.json"),
-    # 4B encoder + short/res (quicklite): fastest option, light on VRAM
     "quicklite": os.path.join(REPO, "h3_workflow_super_short_audio.json"),
     # Spectrum + 20 steps (no turbo LoRA): highest quality, no LoRA artifacts
     "fast": os.path.join(REPO, "h3_workflow_fast_audio.json"),
@@ -88,9 +90,9 @@ ETA_DEFAULTS = {"high": 360, "quick": 240, "lite": 540, "quicklite": 150, "fast"
 
 # モード ID → UI 表示名（チャット指示による上書きを生成時に表示するのに使う）
 MODE_LABELS = {
-    "fast": "最高画質 spectrum", "high": "高画質 48f（軽量TE）",
-    "fast_quick": "高画質 spectrum・短尺", "quick": "クイック 32B",
-    "lite": "軽量 4B", "quicklite": "最速 4B",
+    "fast": "最高画質 spectrum", "high": "高精度・フル尺",
+    "fast_quick": "高画質 spectrum・短尺", "quick": "クイック・短尺",
+    "lite": "高精度・フル尺", "quicklite": "クイック・短尺",
 }
 
 # Selectable H3 video DiT checkpoints (node "1" = UNETLoader in all video
@@ -150,11 +152,10 @@ IMG_ENGINES = {
 # R2V (reference-to-video) workflows: 確定したキー画像を参照画像にして同一キャラを維持する。
 # MiniMaxH3ReferenceToVideo ノード + 参照 LoRA（minimax_h3_ref_lora_rank_256_bf16）を
 # fl2va モデルに重ねる構成（ref2va モデル不要）。
-# quicklite は 4B エンコーダ + ClipProj 射影（mmh3-4b-ClipProj-celeb-mlp）で 32B を代替し、約 1/3 の時間に。
+# 全 R2V ワークフローは 4B TE + ClipProj 射影（mmh3-4b-ClipProj-celeb-mlp）。
 # 4B を生で渡すと次元不一致（30720 vs 5120）で失敗するため ClipProjApply が必須。
-# lite も r2v_4b（4B エンコーダ + ClipProj のフル尺版）を使う。以前は high と
-# 同一ファイル（32B エンコーダ版）を指していて、「軽量」なのに VRAM も所要時間も
-# high と全く同じという偽の選択肢になっていた。
+# 32B TE は削除済みなので lite/quicklite（r2v_4b 系）は high/quick（r2v 系）と
+# 実質同一生成。旧セッション/API 互換のためのエイリアスとして残す。
 R2V_WORKFLOWS = {
     "high": os.path.join(REPO, "h3_workflow_r2v.json"),
     "quick": os.path.join(REPO, "h3_workflow_r2v_short.json"),
@@ -223,14 +224,12 @@ def _parse_tweak(text):
     # 画質
     if re.search(r"最高画質|ターボなし|spectrum|20ステップ|20steps", t):
         tw["mode"] = "fast"; label.append("高画質 spectrum")
-    elif re.search(r"高画質|高精度|精細|きれい|フル尺|フルで", t):
-        tw["mode"] = "high"; label.append("高精度 32B")
-    elif re.search(r"省VRAM|軽量|4B", t):
-        tw["mode"] = "lite"; label.append("軽量 4B")
-    elif re.search(r"最速|チョロッと|さらっと", t):
-        tw["mode"] = "quicklite"; label.append("クイック 4B")
-    elif re.search(r"クイック|低画質|粗く|速く|サクッと", t):
-        tw["mode"] = "quick"; label.append("クイック 32B")
+    elif re.search(r"高画質|高精度|精細|きれい|フル尺|フルで|省VRAM|軽量|4B", t):
+        # 32B TE 廃止で「軽量 4B」枠は high（フル尺 turbo）と同一生成
+        tw["mode"] = "high"; label.append("高精度・フル尺")
+    elif re.search(r"最速|チョロッと|さらっと|クイック|低画質|粗く|速く|サクッと", t):
+        # 「最速 4B」（quicklite）も quick と同一生成に統合
+        tw["mode"] = "quick"; label.append("クイック・短尺")
     # 長さ（N秒 / N分 / 長く / 短く）
     m = re.search(r"(\d+)\s*秒", t)
     if m:
@@ -855,7 +854,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         wf[NODE_SEED]["inputs"]["seed"] = random.randint(0, 2**31 - 1)
         self.server.autostop.poke()
         # gpu27b planner: kill it so its 14GB leaves VRAM before the video
-        # model loads (no-op for the CPU 4B planner).
+        # model loads (no-op for the CPU planner).
         stop_plan_llm()
         if not self._ensure_comfy():
             self._json(502, {"error": "ComfyUI が起動していません（自動起動も失敗。詳細は %TEMP%\\h3_comfyui.log）"})
@@ -1913,7 +1912,7 @@ def main():
     print(f"h3-chat: Klein 9B = {KIMG_WORKFLOW}")
     print(f"h3-chat: Qwen    = {QIMG_WORKFLOW}")
     print(f"h3-chat: R2V 参照モード = {R2V_WORKFLOWS['fast']} など（キー画像→参照 LoRA）")
-    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(planllm.PLAN_PORT) + ', GPU 27B)' if planllm.PLAN_GPU else 'auto (8190, CPU 4B)')} (engine: {planllm.PLAN_ENGINE})")
+    print(f"h3-chat: plan LLM = {server.plan_url or ('auto (' + str(planllm.PLAN_PORT) + ', GPU 27B)' if planllm.PLAN_GPU else 'auto (8190, CPU)')} (engine: {planllm.PLAN_ENGINE})")
     # Bring up the planning LLM in the background so the first plan-mode
     # message does not have to wait for the model load (~10-60s on CPU).
     # gpu27b mode starts on demand instead: preloading it would hold 14GB of
