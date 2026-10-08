@@ -127,13 +127,13 @@ def _concat_videos(paths):
 # Standard ports (must match tools\h3-chat.ps1 / select-model.ps1)
 #
 # The planning LLM runs in one of two modes:
-#   cpu4b  (default): Qwen3.5-4B on CPU (-ngl 0), port 8190, pre-started and
-#                     always-on; has an mmproj so it can see the confirmed key
-#                     image.
-#   gpu    (LLAMADOCK_PLAN_GPU=1): a large GGUF on GPU (-ngl all), port 8191.
-#                     Started on demand for the planning phase only and killed
-#                     before every ComfyUI generation, so the planner and the
-#                     video model never fight over VRAM.
+#   gpu    (default since 2026-10-08): a large GGUF (27B) on GPU (-ngl all),
+#                     port 8191. Started on demand for the planning phase
+#                     only and killed before every ComfyUI generation, so
+#                     the planner and the video model never fight over VRAM.
+#   cpu    (LLAMADOCK_PLAN_GPU=0): a small GGUF on CPU (-ngl 0), port 8190,
+#                     always-on. The dedicated Qwen3.5-4B was deleted - this
+#                     mode only makes sense when a small planner is reinstalled.
 #
 # The GPU planner model is NOT hardcoded: it is auto-selected from the GGUFs
 # installed under .lmstudio\models (scan_plan_models) and can be switched at
