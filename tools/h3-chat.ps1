@@ -71,8 +71,9 @@ if ($planModels[$PlanModel] -and $planModels[$PlanModel].Gpu) {
 $url = "http://127.0.0.1:$port"
 $planUrl = "http://127.0.0.1:$planPort"
 
-# ROCm PATH 注入は GPU 切り替え（2026-09-11, RTX 3080 / CUDA）後は不要。
-# 残していても ROCm が無い限り何もしない。CUDA DLL は llama-server.exe 隣に
+# システムの "C:\Program Files\AMD\ROCm" は消滅済み（2026-10-08 確認）。
+# Unsloth Release 隣に HIP ランタイムが同梱なのでこの注入は予備措置。
+# 万一 ggml-cuda.dll 入りビルドに変わった場合の CUDA DLL 補完は
 # select-model.ps1 の Ensure-UnslothCudaRuntime が配置する。
 $rocmBin = if ($env:LLAMADOCK_ROCM_BIN) { $env:LLAMADOCK_ROCM_BIN } else {
     $amdRoot = "C:\Program Files\AMD\ROCm"
@@ -85,7 +86,7 @@ if ($rocmBin -and (Test-Path -LiteralPath $rocmBin) -and ($env:PATH -notlike "*$
     $env:PATH = "$rocmBin;$env:PATH"
 }
 
-# 単一エンジン (Unsloth llama.cpp CUDA ビルド / RTX 3080) を企画 LLM にも使う。
+# 単一エンジン (Unsloth llama.cpp HIP ビルド / RX 7800 XT) を企画 LLM にも使う。
 $planServer = "C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe"
 if (-not (Test-Path -LiteralPath $planServer) -and $env:LLAMADOCK_UNSLOTH_SERVER) {
     $planServer = [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
@@ -128,12 +129,12 @@ Ensure-PlanCudaRuntime -ServerPath $planServer
 function Get-PlanEngineName {
     # 企画 LLM の llama-server 実体からエンジン名を判定（コーダー側のエンジン表記と揃える）。
     param([string]$ServerPath)
-    if ($ServerPath -like "*\.unsloth\*") { return "Unsloth (CUDA)" }
+    if ($ServerPath -like "*\.unsloth\*") { return "Unsloth (HIP)" }
     return "Unknown"
 }
 $planEngine = Get-PlanEngineName $planServer
-# GPU 企画 LLM も h3-chat.py が PLAN_SERVER_BIN（Unsloth CUDA ビルド）で起動する。
-$planGpuEngine = "Unsloth (CUDA)"
+# GPU 企画 LLM も h3-chat.py が PLAN_SERVER_BIN（Unsloth HIP ビルド）で起動する。
+$planGpuEngine = "Unsloth (HIP)"
 
 function Get-LivePlanStatus {
     # 稼働中 h3-chat (8189) の企画 LLM 設定（GPU/CPU + モデルパス）を取得する。

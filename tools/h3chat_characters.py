@@ -1,17 +1,8 @@
-"""Character pinning library (config/characters) + workflow appliers."""
+﻿"""Character pinning library (config/characters) + workflow appliers."""
 
 import json
 import os
-import random
 import re
-import shutil
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)

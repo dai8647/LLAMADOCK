@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Add EasyCache node to H3 workflow JSON files (those without SpectrumApplyMiniMaxH3).
 
 EasyCache is mutually exclusive with Spectrum.  Insert it between the last
@@ -8,7 +8,7 @@ point at the new EasyCache node.
 Parameters follow pepikir's research: end_percent=0.90 avoids the final-step
 quality degradation seen with 0.95.
 """
-import json, glob, os, sys
+import json, glob, os
 
 EASYCACHE_NODE = {
     "class_type": "EasyCache",
