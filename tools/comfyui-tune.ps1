@@ -14,13 +14,13 @@
     Notes on what is NOT auto-installed and why (details in
     docs/MiniMax-H3-Tuning.md):
 
-      - SageAttention (--use-sage-attention) is CUDA-only. This machine is now
-        NVIDIA RTX 3080 / torch cu130, so sageattention + triton-windows can be
-        installed and the default LlamaDock profile is `sage` when present.
-        SageAttention 2.x from upstream is preferred when a matching Windows
-        wheel is available; PyPI currently ships 1.0.6.
-      - Sol-Attn (kijai/ComfyUI-SolAttn_triton) targets NVIDIA SM89+ kernels
-        (RTX 4090 class). RTX 3080 is SM86, so leave it off unless bench-tested.
+      - SageAttention (--use-sage-attention) is CUDA-only. This machine ran
+        NVIDIA RTX 3080 / torch cu130 only 2026-09-11 through ~2026-09-14 and
+        is back on AMD RX 7800 XT / torch ROCm hip 7.2 (verified 2026-10-08),
+        so sageattention cannot be installed here and the LlamaDock profile
+        falls back to `ck`.
+      - Sol-Attn (kijai/ComfyUI-SolAttn_triton) targets NVIDIA kernels
+        (SM89+ class); not applicable to AMD/ROCm, leave it off.
       - The built-in EasyCache node is generic PyTorch and IS used: it is
         inserted into the non-Spectrum workflows (h3_workflow_*.json, reuse
         0.10 / start 0.15 / end 0.90). It is mutually exclusive with Spectrum,
@@ -28,8 +28,9 @@
       - The patch-based ComfyUI-MiniMaxH3-Cache (lihaoyun6) is NOT used:
         it patches ComfyUI core files and reports quality degradation.
       - comfy-kitchen INT8 Triton kernels (--enable-triton-backend) require
-        triton. triton-windows is installed on this CUDA stack; still opt-in
-        via LLAMADOCK_COMFY_TRITON=1 until bench-tested on H3.
+        triton. torch-ROCm bundles triton, but the `triton` profile is not
+        bench-tested on H3/AMD and falls back to ck; opt-in via
+        LLAMADOCK_COMFY_TRITON=1 only.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File tools\comfyui-tune.ps1

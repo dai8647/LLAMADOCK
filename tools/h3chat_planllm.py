@@ -132,9 +132,9 @@ def _resolve_plan_model(for_gpu):
 
 # Planner engine: single engine — Unsloth llama.cpp HIP build for RX 7800 XT
 # (ggml-hip.dll + bundled amdhip64_7/hipblas runtime, verified 2026-10-08).
-# An earlier comment claimed a CUDA/RTX 3080 build — wrong; the Release tree
-# ships HIP DLLs only. _ensure_plan_cuda_runtime is a guarded no-op kept for a
-# future CUDA build. Path may churn if Unsloth Desktop updates —
+# The CUDA/RTX 3080 build is real history, but only 2026-09-11 through
+# ~2026-09-14; after the ROCm rollback the Release tree ships HIP DLLs only.
+# _ensure_plan_cuda_runtime is a guarded no-op in case a CUDA build returns. Path may churn if Unsloth Desktop updates —
 # _spawn_plan_llm re-resolves when missing.
 _GPU_BIN_CANDIDATES = (
     r"C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe",

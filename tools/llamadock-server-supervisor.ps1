@@ -103,39 +103,6 @@ if (Test-Path -LiteralPath $lagunaRocm) {
     }
 }
 
-# Memory guard for Laguna Flash-Next: engine reply records WS~61GB / FreeRAM 0.3GB
-# at 8K hot-expert. Auto-restart stays OFF; kill on tight FreeRAM so the box
-# does not thrash. Poll only while ServerPath is Laguna.
-function Watch-LagunaMemory {
-    param([int]$ServerPid = 0, [int]$MinFreeMB = 2048, [int]$Seconds = 180)
-    if ($ServerPath -notmatch "llama-cpp-turboquant-experts-laguna") { return }
-    $deadline = (Get-Date).AddSeconds($Seconds)
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 3
-        $proc = if ($ServerPid -gt 0) { Get-Process -Id $ServerPid -ErrorAction SilentlyContinue } else { $null }
-        if (-not $proc) {
-            $proc = Get-Process llama-server -ErrorAction SilentlyContinue | Select-Object -First 1
-        }
-        if (-not $proc) { return }
-        $os = Get-CimInstance Win32_OperatingSystem
-        $freeMB = [int]($os.FreePhysicalMemory / 1024)
-        $wsMB = [int]($proc.WorkingSet64 / 1MB)
-        if ($freeMB -lt $MinFreeMB) {
-            Write-SupervisorLog "MEMORY GUARD: FreeRAM ${freeMB}MB < ${MinFreeMB}MB (WS ${wsMB}MB) — killing llama-server PID $($proc.Id). No auto-restart." "warn"
-            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
-            return
-        }
-        if ($proc.HasExited) { return }
-        # Stop watching once the model is clearly resident and still has headroom.
-        if ($freeMB -gt ($MinFreeMB * 2) -and $wsMB -gt 1024 -and (Test-PortListening -Port $UpstreamPort)) { return }
-    }
-}
-
-function Test-PortListening {
-    param([int]$Port)
-    return [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
-}
-
 function Write-SupervisorLog {
     param(
         [string]$Message,
