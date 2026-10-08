@@ -225,7 +225,7 @@ HTML = """<!doctype html>
 <header>
   <button id="btn-sidebar" onclick="toggleSidebar()" title="履歴サイドバーを表示/非表示">☰</button>
   <h1>🎬 MiniMax H3 チャット動画生成</h1>
-  <span class="sub">企画モード: キー画像（Klein 9B / Qwen-Image）→ 確認 → 動画（H3・32B/4B）</span>
+  <span class="sub">企画モード: キー画像（Klein 9B / Qwen-Image）→ 確認 → 動画（H3・4B TE）</span>
   <span id="status-dot" title="ComfyUI 接続状態"></span>
 </header>
 <div id="app">
@@ -256,11 +256,13 @@ HTML = """<!doctype html>
   <div class="ft-row">
     <div class="seg">
       <label class="segbtn"><input type="radio" name="mode" value="fast" checked><span>最高画質<small>spectrum・約15分</small></span></label>
-      <label class="segbtn"><input type="radio" name="mode" value="high"><span>高精度<small>32B・約9分</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="high"><span>高精度<small>turbo・フル尺 約9分</small></span></label>
       <label class="segbtn"><input type="radio" name="mode" value="fast_quick"><span>高画質<small>spectrum・短尺</small></span></label>
-      <label class="segbtn"><input type="radio" name="mode" value="quick"><span>クイック<small>32B・2〜4分</small></span></label>
-      <label class="segbtn"><input type="radio" name="mode" value="lite"><span>軽量<small>4B・約9分</small></span></label>
-      <label class="segbtn"><input type="radio" name="mode" value="quicklite"><span>最速<small>4B・短尺</small></span></label>
+      <label class="segbtn"><input type="radio" name="mode" value="quick"><span>クイック<small>turbo・短尺 2〜4分</small></span></label>
+      <!-- lite/quicklite は 32B TE 廃止で high/quick と同一生成になったため非表示の互換スロット
+           （旧セッションの DOM 復元だけを担当）。UI からは選べない。 -->
+      <label class="segbtn" style="display:none"><input type="radio" name="mode" value="lite"><span>高精度<small>フル尺</small></span></label>
+      <label class="segbtn" style="display:none"><input type="radio" name="mode" value="quicklite"><span>クイック<small>短尺</small></span></label>
     </div>
     <div id="lenbox">
       <span>長さ:</span>
