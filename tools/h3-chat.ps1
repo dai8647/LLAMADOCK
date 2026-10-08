@@ -5,20 +5,20 @@
 #
 # Planning mode optionally starts a local planning LLM. Choose the model with
 # -PlanModel:
-#     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.5
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Qwen3.8-27B-GPU
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Custom
 #     powershell -ExecutionPolicy Bypass -File tools\h3-chat.ps1 -PlanModel Off
 #
-# Qwen3.5 runs on CPU (-ngl 0) and stays resident. Qwen3.8-27B-GPU runs on the
-# GPU during the planning phase only: h3-chat.py starts it on demand (port
-# 8191) and kills it before every generation so the video model gets the VRAM.
+# Qwen3.8-27B-GPU runs on the GPU during the planning phase only: h3-chat.py
+# starts it on demand (port 8191) and kills it before every generation so the
+# video model gets the VRAM. (The old CPU-resident Qwen3.5-4B and the A35B /
+# IQ4_XS keys were retired 2026-10-08 — those GGUFs no longer exist.)
 # Custom = select-model.ps1 が .lmstudio\models から自動検出したモデル。
 # パスは環境変数 LLAMADOCK_PLAN_MODEL / LLAMADOCK_PLAN_MMPROJ / LLAMADOCK_PLAN_GPU
 # で渡される（select-model.ps1 の Start-H3Chat が設定）。
 
 param(
-    [ValidateSet("Qwen3.5", "Qwen3.8-27B-GPU", "Qwen3.8-27B-GPU-Vision", "Qwen3.5-A35B-GPU-Vision", "Custom", "Off")]
+    [ValidateSet("Qwen3.8-27B-GPU", "Custom", "Off")]
     [string]$PlanModel = "Qwen3.8-27B-GPU",
     # Used by select-model.ps1 (plan mode): start the planning LLM and the
     # chat server but let the caller open the browser.
@@ -32,11 +32,6 @@ $port = 8189
 $planPort = 8190
 
 $planModels = @{
-    "Qwen3.5" = @{
-        Label = "Qwen3.5-4B NSFW Literotica (えろ特化・視覚は mmproj 流用)"
-        Path = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\mmproj-Qwen3.5-4B-NSFW-Literotica-BF16.gguf"
-    }
     # GPU エントリは「今インストール済みのモデル」を指す。モデルを入れ替えた
     # ときはここを更新するか、UI の企画 LLM モデル選択（/api/plan-models）か
     # select-model.ps1 の自動検出（Custom）を使う。
@@ -46,22 +41,10 @@ $planModels = @{
         Mmproj = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\mmproj-Qwen3.8-27B-BF16.gguf"
         Gpu = $true
     }
-    "Qwen3.8-27B-GPU-Vision" = @{
-        Label = "Qwen3.8-27B OrcaRouter Uncensored IQ3_XXS (GPU・同モデル・視覚あり)"
-        Path = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-v2.0-qatfa.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\RentedNoodle\Qwen3.8-27B-OrcaRouter-GSQ-RCO-IQ3_XXS-Uncensored\mmproj-Qwen3.8-27B-BF16.gguf"
-        Gpu = $true
-    }
-    "Qwen3.5-A35B-GPU-Vision" = @{
-        Label = "Huihui-Qwen3.5-A35B-Ablit-Small TQ3_4S (GPU・企画フェーズのみ・視覚あり・12.4GB・MoE)"
-        Path = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S.gguf"
-        Mmproj = "C:\Users\dai86\.lmstudio\models\YTan2000\Huihui-Qwen35-A35B-Ablit-Small-TQ3_4S\mmproj-Qwen35-A35B-f16.gguf"
-        Gpu = $true
-    }
 }
 
 # Custom: select-model.ps1 が自動検出したモデル。パス等は環境変数で届く。
-# 環境変数が無ければ企画モードを無効化して Qwen3.5 相当の扱いにフォールバック。
+# 環境変数が無ければ企画モードを無効化してフォールバックする。
 if ($PlanModel -eq "Custom") {
     $customPath = $env:LLAMADOCK_PLAN_MODEL
     if ([string]::IsNullOrWhiteSpace($customPath) -or -not (Test-Path -LiteralPath $customPath)) {
@@ -394,9 +377,9 @@ if ($PlanModel -ne "Off" -and -not $planGpu -and -not $planDisabled) {
                 Stop-LlamaDockPlanStack   # 8190/8191 の旧プラナーを掃除
             }
         }
-        # CPU-only (-ngl 0) so ComfyUI keeps all VRAM. This 4B model is not a
-        # reasoning model: with thinking enabled it re-reads its own system
-        # prompt until the token budget runs out, then restarts thinking inside
+        # CPU-only (-ngl 0) so ComfyUI keeps all VRAM. Small CPU planners are
+        # usually not reasoning models: with thinking enabled they re-read their
+        # own system prompt until the token budget runs out, then restart it
         # the answer (measured: 200s, no clean output). --reasoning off makes
         # the chat template emit an empty think block so the model answers
         # directly (this build maps --reasoning off to enable_thinking=false;

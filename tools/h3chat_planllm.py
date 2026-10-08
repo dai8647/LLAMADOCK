@@ -1,4 +1,4 @@
-"""Planning-LLM: model discovery, spawn/stop/switch, VRAM guards."""
+﻿"""Planning-LLM: model discovery, spawn/stop/switch, VRAM guards."""
 
 import json
 import os
@@ -16,7 +16,10 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-PLAN_GPU = os.environ.get("LLAMADOCK_PLAN_GPU", "") == "1"
+# 2026-10-08: 企画 LLM は 27B GPU が既定（4B/8B CPU 常駐モデルは削除済み）。
+# LLAMADOCK_PLAN_GPU=0 で CPU モードに明示的に戻せる（対応 GGUF がある場合のみ実用）。
+# 起動ランチャー（h3-chat.ps1 / Start-H3Chat）は選択に応じて明示的に設定する。
+PLAN_GPU = os.environ.get("LLAMADOCK_PLAN_GPU", "1") == "1"
 PLAN_PORT = 8191 if PLAN_GPU else 8190
 PLAN_URL_DEFAULT = f"http://127.0.0.1:{PLAN_PORT}"
 
@@ -61,7 +64,10 @@ def scan_plan_models():
                 low = fn.lower()
                 if not low.endswith(".gguf"):
                     continue
-                if "mmproj" in low or "-of-" in low or "dspark" in low or "dflash2" in low:
+                # mmproj/分割/ドラフト（DSpark・DFlash2・NextN MTP・*-draft-*）は
+                # 企画 LLM の本体ではないので除外
+                if ("mmproj" in low or "-of-" in low or "dspark" in low or "dflash2" in low
+                        or low.startswith("mtp-") or "nextn" in low or "-draft-" in low):
                     continue
                 path = os.path.join(root, fn)
                 try:
@@ -93,7 +99,9 @@ def _auto_plan_model(for_gpu):
 
     GPU: vision-capable models that fit the card first (smallest first, so
     the cold load stays fast and the KV cache keeps headroom). CPU: the
-    dedicated Qwen3.5-4B if installed, else the smallest candidate.
+    smallest non-GPU-class candidate; falls back to the smallest overall
+    (the dedicated 4B CPU planner was deleted 2026-10-08 — CPU mode is now
+    only practical when a small GGUF is reinstalled or passed explicitly).
     Returns (path, mmproj); both None when nothing usable is installed.
     """
     models = scan_plan_models()
@@ -105,10 +113,9 @@ def _auto_plan_model(for_gpu):
         if cands:
             return cands[0]["path"], cands[0]["mmproj"]
         return None, None
-    known_cpu = r"C:\Users\dai86\.lmstudio\models\Sinbad-The-Sailor\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica\Qwen3.5-4B-NSFW-ARA-Heretic-Literotica.i1-Q6_K.gguf"
-    for m in models:
-        if m["path"].lower() == known_cpu.lower():
-            return m["path"], m["mmproj"]
+    cpu_cands = [m for m in models if not m["gpu"]]
+    if cpu_cands:
+        return cpu_cands[0]["path"], cpu_cands[0]["mmproj"]
     if models:
         return models[0]["path"], models[0]["mmproj"]
     return None, None
@@ -310,9 +317,11 @@ def _ensure_plan_cuda_runtime(server_bin):
 def _spawn_plan_llm():
     """Launch the planning llama-server detached on PLAN_PORT.
 
-    cpu4b mode: Qwen3.5 + mmproj, CPU-only (-ngl 0), stays resident.
-    gpu27b mode: Qwen3.8-27B on GPU (-ngl all), started on demand and killed
-    before every ComfyUI generation (see stop_plan_llm).
+    cpu mode (-ngl 0): resident, for a small planner GGUF (the 4B default
+    was deleted 2026-10-08; only reachable via explicit LLAMADOCK_PLAN_GPU=0
+    or a CPU-class auto-detected model).
+    gpu mode (default, -ngl all): the 27B planner, started on demand and
+    killed before every ComfyUI generation (see stop_plan_llm).
 
     Returns the Popen handle, or None when the binary/model is missing or
     the process could not be started.
@@ -394,7 +403,7 @@ def _spawn_plan_llm():
         # プランナー spawn が即死する (2026-10-05 実測) ので外した。
         args += [
             "-ngl", "0",
-            # This 4B model is not a reasoning model: when the Qwen3.5 chat
+            # Small CPU planners are usually not reasoning models: when the chat
             # template injects a think-block opener it "thinks" by re-reading
             # its own system prompt, burns the whole token budget, then
             # restarts the thinking inside the answer (measured: 200s, no
@@ -447,11 +456,11 @@ def _spawn_plan_llm():
 
 
 def stop_plan_llm():
-    """Stop the planning LLM and free its VRAM (gpu27b mode only).
+    """Stop the planning LLM and free its VRAM (GPU mode only).
 
     Called before every ComfyUI generation: the 14GB GPU planner and the
     video model cannot share the 16GB card. The next plan message restarts
-    it (~10s cold load). No-op in cpu4b mode (the CPU planner holds no VRAM).
+    it (~10s cold load). No-op in CPU mode (the CPU planner holds no VRAM).
     """
     global PLAN_PROC, PLAN_LAST_TRY
     if not PLAN_GPU:
@@ -503,7 +512,7 @@ def ensure_plan_llm(wait_seconds=120):
 def switch_plan_model(path, mmproj=None, gpu=None):
     """Switch the planning LLM model at runtime (UI dropdown).
 
-    Stops any running planner (the resident CPU 4B or an on-demand GPU
+    Stops any running planner (the resident CPU planner or an on-demand GPU
     planner) and re-points the launch config; the next plan message
     auto-starts the new model on the right port. Returns (ok, error).
     """
