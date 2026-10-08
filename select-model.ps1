@@ -127,8 +127,9 @@ if (Test-Path -LiteralPath $utf8Helper) {
 
 # Single engine since 2026-09-11: Unsloth llama.cpp build (b10909) with
 # bundled ROCm/HIP runtime (amdhip64_7 / hipblas / ggml-hip). Works on
-# RX 7800 XT without a system-wide ROCm install. Comments previously said
-# CUDA/NVIDIA — that was wrong; the Release tree ships ggml-hip.dll.
+# RX 7800 XT without a system-wide ROCm install. Engine history: on the same
+# day 2026-09-11 the stack briefly ran a CUDA/RTX 3080 build and came back to
+# ROCm/HIP about three days later; comments claiming CUDA after ~09-14 are stale.
 # Override with LLAMADOCK_UNSLOTH_SERVER if the path ever moves.
 $UnslothServerPath = if ($env:LLAMADOCK_UNSLOTH_SERVER) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_UNSLOTH_SERVER)
@@ -1890,8 +1891,9 @@ function Start-H3Chat {
             }
             if (-not $chatUpNow) {
                 # 企画 LLM のエンジン: CPU / GPU とも Unsloth 同梱の llama-server
-                # (CUDA / RTX 3080) で起動する。
-                $planEngineHint = "Unsloth (CUDA)"
+                # (HIP / RX 7800 XT) で起動する ※2026-09-11〜09-14 の 3 日間だけ
+                # CUDA/RTX 3080 ビルドだった時期がある。
+                $planEngineHint = "Unsloth (HIP)"
                 Write-Host "Planning mode: starting the planning LLM (h3-chat.ps1, engine: $planEngineHint)..." -ForegroundColor Cyan
                 # 自動検出モデル（Custom）は環境変数でパスを渡す。Start-Process の
                 # 子プロセスは現在の環境を継承するため、ここで設定すれば届く。
