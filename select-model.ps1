@@ -1008,17 +1008,6 @@ function Get-ExistingServerModel {
     return ""
 }
 
-function ConvertTo-FormBody {
-    param([hashtable]$Fields)
-
-    $parts = @()
-    foreach ($key in $Fields.Keys) {
-        $value = [string]$Fields[$key]
-        $parts += "{0}={1}" -f [uri]::EscapeDataString([string]$key), [uri]::EscapeDataString($value)
-    }
-    return ($parts -join "&")
-}
-
 function Set-ClineLocalModel {
     param([string]$ModelName)
 
@@ -1499,7 +1488,9 @@ function Get-TritonBackendFlags {
 function Get-ComfyUILaunchArgs {
     # Researched MiniMax H3 tuning for the ComfyUI workspace. Sources and
     # the reasoning behind each profile live in docs/MiniMax-H3-Tuning.md.
-    # GPU stack is now NVIDIA RTX 3080 / torch cu130 (was AMD ROCm).
+    # GPU stack: AMD RX 7800 XT / torch ROCm hip 7.2 (verified 2026-10-08).
+    # sage/triton profiles stay dormant here (sageattention wants a CUDA
+    # torch); the gated checks below keep them future-proof.
     #
     # Precedence: -ComfyUIFlags parameter > $env:LLAMADOCK_COMFY_FLAGS >
     #             interactive picker (custom flags) > profile
@@ -2748,35 +2739,6 @@ if ($requiredEngine -ne "Strata" -and ($selectedContext.Tokens -gt $maxContextTo
     exit 1
 }
 if (-not $isQuickLaunch) { Write-Host "" }
-
-function Test-CacheTypeSupported {
-    # Probe whether a llama-server binary accepts a KV cache type without
-    # starting a server: "--help" exits 0 after argument parsing succeeds,
-    # while an invalid -ctk/-ctv value aborts with exit 1 before that. ROCm
-    # DLLs must be on PATH or HIP builds fail to launch at all, so prepend
-    # the newest AMD ROCm bin directory first.
-    param([string]$ServerPath, [string]$Flag, [string]$Value)
-    if (-not (Test-Path -LiteralPath $ServerPath)) { return $true }
-    $oldPath = $env:PATH
-    try {
-        $hipRoot = "C:\Program Files\AMD\ROCm"
-        if (Test-Path -LiteralPath $hipRoot) {
-            $latestHip = $null
-            foreach ($d in (Get-ChildItem -LiteralPath $hipRoot -Directory -ErrorAction SilentlyContinue)) {
-                if ($null -eq $latestHip -or $d.Name -gt $latestHip.Name) { $latestHip = $d }
-            }
-            if ($latestHip) { $env:PATH = "$(Join-Path $latestHip.FullName 'bin');$env:PATH" }
-        }
-        $null = & $ServerPath $Flag $Value --help 2>&1
-        return ($LASTEXITCODE -eq 0)
-    }
-    catch {
-        return $true
-    }
-    finally {
-        $env:PATH = $oldPath
-    }
-}
 
 # Prompt KV cache quantization selection
 $kvOptions = @(

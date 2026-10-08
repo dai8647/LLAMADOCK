@@ -2,11 +2,9 @@
 
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import urllib.error
@@ -132,10 +130,12 @@ def _resolve_plan_model(for_gpu):
     return _auto_plan_model(for_gpu)
 
 
-# Planner engine: single engine — Unsloth llama.cpp CUDA build (RTX 3080).
-# Previously the HIP/gfx110X build for RX 7800 XT. CUDA runtime DLLs sit next
-# to llama-server.exe (Ensure-UnslothCudaRuntime in select-model.ps1). Path may
-# churn if Unsloth Desktop updates — _spawn_plan_llm re-resolves when missing.
+# Planner engine: single engine — Unsloth llama.cpp HIP build for RX 7800 XT
+# (ggml-hip.dll + bundled amdhip64_7/hipblas runtime, verified 2026-10-08).
+# An earlier comment claimed a CUDA/RTX 3080 build — wrong; the Release tree
+# ships HIP DLLs only. _ensure_plan_cuda_runtime is a guarded no-op kept for a
+# future CUDA build. Path may churn if Unsloth Desktop updates —
+# _spawn_plan_llm re-resolves when missing.
 _GPU_BIN_CANDIDATES = (
     r"C:\Users\dai86\.unsloth\llama.cpp\build\bin\Release\llama-server.exe",
 )
@@ -167,10 +167,12 @@ PLAN_SERVER_BIN = _resolve_plan_bin(PLAN_GPU)
 
 def _plan_engine_label():
     if ".unsloth" in PLAN_SERVER_BIN:
-        return "Unsloth (CUDA)"
+        return "Unsloth (HIP)"
     return "Unknown"
-# ROCm PATH injection is a no-op after the 2026-09-11 CUDA switch (dir gone).
-# CUDA DLLs are next to llama-server.exe (cwd in Popen).
+# System-wide "C:\Program Files\AMD\ROCm" is gone (2026-10-08 verified);
+# the runtime ships inside the Unsloth Release folder (Popen cwd), so the PATH
+# injection below is belt-and-braces for a manual launch from a plain shell.
+# PLAN_ROCM_BIN keeps its env override for that case.
 PLAN_ROCM_BIN = os.environ.get("LLAMADOCK_ROCM_BIN", r"C:\Program Files\AMD\ROCm\7.1\bin")
 # Vision is available whenever an mmproj is configured, regardless of CPU/GPU
 # mode. The old rule (vision = not GPU) broke the 27B vision model, which runs
@@ -365,7 +367,7 @@ def _spawn_plan_llm():
             "--chat-template-kwargs", json.dumps({"reasoning_effort": PLAN_SETTINGS["reasoning_effort"]}),
             "--reasoning-budget", str(PLAN_SETTINGS["reasoning_budget"]),
         ]
-        # MTP self-draft (built into *_MTP.gguf). Unsloth CUDA build supports
+        # MTP self-draft (built into *_MTP.gguf). The Unsloth build supports
         # --spec-type draft-mtp. Without it the 27B runs ~11-13 t/s; with it
         # ~18-26 t/s (HANDOFF / HauhauCS bench). Mirrors select-model.ps1.
         # Do NOT pass -md (draft context is derived from model_tgt).
@@ -399,7 +401,7 @@ def _spawn_plan_llm():
             # model so the planner can see the confirmed key image.
             args += ["--mmproj", PLAN_MMPROJ_PATH, "--image-min-tokens", "1024"]
     else:
-        # --mlock は Unsloth CUDA ビルド (b11160) で "invalid argument" になり
+        # --mlock は Unsloth ビルド (b11160) で "invalid argument" になり
         # プランナー spawn が即死する (2026-10-05 実測) ので外した。
         args += [
             "-ngl", "0",
