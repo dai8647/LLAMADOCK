@@ -243,12 +243,21 @@ async function writeResponseBody(response, nodeResponse, controller, requestId) 
 // block plus that single call site restores the exact pre-compaction behavior.
 //
 // Trigger : upstream HTTP 400 whose message says the prompt leaves no room.
-// Action  : keep the leading system messages and the final user turn, elide
-//           oversized tool results, drop the oldest middle messages until the
-//           estimate fits (ctx - max_tokens - 512), then retry exactly once.
-// Honesty : every other status/body is forwarded untouched, and a second 400
-//           from the retry is forwarded untouched as well.
+// Action  : calibrate a tokens-per-char rate from the refusal's own token count
+//           (the /4 heuristic under-counts Japanese ~3x — observed 2026-10-09:
+//           est 32K vs real 67K, retry 400'd through to the user), keep the
+//           leading system messages and the final user turn, elide oversized
+//           tool results, drop the oldest middle messages until the calibrated
+//           estimate fits (ctx - room - 512), and retry — up to
+//           COMPACTION_MAX_ATTEMPTS times, re-calibrating on every refusal.
+//           The retry also caps max_tokens at COMPACTION_RETRY_MAX_TOKENS: with
+//           a 64K window and the client asking 32768, half the window would
+//           otherwise always be unreachable for history.
+// Honesty : every other status/body is forwarded untouched; a refusal the loop
+//           cannot clear is forwarded as-is after the last attempt.
 const COMPACTION_ENV_FLAG = "LLAMADOCK_COMPACTION";          // "0" disables the feature entirely
+const COMPACTION_MAX_ATTEMPTS = 3;                          // compaction retries after the first 400
+const COMPACTION_RETRY_MAX_TOKENS = 12288;                  // answer room reserved on compacted retries
 const COMPACTION_MARGIN_TOKENS = 512;                       // safety margin left for the template
 const COMPACTION_DEFAULT_MAX_TOKENS = 4096;                 // used when the request has no max_tokens
 const COMPACTION_ELIDE_ABOVE_CHARS = 32 * 1024;             // Unsloth's tool-result budget
@@ -264,11 +273,15 @@ function compactionEnabled() {
   return process.env[COMPACTION_ENV_FLAG] !== "0";
 }
 
-// Rough token estimate: JSON-stringified chars / 4.  Good enough — the retry's
-// own 400 is the ground truth, not this number.
-function estimateTokens(value) {
+// Token estimate from JSON-stringified chars.  The /4 heuristic under-counts
+// Japanese ~3x (one kana/kanji = one char but ~one token), which let a 32K-token
+// "estimate" ship a 67K-token body and 400 straight through (2026-10-09).  The
+// compact() loop calibrates the real tokens-per-char rate from the refusal's own
+// token count and threads it through as `rate` (chars = JSON length, so the rate
+// is tokens per JSON char).  CJK-heavy traffic measures ~1.0-1.3 tokens/char.
+function estimateTokens(value, rate = 0.25) {
   try {
-    return Math.ceil(JSON.stringify(value ?? null).length / 4);
+    return Math.ceil(JSON.stringify(value ?? null).length * rate);
   } catch {
     return 0;
   }
@@ -337,13 +350,15 @@ function matchNoRoomRefusal(upstreamText) {
 }
 
 // Compaction entry point: turns the upstream refusal + the request body into a
-// smaller body, or null when there is nothing worth a retry.
-function maybeCompactForContext(refusal, requestBody) {
+// smaller body, or null when there is nothing worth a retry.  `rate` is the
+// calibrated tokens-per-JSON-char (from the refusal the loop holds).
+function maybeCompactForContext(refusal, requestBody, rate = 0.25) {
   const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
   if (messages.length === 0) return null;
   const requestedMax = Number(requestBody.max_tokens ?? requestBody.max_completion_tokens);
   const maxTokens = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : COMPACTION_DEFAULT_MAX_TOKENS;
-  const budget = refusal.contextTokens - maxTokens - COMPACTION_MARGIN_TOKENS;
+  const room = Math.min(maxTokens, COMPACTION_RETRY_MAX_TOKENS);
+  const budget = refusal.contextTokens - room - COMPACTION_MARGIN_TOKENS;
   if (budget <= 0) return null;
 
   let systemCount = 0;
@@ -364,7 +379,7 @@ function maybeCompactForContext(refusal, requestBody) {
   let used = 0;
   for (let index = 0; index < systemCount; index += 1) {
     keep.add(index);
-    used += estimateTokens(prepared[index]);
+    used += estimateTokens(prepared[index], rate);
   }
 
   // The current turn is never dropped (Unsloth's rule).  It is only elided when
@@ -372,11 +387,11 @@ function maybeCompactForContext(refusal, requestBody) {
   // not possibly fit and the retry would be a guaranteed second 400.
   let trimmedFinalUser = false;
   if (finalUserIndex >= 0) {
-    let size = estimateTokens(prepared[finalUserIndex]);
+    let size = estimateTokens(prepared[finalUserIndex], rate);
     if (used + size > budget) {
       prepared[finalUserIndex] = elideOversizedContent(messages[finalUserIndex], 0);
       trimmedFinalUser = true;
-      size = estimateTokens(prepared[finalUserIndex]);
+      size = estimateTokens(prepared[finalUserIndex], rate);
     }
     keep.add(finalUserIndex);
     used += size;
@@ -386,7 +401,7 @@ function maybeCompactForContext(refusal, requestBody) {
   // still fits, skipping (not stopping at) the ones that do not.
   for (let index = messages.length - 1; index >= systemCount; index -= 1) {
     if (index === finalUserIndex) continue;
-    const size = estimateTokens(prepared[index]);
+    const size = estimateTokens(prepared[index], rate);
     if (used + size > budget) continue;
     keep.add(index);
     used += size;
@@ -399,13 +414,21 @@ function maybeCompactForContext(refusal, requestBody) {
   }
 
   const keptMessages = [...keep].sort((a, b) => a - b).map((index) => prepared[index]);
-  const changed = trimmedFinalUser
+  const capped = Number.isFinite(requestedMax) && requestedMax > room;
+  const changed = trimmedFinalUser || capped
     || keptMessages.length !== messages.length
     || prepared.some((message, index) => message !== messages[index]);
   if (!changed) return null;
 
+  const patched = { ...requestBody, messages: keptMessages };
+  if (capped) {
+    if (requestBody.max_tokens != null) patched.max_tokens = room;
+    if (requestBody.max_completion_tokens != null) patched.max_completion_tokens = room;
+  }
+
   return {
-    body: Buffer.from(JSON.stringify({ ...requestBody, messages: keptMessages }), "utf8"),
+    body: Buffer.from(JSON.stringify(patched), "utf8"),
+    room,
     kept: keptMessages.length - systemCount - (finalUserIndex >= 0 ? 1 : 0),
     total: messages.length - systemCount - (finalUserIndex >= 0 ? 1 : 0),
     estimatedTokens: used,
@@ -414,59 +437,87 @@ function maybeCompactForContext(refusal, requestBody) {
 }
 
 // The single hook the request path calls.  Returns the response to forward:
-// the original one, or the retry's response when compaction fired.
+// the original one, or the successful retry's response when compaction fired.
+// Loop: every "no room" refusal carries the engine's EXACT prompt token count
+// for the body we sent — use it to calibrate tokens-per-JSON-char for THIS
+// message mix, re-compact with that rate, retry, repeat up to the cap.
 async function applyContextCompactionFallback(upstreamResponse, call) {
   if (!compactionEnabled()) return upstreamResponse;
   if (call.pathname !== "/v1/chat/completions") return upstreamResponse;
   if (upstreamResponse.status !== 400 || !upstreamResponse.body) return upstreamResponse;
 
-  // The refusal arrives before any stream starts, so buffering is safe.
-  const upstreamText = await upstreamResponse.text();
-  const headers = new Headers(upstreamResponse.headers);
-  headers.delete("content-length");
-  const passthrough = new Response(upstreamText, {
-    status: upstreamResponse.status,
-    statusText: upstreamResponse.statusText,
-    headers,
-  });
-
-  const refusal = matchNoRoomRefusal(upstreamText);
+  // Refusals arrive before any stream starts, so buffering is safe.
+  const refuse = (response, text) => {
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    return new Response(text, { status: response.status, statusText: response.statusText, headers });
+  };
+  let refusalText = await upstreamResponse.text();
+  let refusal = matchNoRoomRefusal(refusalText);
+  let passthrough = refuse(upstreamResponse, refusalText);
   if (!refusal) return passthrough;
-  let requestBody = null;
-  try {
-    requestBody = JSON.parse(call.body.toString("utf8"));
-  } catch {
-    requestBody = null;
-  }
-  const compacted = requestBody ? maybeCompactForContext(refusal, requestBody) : null;
-  if (!compacted) return passthrough;
+  let lastBody = call.body;
 
-  const summary = `compaction: prompt ${refusal.promptTokens} > ctx ${refusal.contextTokens}; kept system + newest ${compacted.kept} of ${compacted.total} messages, est ~${compacted.estimatedTokens} tokens; retrying once`;
-  console.error(summary);
-  await record({
-    type: "compaction",
-    request_id: call.requestId,
-    prompt_tokens: refusal.promptTokens,
-    context_tokens: refusal.contextTokens,
-    kept_messages: compacted.kept,
-    droppable_messages: compacted.total,
-    estimated_tokens: compacted.estimatedTokens,
-    trimmed_final_user: compacted.trimmedFinalUser,
-  });
+  for (let attempt = 1; attempt <= COMPACTION_MAX_ATTEMPTS; attempt += 1) {
+    let requestBody = null;
+    try {
+      requestBody = JSON.parse(lastBody.toString("utf8"));
+    } catch {
+      requestBody = null;
+    }
+    const messages = Array.isArray(requestBody?.messages) ? requestBody.messages : [];
+    if (messages.length === 0) return passthrough;
+    // Calibrate on the body the engine just measured: real tokens / JSON chars.
+    // (promptTokens also covers the tool schema + template, so this leans
+    // conservative — the safe direction.)
+    let rate = 0.25;
+    try {
+      const chars = JSON.stringify(messages).length;
+      if (chars > 0) rate = refusal.promptTokens / chars;
+    } catch {}
 
-  try {
-    return await fetch(`${UPSTREAM}${call.pathname}${call.search}`, {
-      method: call.method,
-      headers: call.headers,
-      body: compacted.body,
-      signal: call.signal,
+    const compacted = maybeCompactForContext(refusal, requestBody, rate);
+    if (!compacted) return passthrough;
+
+    const summary = `compaction: prompt ${refusal.promptTokens} > ctx ${refusal.contextTokens}; rate ${rate.toFixed(3)} tok/char; kept system + newest ${compacted.kept} of ${compacted.total} messages (room ${compacted.room}), est ~${compacted.estimatedTokens} tokens; retry ${attempt}/${COMPACTION_MAX_ATTEMPTS}`;
+    console.error(summary);
+    await record({
+      type: "compaction",
+      request_id: call.requestId,
+      attempt,
+      prompt_tokens: refusal.promptTokens,
+      context_tokens: refusal.contextTokens,
+      rate: Number(rate.toFixed(3)),
+      kept_messages: compacted.kept,
+      droppable_messages: compacted.total,
+      room_tokens: compacted.room,
+      estimated_tokens: compacted.estimatedTokens,
+      trimmed_final_user: compacted.trimmedFinalUser,
     });
-  } catch (error) {
-    // Client went away: keep the handler's existing 499 path.  Any other failure
-    // means the retry never reached the engine, so forward the original 400.
-    if (call.signal?.aborted || error?.name === "AbortError") throw error;
-    return passthrough;
+
+    let retry;
+    try {
+      retry = await fetch(`${UPSTREAM}${call.pathname}${call.search}`, {
+        method: call.method,
+        headers: call.headers,
+        body: compacted.body,
+        signal: call.signal,
+      });
+    } catch (error) {
+      // Client went away: keep the handler's existing 499 path.  Any other failure
+      // means the retry never reached the engine, so forward the last refusal.
+      if (call.signal?.aborted || error?.name === "AbortError") throw error;
+      return passthrough;
+    }
+    if (retry.status !== 400 || !retry.body) return retry;
+    refusalText = await retry.text();
+    const retryRefusal = matchNoRoomRefusal(refusalText);
+    passthrough = refuse(retry, refusalText);
+    if (!retryRefusal) return passthrough;
+    refusal = retryRefusal;
+    lastBody = compacted.body;
   }
+  return passthrough;
 }
 // === END COMPACTION FALLBACK ===
 
