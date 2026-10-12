@@ -3670,6 +3670,19 @@ else {
     Write-Host ""
 }
 
+# Planned memory budget (estimate only; no benchmark, no dry-run).
+# Auto GPU fit is decided by the engine at launch, so this stays a TOTALLY static planning aid based on handled model + context.
+$estimatedKvGb = [math]::Round(($selectedContext.Tokens / 32768.0) * [math]::Max(4, $selectedModelSizeGB * 0.22), 1)
+$estimatedModelPlusKvGb = [math]::Round($selectedModelSizeGB + $estimatedKvGb, 1)
+$estimatedTotalRamGb = [math]::Round($estimatedModelPlusKvGb + ($effectiveCacheRamMiB / 1024.0) + 1.0, 1)
+$gpuBudgetText = if ($selectedOffload -eq "0") { "none forced (CPU-heavy, VRAM should stay small)" } elseif ($serverOffload -match '^[0-9]+$') { "explicit -ngl=$serverOffload" } else { "auto fit from free VRAM, cap about $($primaryVramGB)GB" }
+Write-Host "想定メモリ (概算、実測ではありません):" -ForegroundColor Green
+Write-Host (" model=$selectedModelSizeGB GB + KV=$estimatedKvGb GB (context=$($selectedContext.Tokens), K=$($effectiveKCacheType)/V=$($effectiveVCacheType)) = RAM本体 約{0}GB" -f $estimatedModelPlusKvGb) -ForegroundColor DarkGray
+Write-Host (" + prompt cache RAM 約$([math]::Round($effectiveCacheRamMiB / 1024.0,1))GB + OS/compute 予備 1GB => RAM 約{0}GB" -f $estimatedTotalRamGb) -ForegroundColor DarkGray
+Write-Host (" VRAM オフロード: {0}; エンジン実行時は compute buffer / reserve で ±数GB ずれます。" -f $gpuBudgetText) -ForegroundColor DarkGray
+Write-Host " note: tight VRAM なら context ふたたび小さくするか KV (q8_0 -> q4_0) を先に下げてください。" -ForegroundColor Yellow
+Write-Host ""
+
 # Get model short name for -a flag. Split models display as
 # "Base [N-part GGUF]"; use the on-disk first-shard name so -a stays a
 # clean identifier.
