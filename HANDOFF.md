@@ -136,7 +136,7 @@ node tools/mcp-smoke.mjs
 - `--enable-triton-backend` は H3 int8 でクラッシュするため **off がデフォルト**（`LLAMADOCK_COMFY_TRITON=1` で強制、super は ck にフォールバック）
 - `--fast fp16_accumulation --force-non-blocking`（fast プロファイル）は **未ベンチ**（画質リスク要検証）
 - エンコーダが理解できても DiT 自体が描けない内容は出ない（32B でも同様）
-- select-model.ps1 は BOM なし UTF-8 なので、**日本語を追加すると PowerShell 5.1 が Shift-JIS 誤読して構文破壊**する → メニュー文言は英語のまま保つ
+- select-model.ps1 は **UTF-8 BOM 付き** UTF-8（先頭 `EF BB BF`、2026-10-12 に生バイトで確認。旧記述「BOM なし」は誤り）。PowerShell 5.1 は BOM なし日本語ファイルを ANSI(Shift-JIS) 誤読して構文破壊するため、**BOM を必ず維持**すること。`tools/format.ps1` は読み込み時に BOM 有無を判定し、書き込みで `UTF8Encoding($hadBom)` を使う（BOM 落としの破壊を防ぐ）。`tools/check-style.ps1` は `Get-Content -Encoding UTF8` で読む。BOM が消えていたら `head -c 3 select-model.ps1` 相当で `239,187,191` を確認し、`select-model.ps1` 冒頭に復元する。**メニュー文言は日本語で良い**（BOM さえあれば PS 5.1 も正しく読む）
 - **投機的デコード（SpecMode）**: モデル選択後に `[1] Off / [2] MTP/NextN / [3] DSpark / [4] DFlash2` を選択可（Manual モード）。
   - MTP/NextN = built-in `*_MTP.gguf` self-draft (`--spec-type draft-mtp`). No `-md` needed (uses model_tgt directly). **Performance: O(n²) with prompt length** - fast for short prompts (<300 tokens: ~16-29 t/s) but degrades significantly for long prompts (>5K tokens: ~3-6 t/s). This is an inherent limitation of MTP architecture, not a bug. DFlash2 is recommended for long-context use. `--cache-ram 0` recommended to avoid RAM pressure. Draft acceptance improves with context (0.57→0.85) but does not offset compute increase.
 
@@ -165,7 +165,7 @@ node tools/mcp-smoke.mjs
 - ⚠️→✅ **CPU フォールバック無音退化問題（2026-08-22 特定・対策済み）**: `-ngl auto` は起動瞬間の空き VRAM で配置を決めるため、直前インスタンスの解放ラグやデスクトップアプリの VRAM 占有があると **GPU ほぼ放置・6コア CPU 推論に黙って退化**する（実害: Cline リクエスト 132 秒、GPU 使用率 0.6%）。VRAM 空き十分なら 32K でもフル GPU（132層/CPU 0）を確認済み。**対策実装**: ①起動前 `Wait-VramRelease` ②ready 後の速度プローブ（<8 t/s で赤字警告）③ `-NglLayers <n>` 強制指定。プローブで「ok」表示を確認してから作業すること
 - 🔬 **ROCm fork 遅延の根本原因確定（2026-08-22 / test-backend-ops support 全スキャン）**: AtomicBot HIP バックエンドは **全 22,454 プローブ中 7,831（35%）が NOT SUPPORTED**。致命的欠落: `FLASH_ATTN_EXT` 4,329件（attention 本体！）、`OUT_PROD` 1,216、`MUL_MAT` 型組合せ 446、`SET_ROWS`(TQ系含む)、f16 unary 全滅（SIGMOID/SOFTPLUS/GELU 等）。→ qwen35 ハイブリッドモデルでは attention/gating の一部が**レイヤー毎に CPU フォールバック**し、GPU 放置・CPU 6コア・長ctx PP 逓減（88→22 t/s）が発生する。Vulkan 上流は全 op 実装済みで同一モデルが compute0 を正常使用。**対策**: 通常運用は OfficialVulkan（実装済み）。ROCm fork の恒久対策は HIP カーネルのビルド欠落解消（恐らく hipcc コンパイル失敗が supports_op 縮退に波及）— 要ビルドログ調査
 - ✅→✅ **ROCm fork HIP カーネル欠落の恒久修正完了（2026-08-24 / build-rocm71-fa）**: 根本原因は「ビルド壊れ」ではなく**FAカーネルの焼き込み不足**だった。`GGML_HIP_ROCWMMA_FATTN=OFF`（RDNA3用WMMA FA未定義・rocWMMAヘッダも未導入）+ `GGML_CUDA_FA_ALL_QUANTS=OFF`（量子KV FAの一部のみコンパイル）。修正: rocWMMA rocm-7.1.1 を `C:\llama-tq3-deps\rocWMMA` に clone（version header 2.1.0 はスクリプトが自動生成）し、新規ツール **`tools/build-atomicbot-rocm71-fa.ps1`** で両フラグ ON + `-IC:/llama-tq3-deps/rocWMMA/library/include`（HIP/CXX 両方の flags に必要。.cu は LANGUAGE CXX でコンパイルされるため）で再ビルド → `C:\llama-tq3\build-rocm71-fa\bin\`。**結果**: NOT SUPPORTED 7,831→5,234（FLASH_ATTN_EXT 4,329→1,732、残りは上流未対応の iq4_nl KV・特殊ヘッドサイズ>256・TQ系フォーク固有型）。精度テスト 835 OK / 0 FAIL。実測（Qwen3.8-27B IQ4_XS・ngl99・fa1）: 新 pp512 187.8 / tg128 20.63 / pp4096 169.67 vs 旧 190.0 / 20.2 / 182.28 = **同等以上・長ctx逓減なし**。select-model.ps1 は build-rocm71-fa を優先するよう変更済み（env `LLAMA_TQ3_ATOMICBOT_SERVER` で上書き可）。GDN ハイブリッド層は引き続き HIP 未実装のため qwen3.5-GDN モデルは openPangu/Vulkan を使用すること
-- ⚙️→✅ **ランチャー既定値の見直し（2026-08-24）**: ① **既定コンテキストを 32K に統一** — 旧ロジックはモデルサイズだけで判定し <12GB モデルで 128K を推奨、16GB VRAM カードでは KV がシステム RAM に溢れて無言で激遅になっていた。コーダーエージェントは自動コンパクションがあるため 32K で十分（DeepSeek のみ従来通り 16K 推奨、RAM セーフティ天井は尊重）。② **supervisor 自動再起動をオプトイン化** — select-model.ps1 は従来無条件に `-AutoRestartServer` を渡しており、タスクマネージャー等で手動 kill した llama-server がバックオフ付きで最大 5 回勝手に復活していた。新スイッチ **`-AutoRestart`** を付けた時のみ引き渡す（デフォルト OFF）。手動 kill 時は supervisor が gateway を道連れにクリーン停止して終了する。即時復活が欲しい特殊ケースのみ `llamadock ... -AutoRestart`
+- ⚙️→✅ **ランチャー既定値の見直し（2026-08-24、2026-10-12 に Auto へ更新）**: ① **既定コンテキストは Auto（2026-10-12）** — `Resolve-AutoContextTokens` が RAM セーフティ天井と 64K 上限から自動選択（DeepSeek のみ 16K 上限、Laguna hot-expert は 4K 固定）。旧 32K 一律既定（2026-08-24）は廃止。手動ラダー（8K〜256K・Custom）は引き続き選択可。溢れたコンテキストはゲートウェイのリアクティブ自動コンパクション（tools/llamadock-proxy.mjs W23、既定 ON）が吸収する。旧ロジックはモデルサイズだけで判定し <12GB モデルで 128K を推奨、16GB VRAM カードでは KV がシステム RAM に溢れて無言で激遅になっていた。② **supervisor 自動再起動をオプトイン化** — select-model.ps1 は従来無条件に `-AutoRestartServer` を渡しており、タスクマネージャー等で手動 kill した llama-server がバックオフ付きで最大 5 回勝手に復活していた。新スイッチ **`-AutoRestart`** を付けた時のみ引き渡す（デフォルト OFF）。手動 kill 時は supervisor が gateway を道連れにクリーン停止して終了する。即時復活が欲しい特殊ケースのみ `llamadock ... -AutoRestart`
 - 🔬→❌ **-ub 拡大は gfx1101 では逆効果（2026-08-24 実測）**: llama-bench A/B（Qwen3.8-27B IQ4_XS・ngl99・fa1・pp4096/tg128）で ub 512/1024/2048 = pp 173.3 / 148.1 / 130.6 t/s。**デフォルト 512 が最速**で、増やすほど ROCm GEMM カーネル効率が落ちる。tg は ub 無影響。→ `-Ubatch` パラメータは追加済みだが通常運用では使わない（将来の大型モデル/カード変更時の保険）。併せて MTP 調査： 手元の HauhauCS 27B MTP-GGUF が現行ベスト。リポジトリ最新版には FastMTP（文書 TG 最大 3.02 倍の報告）と K_P 量子が追加されているため、**ローカルファイルの更新要確認**。多言語 acceptance 低下の報告あり（中国語約 40%）→ 日本語ワークロードでの A/B を推奨
 - 📝 **運用メモ（2026-08-24）**: ① **ROCm ドライバーと HIP SDK はペアで更新**すること — HIP ランタイムは `C:\WINDOWS\SYSTEM32\amdhip64_7.dll`（ドライバー側）をロードするため、片方だけ更新するとバージョン不整合で DLL 解決が壊れる。② **`-ModelIndex` は位置依存** — `.lmstudio\models` にモデルを追加/削除すると番号がずれる。スクリプトやショートカットから起動する場合は `-ModelName` 的な安定指定が将来課題（現状はメニュー番号 or 既定）。③ web-ui の launch-manager に CLI 相当のガードを移植済み（ポート解放待ち 20s + ready 後 GPU プローブ <8 t/s 警告、結果は `/api/status` の `gpuProbe` とログに反映）
 - ✅ **OfficialVulkan エンジン実用化（2026-08-22）**: 公式 prebuilt b10549 を `C:\llama.cpp-vulkan\` に配置済み（select-model の既定パスと一致するため `EngineMode OfficialVulkan` 選択のみで使用可）。33/33 フル GPU オフロード確認。**選定理由**: AtomicBot/TurboTan fork は hybrid GDN（gated-deltanet）層の HIP カーネルが未実装で CPU フォールバック → compute0 放置・CPU 584%・長プロンプト PP 逓減（88→22 t/s）。Vulkan は GDN も含め GPU 処理され compute0 を正常使用、KV 型に依存しない安定速度（IQ4_XS: q8/q4 = pp419/tg17.42、f16 = ほぼ同一）。draft-mtp / cache-reuse / context-shift は上流機能なので使用可。**turbo KV / --n-cpu-ffn / DFlash2 はフォーク専能のため、これらを使う場合のみ ROCm fork を選択**
@@ -887,3 +887,59 @@ user がラマドックから接続しても古い h3-chat（11:41 起動・全�
 - 検証: 配信 HTML に全マーカー存在（こんな画像になります/こんな映像になります/
   extendVideo/upscaleVideo/segmentChain/sess-list/imguse）、8190 planner 200、
   ComfyUI キュー空。
+
+## 2026-10-12 コンテキスト選択に Auto モード追加（select-model.ps1）
+
+- **背景**: ユーザー要望「KV キャッシュを Unsloth Desktop のようにオートにして、
+  ゲートウェイのオートコンパクションで溢れを吸収したい」。コンテキスト = KV
+  キャッシュのサイズなので、コンテキスト選択の自動化が正解（KV cache K/V の
+  Q8/Q4 メニューは「サイズ」ではなく圧縮形式）。
+- **実装**: `$contextOptions` の先頭に `[1] Auto`（旧 8K〜Custom は 2〜8 にずれる）。
+  Enter 既定・全プリセット（Cline/OpenCode/LlamaAgent/Pi/DeepSeekHarness/ARTEX、
+  旧 32K 固定・Pi のみ 16K）が `ContextIndex=1`（Auto）を指す。手動ラダーと
+  `-ContextIndex N` は従来どおり残置。
+- **解決ロジック**: `Resolve-AutoContextTokens`（select-model.ps1 内ヘルパー）=
+  `min(RAM セーフティ天井, 64K 上限)` をラダー（8K/16K/32K/64K）に下に丸め。
+  **DeepSeek モデルは 16K 上限**（実測: 32K で t/s が ~6.4→~4 に低下）、
+  **Laguna hot-expert は 4K 固定**（8K で WS~61GB のメモリ事故実績）。
+  96GB RAM / 9.7GB モデルの機体では 64K が選ばれる。
+- **溢れ対策**: ゲートウェイのリアクティブ自動コンパクション（W23、
+  tools/llamadock-proxy.mjs:239-522、`LLAMADOCK_COMPACTION=0` で無効化可）が
+  400「leaves no room」を検知して古いメッセージを間引き最大 3 回リトライ。
+  本変更ではゲートウェイ側は無変更（ユーザー確認済み: 現状のリアクティブで十分）。
+- **検証**: tools/test.ps1 に全プレセットのドライランで `-c` が 65536 以下
+  （Auto 上限）であるアサートを追加。`Select context size` プロンプトの
+  Enter 既定も Auto に変更。
+
+### 同日追加: メニュー日本語化 + Read-MenuInt リファクタ（select-model.ps1 / tools/test.ps1）
+
+- **日本語化方針（ユーザー指示: 「ラマドックメニューは日本語で。ハンドオフも更新」）**:
+  全メニュー見出し・選択肢・プロンプト・表示行・主要エラー文を日本語に統一。
+  **英語のままのもの**: CLI フラグ・パラメータ名・`DRY RUN:` 出力・プリセットの
+  launch label（`Coding -> Pi` 等）・コメント・海外由来の型名（q8_0 / MTP / ngram 等）。
+  test.ps1 の該当アサートも日本語文言に追従済み（`LlamaDock セッション` /
+  `プリセットを選択 (1-7)` / `KV キャッシュ K 型:` / `GPU オフロード見積り:` /
+  `サーバーコンソールを開きました` / `READY TO LAUNCH` は併記のためそのまま）。
+- **BOM/文字化けの実測経緯（重要）**: ランチャーは `tools/llamadock-utf8.ps1` を
+  dot-source して stdout を UTF-8 にするが、親プロセス（test.ps1）が
+  `[Console]::OutputEncoding`（既定 cp932）で子出力をデコードすると日本語見出しが
+  mojibake になり `-notmatch` アサートが失敗する。test.ps1 冒頭で
+  `try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}` を
+  設定済み（`chcp 65001` 非依存）。
+- **`Read-MenuInt` ヘルパー追加**: 全メニューに散らばっていた
+  `do { Read-Host; if (空) {既定} else {TryParse} } while (...範囲...)` の
+  手書きループ ~23 箇所を 1 関数に統合（select-model.ps1、
+  `Resolve-AutoContextTokens` 直後に定義）。仕様: `-Prompt -Max [-Min=1]
+  [-Default=範囲外値] [-InvalidMessage]`、空入力は Default があればそれを返し、
+  無ければ再プロンプト、整数で [Min..Max] 外/非整数は再プロンプト
+  （InvalidMessage があれば黄色表示）。`Min=0/巨大Max` で数値入力
+  （GPU レイヤー・MoE カスタム・cache-reuse・ubatch・思考トークン上限）にも流用。
+  モデル選択（`q` で終了）と priority（文字列キー混在）だけは個別ループのまま。
+  ComfyUI tuning は `switch ($tuningSelection)` に、企画 LLM は先頭 return に整理。
+- **test.ps1 に `Read-MenuInt` 単体テスト追加**: 関数定義を launcher から正規表現
+  抽出し、temp スクリプトに書き出して stdin パイプで 7 ケース検証
+  （正常値 / Enter=既定 / 不正文字列後リトライ / 範囲外後リトライ /
+  空行連打リトライ / Min=0 / 大きな既定値）。DryRun はメニューに入らないため
+  この単体テストで回帰を防ぐ。
+- **検証**: `tools/check-style.ps1`（syntax+formatter）と `tools/test.ps1` が全項目
+  グリーン（`All launcher tests OK`、EXIT=0）。BOM は `239,187,191` 維持を確認。

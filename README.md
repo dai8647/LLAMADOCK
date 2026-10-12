@@ -92,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\comfyui-tune.ps1
 1. モデルを選択
 2. Workflow preset を選択
 3. Workspace を選択
-4. コンテキスト / KV cache / GPU offload などを確認
+4. コンテキスト / KV cache / GPU offload などを確認（コンテキストは既定 Auto = RAM 天井と 64K 上限から自動選択、溢れはゲートウェイが自動間引き）
 5. LlamaDock が `llama-server` と選択したワークスペースを起動
 
 `select-model.ps1` は引数でモード／値を直接指定することもできます（例: `-PresetMode PiCoding -ClientMode Pi`）。スクリプト冒頭の `param()` を参照してください。
