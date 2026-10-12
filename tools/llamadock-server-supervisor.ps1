@@ -54,6 +54,20 @@ $script:CIRCUIT_BREAKER_LIMIT = 5
 $script:lastExitCode = ""
 $script:lastExitReason = ""
 
+# Defined up here because the Laguna ROCm env block below runs as plain top-level
+# code and logs through it; a later definition would not exist yet when the call
+# reaches it (ErrorActionPreference=Stop turns that into an immediate exit).
+function Write-SupervisorLog {
+    param(
+        [string]$Message,
+        [string]$Level = "info"
+    )
+
+    $line = "{0} [{1}] {2}" -f (Get-Date -Format "o"), $Level.ToUpperInvariant(), $Message
+    Add-Content -LiteralPath $supervisorLogPath -Value $line -Encoding UTF8
+    Write-Host $line
+}
+
 # The supervisor can also be started directly from a shortcut or a test
 # shell.  Keep the native child independent of the caller's PATH so a missing
 # ROCm DLL is reported in the server log instead of looking like a silent exit.
@@ -101,17 +115,6 @@ if (Test-Path -LiteralPath $lagunaRocm) {
         Write-SupervisorLog "Laguna log keys: grep 'compute_buffer: device=' and 'moe_hot_expert:' in llama-server stderr/stdout" "info"
         Write-SupervisorLog "Laguna PATH head: $($env:PATH.Substring(0, [Math]::Min(180, $env:PATH.Length)))" "info"
     }
-}
-
-function Write-SupervisorLog {
-    param(
-        [string]$Message,
-        [string]$Level = "info"
-    )
-
-    $line = "{0} [{1}] {2}" -f (Get-Date -Format "o"), $Level.ToUpperInvariant(), $Message
-    Add-Content -LiteralPath $supervisorLogPath -Value $line -Encoding UTF8
-    Write-Host $line
 }
 
 function Get-ListenConnection {

@@ -15,6 +15,15 @@ Import-Module PSScriptAnalyzer -ErrorAction Stop
 # Read as UTF-8: on a Japanese-locale Windows PowerShell 5.1 the default (ANSI)
 # read mis-decodes UTF-8 bytes and would corrupt non-ASCII comments on write.
 $source = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+# Preserve the file's BOM. select-model.ps1 carries a UTF-8 BOM; PowerShell 5.1
+# reads a BOM-less file as ANSI (Shift-JIS on a JP locale), which mangles every
+# Japanese string into a syntax error. Writing without the BOM therefore bricks
+# the launcher, so we must echo whatever the input had.
+$hadBom = $false
+$rawBytes = [System.IO.File]::ReadAllBytes($Path)
+if ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF) {
+    $hadBom = $true
+}
 $settings = @{
     IncludeRules = @("PSPlaceOpenBrace", "PSPlaceCloseBrace", "PSUseConsistentIndentation")
     Rules = @{
@@ -52,7 +61,10 @@ if ($parseErrors -and @($parseErrors).Count -gt 0) {
 if ($formatted -ne $source) {
     # Only rewrite when something actually changed; keeps mtimes honest and
     # avoids any chance of an encoding round-trip touching untouched files.
-    $encoding = New-Object System.Text.UTF8Encoding($false)
+    # $hadBom decides the output encoding: a BOM-less UTF-8 write of this file
+    # makes Windows PowerShell 5.1 fall back to ANSI (Shift-JIS on a JP locale)
+    # and turn every Japanese string into a parse error.
+    $encoding = New-Object System.Text.UTF8Encoding($hadBom)
     [System.IO.File]::WriteAllText($Path, $formatted, $encoding)
     Write-Host "Formatted $Path"
 }

@@ -18,6 +18,15 @@ $gateway = Join-Path $root "tools\llamadock-proxy.mjs"
 $supervisor = Join-Path $root "tools\llamadock-server-supervisor.ps1"
 $profiles = Join-Path $root "config\profiles.json"
 
+# Decode the launcher's dry-run output as UTF-8 regardless of the console
+# codepage. The launcher dot-sources llamadock-utf8.ps1, so its stdout is
+# UTF-8; PowerShell decodes native stdout with [Console]::OutputEncoding,
+# which defaults to the ANSI codepage (932 on a JP-locale box) and turns the
+# Japanese headings (ハードウェア構成: / ランタイム状態:) into mojibake that
+# then fails the -notmatch assertions below. Test must not depend on whether
+# the caller ran chcp 65001 first.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
 & (Join-Path $PSScriptRoot "check-style.ps1") -Path $launcher
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -246,14 +255,14 @@ foreach ($gone in @("-Harness", "harnessPath", "llamadock-opencode-harness.ps1",
 }
 Write-Host "Client shell harness references removed OK"
 $launcherSource = Get-Content -LiteralPath $launcher -Raw -Encoding UTF8
-foreach ($check in @("LlamaDock session", "モデルを維持したままワークスペースを変更", "モデルを変更 - サーバーを停止してセレクターへ戻る", "サーバーを起動したまま終了", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
+foreach ($check in @("LlamaDock セッション", "モデルを維持したままワークスペースを変更", "モデルを変更 - サーバーを停止してセレクターへ戻る", "サーバーを起動したまま終了", "Open-WorkspaceClient", "Select-WorkspaceForSession")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Managed session check failed: $check" -ForegroundColor Red
         exit 1
     }
 }
 Write-Host "Managed session checks OK"
-foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline 向けの安定設定", "OpenCodeCoding", "Code - OpenCode 向けの安定設定", "Select preset (1-6)", "KV cache K type:", "Flash Attention:", "server console opened", "Press Ctrl+C in that window")) {
+foreach ($check in @("Test-GatewayReady", "llamadock-server-supervisor", "--cache-ram", "--reasoning", "ClineCoding", "Code - Cline 向けの安定設定", "OpenCodeCoding", "Code - OpenCode 向けの安定設定", "プリセットを選択 (1-7)", "KV キャッシュ K 型:", "Flash Attention:", "サーバーコンソールを開きました", "Ctrl+C を押すと llama-server を停止")) {
     if ($launcherSource -notmatch [regex]::Escape($check)) {
         Write-Host "Launcher check failed: $check" -ForegroundColor Red
         exit 1
@@ -270,6 +279,55 @@ foreach ($check in @("llamadock-client-shell.ps1", "CLINE_DATA_DIR", "CLINE_MCP_
     }
 }
 Write-Host "Launcher checks OK"
+
+# --- Read-MenuInt helper unit checks (piped stdin) ---
+# Dry runs never enter the interactive menus, so the shared menu reader that
+# every front-door prompt uses gets exercised here directly: extract the
+# function from the launcher and drive it with scripted stdin lines.
+$menuIntMatch = [regex]::Match($launcherSource, '(?s)function Read-MenuInt \{.*?\n\}')
+if (-not $menuIntMatch.Success) {
+    Write-Host "Read-MenuInt helper missing in launcher" -ForegroundColor Red
+    exit 1
+}
+$menuIntUnit = Join-Path $env:TEMP "llamadock-menuint-unit.ps1"
+$menuIntBody = @'
+$src = [System.IO.File]::ReadAllText($env:MU_LAUNCHER, [System.Text.Encoding]::UTF8)
+$fn = [regex]::Match($src, '(?s)function Read-MenuInt \{.*?\n\}')
+if (-not $fn.Success) { throw "Read-MenuInt not found" }
+Invoke-Expression $fn.Value
+if ($env:MU_DEFAULT -ne "none") {
+    Write-Output ("RESULT=" + (Read-MenuInt -Prompt "PROMPT" -Max ([int]$env:MU_MAX) -Min ([int]$env:MU_MIN) -Default ([int]$env:MU_DEFAULT)))
+}
+else {
+    Write-Output ("RESULT=" + (Read-MenuInt -Prompt "PROMPT" -Max ([int]$env:MU_MAX) -Min ([int]$env:MU_MIN)))
+}
+'@
+[System.IO.File]::WriteAllText($menuIntUnit, $menuIntBody, [System.Text.UTF8Encoding]::new($false))
+$env:MU_LAUNCHER = $launcher
+$menuIntCases = @(
+    @{ Name = "valid input";        Lines = @("5");              Max = "7";           Min = "1"; Default = "1";    Expect = "RESULT=5" },
+    @{ Name = "Enter = default";    Lines = @("");               Max = "7";           Min = "1"; Default = "3";    Expect = "RESULT=3" },
+    @{ Name = "retry after junk";   Lines = @("abc", "99", "4"); Max = "7";           Min = "1"; Default = "1";    Expect = "RESULT=4" },
+    @{ Name = "retry out of range"; Lines = @("0", "2");         Max = "7";           Min = "1"; Default = "1";    Expect = "RESULT=2" },
+    @{ Name = "empty retries";      Lines = @("", "", "6");      Max = "7";           Min = "1"; Default = "none"; Expect = "RESULT=6" },
+    @{ Name = "zero allowed";       Lines = @("0");              Max = "2147483647";  Min = "0"; Default = "none"; Expect = "RESULT=0" },
+    @{ Name = "numeric default";    Lines = @("");               Max = "2147483647";  Min = "1"; Default = "1024"; Expect = "RESULT=1024" }
+)
+foreach ($case in $menuIntCases) {
+    $env:MU_MAX = $case.Max
+    $env:MU_MIN = $case.Min
+    $env:MU_DEFAULT = $case.Default
+    $unitOut = $case.Lines | & powershell -NoProfile -ExecutionPolicy Bypass -File $menuIntUnit 2>&1
+    $got = ($unitOut | Select-String -Pattern "^RESULT=").Line
+    if ($got -ne $case.Expect) {
+        Write-Host "Read-MenuInt check failed: $($case.Name) (expected $($case.Expect), got [$($unitOut -join ' | ')])" -ForegroundColor Red
+        Remove-Item -LiteralPath $menuIntUnit -ErrorAction SilentlyContinue
+        exit 1
+    }
+}
+Remove-Item -LiteralPath $menuIntUnit -ErrorAction SilentlyContinue
+Remove-Item Env:\MU_LAUNCHER, Env:\MU_MAX, Env:\MU_MIN, Env:\MU_DEFAULT -ErrorAction SilentlyContinue
+Write-Host "Read-MenuInt helper checks OK"
 
 # --- ComfyUI workspace checks ---
 foreach ($check in @("Open-ComfyUIClient", "MiniMax-H3 native nodes", "MiniMaxH3ImageToVideo", "MiniMaxH3SigmaShift", "EmptyMiniMaxH3LatentAV", "comfyUrl", "8188", "$comfyUrl/system_stats", "$comfyUrl/object_info")) {
@@ -304,26 +362,61 @@ if ($launcherSource -notmatch [regex]::Escape("Web GUI")) {
 }
 Write-Host "Web GUI entry checks OK"
 
+# --- Web GUI engine-arg filter checks ---
+# The GUI spawns llama-server directly with schema-driven argv and has no
+# second chance: a flag this build rejects (-t auto, --spec-type off, an
+# unknown --moe-* option) kills the process before it binds the port. The
+# filter must stay wired in, and the engine list must not offer engines the
+# GUI cannot spawn (Strata is served by python serve/server.py, launcher only).
+$serverSource = Get-Content -LiteralPath (Join-Path $root "web-ui\server.js") -Raw
+if ($serverSource -notmatch [regex]::Escape("filterUnsupportedArgs")) {
+    Write-Host "web-ui/server.js does not filter engine-rejected args" -ForegroundColor Red
+    exit 1
+}
+$schemaSource = Get-Content -LiteralPath (Join-Path $root "config\params-schema.json") -Raw
+if ($schemaSource -match '"Strata"') {
+    Write-Host "params-schema engine list offers Strata, which the web GUI cannot launch" -ForegroundColor Red
+    exit 1
+}
+Write-Host "Web GUI engine filter checks OK"
+
 function Get-SweepModelIndex {
     # Mirrors select-model.ps1's model enumeration (non-mmproj GGUFs under
-    # ModelsBase, sorted TQ3-first then by size descending) and returns the
-    # 1-based index of a model that fits the RAM/context guard for preset dry
-    # runs. Hard-coded indices drift whenever models are added/removed on disk
-    # (e.g. a new 80GB+ model shifting which file lands at index 3).
+    # ModelsBase, multi-part GGUFs merged into their first shard with summed
+    # size, sorted TQ3-first then by size descending) and returns the 1-based
+    # index of a model that fits the RAM/context guard for preset dry runs.
+    # Hard-coded indices drift whenever models are added/removed on disk
+    # (e.g. a new 80GB+ model shifting which file lands at index 3), and the
+    # merge matters: without it a 37GB first shard of a 70GB split model wins
+    # the "<40GB" pick and the dry run fails on an engine the box lacks.
     $modelsBase = $env:LLAMADOCK_MODELS_BASE
     if ([string]::IsNullOrWhiteSpace($modelsBase)) { $modelsBase = "C:\Users\dai86\.lmstudio\models" }
-    $list = @(
+    $allFiles = @(
         Get-ChildItem -Path $modelsBase -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notmatch "mmproj" } |
-            ForEach-Object {
-                [PSCustomObject]@{
-                    Name = $_.Name
-                    SizeMB = [math]::Round($_.Length / 1MB, 1)
-                    IsTQ3 = ($_.Name -match "TQ3")
-                }
-            } |
-            Sort-Object -Property @{ Expression = "IsTQ3"; Descending = $true }, @{ Expression = "SizeMB"; Descending = $true }
+            Where-Object { $_.Name -notmatch "mmproj" -and $_.Name -notmatch "(?i)(^|[\\/_. -])Hy3([\\/_. -]|$)|Hy[-_ ]?V3" -and $_.Name -notmatch "(?i)DSpark" }
     )
+    $list = @()
+    foreach ($f in $allFiles) {
+        if ($f.Name -match "(?i)DFlash2") { continue }
+        if ($f.Name -match "^(?<base>.+)-(?<idx>\d{5})-of-(?<total>\d{5})\.gguf$") {
+            if ([int]$Matches.idx -ne 1) { continue }
+            $basePattern = "^$([regex]::Escape($Matches.base))-\d{5}-of-$($Matches.total)\.gguf$"
+            $siblings = @($allFiles | Where-Object { $_.Name -match $basePattern })
+            $totalBytes = ($siblings | Measure-Object -Property Length -Sum).Sum
+            $list += [PSCustomObject]@{
+                Name = "$($Matches.base) [$($siblings.Count)-part GGUF]"
+                SizeMB = [math]::Round($totalBytes / 1MB, 1)
+                IsTQ3 = ($f.Name -match "TQ3")
+            }
+            continue
+        }
+        $list += [PSCustomObject]@{
+            Name = $f.Name
+            SizeMB = [math]::Round($f.Length / 1MB, 1)
+            IsTQ3 = ($f.Name -match "TQ3")
+        }
+    }
+    $list = @($list | Sort-Object -Property @{ Expression = "IsTQ3"; Descending = $true }, @{ Expression = "SizeMB"; Descending = $true })
     if ($list.Count -eq 0) { return 1 }
     # Prefer the largest model under 40GB: big enough to exercise the engine
     # routing, small enough that the launcher's "context exceeds RAM" guard
@@ -375,7 +468,7 @@ if (-not $SkipDryRun) {
             Write-Host "Quick launch did not show the compact launch card: $preset" -ForegroundColor Red
             exit 1
         }
-        if ($preset -notin @("PiCoding", "OpenCodeCoding") -and $joined -notmatch "GPU offload estimate:") {
+        if ($preset -notin @("PiCoding", "OpenCodeCoding") -and $joined -notmatch "GPU オフロード見積り:") {
             Write-Host "Detailed dry run did not show VRAM/offload estimate: $preset" -ForegroundColor Red
             exit 1
         }
@@ -393,6 +486,13 @@ if (-not $SkipDryRun) {
         }
         if ($joined -notmatch "--cache-ram") {
             Write-Host "Explicit prompt-cache RAM flag missing: $preset" -ForegroundColor Red
+            exit 1
+        }
+        # Auto context (select-model.ps1 ContextIndex 1) must respect the 64K cap.
+        $ctxMatch = [regex]::Match($joined, '(?<![\w-])-c (\d+)')
+        if (-not $ctxMatch.Success -or [int]$ctxMatch.Groups[1].Value -gt 65536) {
+            $ctxValue = if ($ctxMatch.Success) { $ctxMatch.Groups[1].Value } else { "<missing>" }
+            Write-Host "Auto context cap violated (-c $ctxValue, max 65536): $preset" -ForegroundColor Red
             exit 1
         }
         if ($preset -eq "PiCoding" -and $joined -notmatch "Coding -> Pi") {

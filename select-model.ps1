@@ -8,7 +8,7 @@ param(
     [int]$KCacheIndex = 0,
     [int]$VCacheIndex = 0,
     [int]$CacheRamMiB = -1,
-    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness", "ARTEX")]
     [string]$PresetMode = "Prompt",
     [ValidateSet("Auto", "Light", "Standard", "Heavy")]
     [string]$ResearchMode = "Auto",
@@ -60,7 +60,7 @@ param(
     [int]$Ubatch = 0,
     [ValidateSet("Prompt", "UseExisting", "StartNew", "Quit")]
     [string]$ExistingServerMode = "Prompt",
-    [ValidateSet("Prompt", "Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")]
+    [ValidateSet("Prompt", "Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness", "ARTEX")]
     [string]$ClientMode = "Prompt",
     # Engine picker. Prompt = interactive menu (default for full launches).
     # Auto = Unsloth, except Flash-Next/qwen4exp which defaults to Laguna
@@ -159,7 +159,7 @@ else {
     "C:\Users\dai86\llama-cpp-turboquant-experts-laguna\build-stage1\bin\llama-server.exe"
 }
 
-    # Laguna HIP builds need the wheel-restored ROCm tree (not Program Files).
+# Laguna HIP builds need the wheel-restored ROCm tree (not Program Files).
 $LagunaRocmRoot = if ($env:LLAMADOCK_LAGUNA_ROCM) {
     [Environment]::ExpandEnvironmentVariables($env:LLAMADOCK_LAGUNA_ROCM)
 }
@@ -168,8 +168,8 @@ else {
 }
 
 # Strata engine (2026-10-01): Niko1221/Strata built for Windows HIP / gfx1101 on the
-# win-hip-0131 branch (engine 0.1.33 + the chunked-window/prequeue workarounds; see
-# C:\Users\dai86\Strata\STRATA-HANDOFF.md 9.31-9.33). Not a llama-server: its own
+# win-hip-0131 branch (engine 0.1.40.3 as of 2026-10-08; see
+# C:\Users\dai86\Strata\STRATA-HANDOFF.md). Not a llama-server: its own
 # serve/server.py fronts the engine on :8080 and speaks /v1/chat/completions, so the
 # gateway (tools/llamadock-proxy.mjs) works unchanged in front of it.
 $StrataRoot = if ($env:LLAMADOCK_STRATA_ROOT) {
@@ -179,7 +179,7 @@ else {
     "C:\Users\dai86\Strata"
 }
 $StrataExe = Join-Path $StrataRoot "build-hip\strata.exe"
-$StrataConfig = Join-Path $StrataRoot "strata-q2_0.json"
+$StrataConfig = Join-Path $StrataRoot "strata-iq3.json"  # 2026-10-08: Q2_0 pack was deleted; IQ3 is the canonical serve config (traffic expert-profile + FP16 prefill)
 $StrataPython = Join-Path $StrataRoot ".venv\Scripts\python.exe"
 
 function Set-LagunaRocmEnvironment {
@@ -420,6 +420,30 @@ function Set-ClientBaseUrl {
         $script:ClientBaseUrl = $GatewayBaseUrl
         return $script:ClientBaseUrl
     }
+
+    # The gateway may simply not be up yet: a serve started outside this launcher
+    # (a manual restore, a reboot, a kill) leaves 8080 healthy but 8090 dead.
+    # Start the recovery gateway once, exactly like the engine start block does,
+    # and re-test before giving up.
+    try {
+        $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+        $gatewayArgs = @(
+            (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
+            "--host", "127.0.0.1",
+            "--port", "$GatewayPort",
+            "--upstream", "http://127.0.0.1:8080",
+            "--log-dir", (Join-Path $PSScriptRoot "logs")
+        )
+        $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
+        for ($i = 0; $i -lt 10; ++$i) {
+            Start-Sleep -Seconds 2
+            if (Test-GatewayReady -ExpectedModelId $ExpectedModelId) {
+                $script:ClientBaseUrl = $GatewayBaseUrl
+                return $script:ClientBaseUrl
+            }
+        }
+    }
+    catch { }
 
     # Never fall back to the raw upstream (8080): clients must go through the
     # recovery gateway so the single llama-server slot stays protected.
@@ -712,6 +736,58 @@ function Get-MaxContextTokensForRam {
     return 262144
 }
 
+function Resolve-AutoContextTokens {
+    # Auto context: the safest ladder value that still buys headroom.
+    # cap 65536 (64K ceiling) keeps KV mostly out of the swap-risk zone a
+    # 128K+ window opens on a 16 GB card; overflow past the wall is absorbed
+    # by the gateway's reactive compaction (tools/llamadock-proxy.mjs).
+    # DeepSeek caps at 16K (measured: 32K drops t/s from ~6.4 to ~4) and
+    # Laguna hot-expert at 4K (8K+ had a memory incident: WS~61GB).
+    param(
+        [double]$ModelSizeGB,
+        [double]$RamGB,
+        [switch]$DeepSeek,
+        [switch]$LagunaHotExpert
+    )
+
+    if ($LagunaHotExpert) { return 4096 }
+
+    $capTokens = if ($DeepSeek) { 16384 } else { 65536 }
+    $ramCeiling = Get-MaxContextTokensForRam -ModelSizeGB $ModelSizeGB -RamGB $RamGB
+    $target = [math]::Min($capTokens, $ramCeiling)
+
+    foreach ($step in @(65536, 32768, 16384, 8192)) {
+        if ($target -ge $step) { return $step }
+    }
+    return 8192
+}
+
+function Read-MenuInt {
+    # Shared reader for every numbered menu / numeric prompt in the launcher.
+    # Re-prompts until an integer inside [Min..Max] is typed. Empty input
+    # returns $Default when one is supplied (Enter = recommended choice);
+    # without $Default an empty line simply asks again. $InvalidMessage, when
+    # set, is shown in yellow after each rejected line.
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][int]$Max,
+        [int]$Min = 1,
+        [int]$Default = [int]::MinValue,
+        [string]$InvalidMessage = ""
+    )
+    do {
+        $raw = Read-Host $Prompt
+        if ([string]::IsNullOrWhiteSpace($raw) -and $Default -ne [int]::MinValue) { return $Default }
+        $value = 0
+        $valid = [int]::TryParse($raw, [ref]$value)
+        if (($valid -and ($value -lt $Min -or $value -gt $Max)) -or (-not $valid -and -not [string]::IsNullOrWhiteSpace($raw))) {
+            if ($InvalidMessage) { Write-Host $InvalidMessage -ForegroundColor Yellow }
+        }
+        $valid = $valid -and $value -ge $Min -and $value -le $Max
+    } while (-not $valid)
+    return $value
+}
+
 function Test-PortBusy {
     $conn = Get-NetTCPConnection -LocalAddress "127.0.0.1" -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
     if ($conn) { return $true }
@@ -810,7 +886,10 @@ function Test-IsLlamaDockServerProcess {
     try {
         $cimProc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
         if (-not $cimProc) { return $false }
-        return ([string]$cimProc.CommandLine -match "llama-server|llamadock|server-supervisor|gateway|mcp-server|serve\.server|strata\.exe")
+        # serve/server.py must match BOTH spellings: our own Strata launches pass the slash form
+        # ("python serve/server.py --engine strata --config strata-*.json"), which made the switch
+        # path refuse to stop the serve it had started itself (2026-10-09).
+        return ([string]$cimProc.CommandLine -match "llama-server|llamadock|server-supervisor|gateway|mcp-server|serve\.server|serve.server\.py|--config.{0,40}strata-|strata\.exe")
     }
     catch {
         return $false
@@ -913,6 +992,21 @@ function Stop-LlamaDockSupervisor {
         Remove-Item -LiteralPath $cleanupPath -Force -ErrorAction SilentlyContinue
     }
     return $true
+}
+
+function Stop-ActiveServerStack {
+    # $proc only exists on the llama-server supervisor path. Strata launches and
+    # keep-alive runs never assign it, so `$proc.HasExited` there dereferences
+    # $null and Stop-Process gets a null Id (the session then "stops" nothing).
+    # Fall back to the supervisor pid markers, then to port ownership, both of
+    # which already refuse to kill processes LlamaDock does not manage.
+    if ($proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        return
+    }
+    Stop-LlamaDockSupervisor | Out-Null
+    Stop-ServerOnPort -Port 8080 | Out-Null
+    Stop-ServerOnPort -Port 8090 | Out-Null
 }
 
 # Sweep any orphaned LlamaDock server/gateway processes that still hold the
@@ -1091,10 +1185,16 @@ function Set-ClineLocalMcpConfig {
 }
 
 function Open-ClineClient {
+    # Optional so existing no-arg callers (workspace dispatch, reuse path)
+    # keep working: without a default, the script-scope call resolves $ModelName
+    # to $null and Start-Process rejects the ArgumentList outright.
+    param([string]$ModelName = "")
+
     if ($SkipClineOpen) {
         Write-Host "SKIP: Cline would open" -ForegroundColor Yellow
         return
     }
+    if ([string]::IsNullOrWhiteSpace($ModelName)) { $ModelName = $modelShort }
 
     Write-Host "Opening Cline in PowerShell..." -ForegroundColor Cyan
     $clientShell = Join-Path $PSScriptRoot "tools\llamadock-client-shell.ps1"
@@ -1578,42 +1678,31 @@ function Select-ComfyUITuning {
     Write-Host " [4] custom  - 生のComfyUIフラグ + 企画LLMは既定（27B・GPU）"
     Write-Host (" ※高速化({0})={1}（ComfyUI 0.33+ / torch CUDA）" -f $fastProfile, $fastLabel) -ForegroundColor DarkGray
     Write-Host ""
-    do {
-        $tuningInput = Read-Host "Select ComfyUI tuning (1-4), or press Enter for plan"
-        $tuningValid = $true
-        if ([string]::IsNullOrWhiteSpace($tuningInput)) {
+    $tuningSelection = Read-MenuInt -Prompt "ComfyUI チューニングを選択 (1-4)、または Enter で plan" -Min 1 -Max 4 -Default 1
+    switch ($tuningSelection) {
+        1 {
             $script:ComfyProfileChoice = $fastProfile
             $script:PlanModeChoice = $true
             $script:PlanModelChoice = Select-PlanModel
         }
-        else {
-            switch ($tuningInput) {
-                "1" {
-                    $script:ComfyProfileChoice = $fastProfile
-                    $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = Select-PlanModel
-                }
-                "2" {
-                    $script:ComfyProfileChoice = $fastProfile
-                    $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
-                }
-                "3" {
-                    $script:ComfyProfileChoice = "default"
-                    $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
-                }
-                "4" {
-                    $rawFlags = Read-Host "Raw ComfyUI flags (e.g. --reserve-vram 0.5 --force-non-blocking)"
-                    $script:ComfyProfileChoice = "custom"
-                    $script:ComfyFlagsChoice = $rawFlags
-                    $script:PlanModeChoice = $true
-                    $script:PlanModelChoice = "Qwen3.8-27B-GPU"
-                }
-                default { $tuningValid = $false }
-            }
+        2 {
+            $script:ComfyProfileChoice = $fastProfile
+            $script:PlanModeChoice = $true
+            $script:PlanModelChoice = "Qwen3.8-27B-GPU"
         }
-    } while (-not $tuningValid)
+        3 {
+            $script:ComfyProfileChoice = "default"
+            $script:PlanModeChoice = $true
+            $script:PlanModelChoice = "Qwen3.8-27B-GPU"
+        }
+        4 {
+            $rawFlags = Read-Host "生の ComfyUI フラグ (例: --reserve-vram 0.5 --force-non-blocking)"
+            $script:ComfyProfileChoice = "custom"
+            $script:ComfyFlagsChoice = $rawFlags
+            $script:PlanModeChoice = $true
+            $script:PlanModelChoice = "Qwen3.8-27B-GPU"
+        }
+    }
 }
 
 function Get-PlanModelCandidates {
@@ -1735,27 +1824,18 @@ function Select-PlanModel {
     }
     Write-Host ""
     $max = $menu.Count
-    do {
-        $planInput = Read-Host "Select planning LLM (1-$max), or press Enter for the default"
-        $n = 0
-        if ([string]::IsNullOrWhiteSpace($planInput)) {
-            $n = $defaultIdx
-        }
-        elseif (-not [int]::TryParse($planInput, [ref]$n) -or $n -lt 1 -or $n -gt $max) {
-            continue
-        }
-        $chosen = $menu[$n - 1]
-        if ($chosen.Key) {
-            return $chosen.Key
-        }
-        $script:PlanModelCustom = @{
-            Path   = $chosen.Path
-            Mmproj = $chosen.Mmproj
-            Gpu    = $chosen.Gpu
-            Label  = $chosen.Label
-        }
-        return "Custom"
-    } while ($true)
+    $planSelection = Read-MenuInt -Prompt "企画 LLM を選択 (1-$max)、または Enter で既定" -Min 1 -Max $max -Default $defaultIdx
+    $chosen = $menu[$planSelection - 1]
+    if ($chosen.Key) {
+        return $chosen.Key
+    }
+    $script:PlanModelCustom = @{
+        Path   = $chosen.Path
+        Mmproj = $chosen.Mmproj
+        Gpu    = $chosen.Gpu
+        Label  = $chosen.Label
+    }
+    return "Custom"
 }
 
 function Test-H3ChatTabOpen {
@@ -2079,8 +2159,9 @@ function Stop-StaleDeepSeekHarness {
 }
 
 function Open-DeepSeekHarnessClient {
-    # DeepSeek Harness — agent harness framework (npx auto-install + auto-update).
-    # https://deepseek.com/harness/en/
+    # DeepSeek Harness — agent harness framework.  The Windows desktop app
+    # (%LOCALAPPDATA%\Programs\DeepSeek Harness) is the preferred form: it
+    # self-updates through its own updater and does not depend on the npm CLI.
     # The harness's llm-deepseek adapter reads DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY
     # from its launch environment. Pointing them at the LlamaDock gateway makes the
     # harness run on the local llama.cpp model instead of the DeepSeek cloud API,
@@ -2088,9 +2169,32 @@ function Open-DeepSeekHarnessClient {
     # (credentials-local reports source:env as configured).
 
     # Clear any stale dsh on 3080 (old version / leftover session) first, so
-    # the freshly updated CLI actually serves the UI instead of a stale boot page.
+    # whatever we start actually serves the UI instead of a stale boot page.
     Stop-StaleDeepSeekHarness
 
+    $env:DEEPSEEK_BASE_URL = "$ClientBaseUrl/v1"
+    $env:DEEPSEEK_API_KEY = "not-needed"
+
+    # ---- the Windows desktop app (preferred; all Web-GUI launches use it) --
+    $dshApp = $env:LLAMADOCK_DSH_APP
+    if ([string]::IsNullOrWhiteSpace($dshApp)) {
+        $candidates = @( (Join-Path $env:LOCALAPPDATA "Programs\DeepSeek Harness\DeepSeek Harness.exe") )
+        $candidates += Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'deepseek.?harness' } |
+            ForEach-Object { Get-ChildItem $_.FullName -Filter '*.exe' -ErrorAction SilentlyContinue } |
+            Where-Object { $_.Name -notmatch 'Uninstall|updater' } |
+            Select-Object -First 1 -ExpandProperty FullName
+        $dshApp = @($candidates) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    }
+    if ($dshApp -and (Test-Path -LiteralPath $dshApp)) {
+        Write-Host "DeepSeek Harness (Windows app): $dshApp" -ForegroundColor Cyan
+        Write-Host "LLM backend: $ClientBaseUrl/v1 (ローカル / APIキー不要)" -ForegroundColor Cyan
+        $proc = Start-Process -FilePath $dshApp -WorkingDirectory $PSScriptRoot -PassThru
+        Write-Host "DeepSeek Harness を起動しました (Windows アプリ版)" -ForegroundColor Green
+        return $proc
+    }
+
+    # ---- the npm CLI (fallback when the desktop app is not installed) ------
     $dshCheck = Join-Path $PSScriptRoot "tools\dsh-update.ps1"
     if (Test-Path -LiteralPath $dshCheck) {
         # Run update check in background (non-blocking)
@@ -2099,12 +2203,6 @@ function Open-DeepSeekHarnessClient {
     Write-Host "DeepSeek Harness を起動しています..." -ForegroundColor Cyan
     Write-Host "LLM backend: $ClientBaseUrl/v1 (ローカル llama.cpp / APIキー不要)" -ForegroundColor Cyan
 
-    $env:DEEPSEEK_BASE_URL = "$ClientBaseUrl/v1"
-    $env:DEEPSEEK_API_KEY = "not-needed"
-
-    # Prefer the globally installed CLI (kept current by tools/dsh-update.ps1)
-    # over npx. npx re-downloads the full ~450-package tree into a fresh _npx
-    # cache on every launch, which can hang for minutes on first boot.
     $dshCmd = Join-Path $env:APPDATA "npm\dsh.cmd"
     if (Test-Path -LiteralPath $dshCmd) {
         $proc = Start-Process -FilePath $dshCmd -WorkingDirectory $PSScriptRoot -PassThru -ArgumentList @("web")
@@ -2122,6 +2220,25 @@ function Open-DeepSeekHarnessClient {
     return $proc
 }
 
+
+function Open-ARTEXClient {
+    # ARTEX workspace: AI autonomous penetration-testing console (English
+    # build of hongvincent/ARTEX, installed at C:\Users\dai86\ARTEX).
+    # Same launcher as the desktop shortcut: it starts the bundled portable
+    # PostgreSQL (:5433), the artex.exe web console (:8787) if not already
+    # up, then opens the browser. ARTEX talks to LlamaDock through its
+    # System -> LLM card "LlamaDock Local (abliterated)" pointing at the
+    # gateway, so no per-launch env wiring is needed here.
+    $artexBat = "C:\Users\dai86\ARTEX\ARTEX-launch.bat"
+    if (-not (Test-Path -LiteralPath $artexBat)) {
+        Write-Host "ERROR: ARTEX launcher not found: $artexBat" -ForegroundColor Red
+        return $null
+    }
+    Start-Process -FilePath $artexBat -WindowStyle Minimized
+    Write-Host "ARTEX 起動中... コンソール: http://localhost:8787" -ForegroundColor Green
+    return $null
+}
+
 function Open-WorkspaceClient {
     param([string]$Mode, [string]$ModelPath, [string]$ModelName)
 
@@ -2131,9 +2248,10 @@ function Open-WorkspaceClient {
         "LlamaAgent" { return Open-LlamaAgentClient -ModelPath $ModelPath }
         "OpenCode" { return Open-OpenCodeClient -ModelName $ModelName }
         "DeepSeekHarness" { return Open-DeepSeekHarnessClient }
+        "ARTEX" { return Open-ARTEXClient }
         default {
             Set-ClineLocalModel -ModelName $ModelName
-            return Open-ClineClient
+            return Open-ClineClient -ModelName $ModelName
         }
     }
 }
@@ -2174,34 +2292,29 @@ function Stop-H3Stack {
 
 function Select-WorkspaceForSession {
     Write-Host ""
-    Write-Host "LlamaDock session" -ForegroundColor Cyan
+    Write-Host "LlamaDock セッション" -ForegroundColor Cyan
     Write-Host " [1] 同じワークスペースを再起動"
     Write-Host " [2] モデルを維持したままワークスペースを変更"
     Write-Host " [3] モデルを変更 - サーバーを停止してセレクターへ戻る"
     Write-Host " [4] サーバーを停止して終了"
     Write-Host " [5] サーバーを起動したまま終了"
-    do {
-        $choice = Read-Host "Select session action (1-5)"
-        if ($choice -notin @("1", "2", "3", "4", "5")) {
-            Write-Host "Invalid choice '$choice'. Enter a number from 1 to 5." -ForegroundColor Yellow
-        }
-    } while ($choice -notin @("1", "2", "3", "4", "5"))
-    if ($choice -eq "1") { return @("relaunch", "") }
-    if ($choice -eq "2") {
-        Write-Host " [1] Pi  [2] Cline  [3] OpenCode  [4] Llama Agent  [5] ComfyUI  [6] DeepSeek Harness"
-        $workspace = Read-Host "Select workspace"
-        $modes = @("Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness")
+    $choice = Read-MenuInt -Prompt "セッション操作を選択 (1-5)" -Min 1 -Max 5 -InvalidMessage "選択が不正です。1 から 5 の数字を入力してください。"
+    if ($choice -eq 1) { return @("relaunch", "") }
+    if ($choice -eq 2) {
+        Write-Host " [1] Pi  [2] Cline  [3] OpenCode  [4] Llama Agent  [5] ComfyUI  [6] DeepSeek Harness  [7] ARTEX"
+        $workspace = Read-Host "ワークスペースを選択"
+        $modes = @("Pi", "Cline", "OpenCode", "LlamaAgent", "ComfyUI", "DeepSeekHarness", "ARTEX")
         $index = 0
         if ([int]::TryParse($workspace, [ref]$index) -and $index -ge 1 -and $index -le $modes.Count) {
             return @("switch", $modes[$index - 1])
         }
         return @("relaunch", "")
     }
-    if ($choice -eq "3") { return @("change-model", "") }
-    if ($choice -eq "4") {
+    if ($choice -eq 3) { return @("change-model", "") }
+    if ($choice -eq 4) {
         # Ask whether to also shut down the video stack (ComfyUI / h3-chat /
         # planning LLM) that keeps holding GPU and RAM after the session.
-        $stopStack = Read-Host "Also stop the video stack (ComfyUI / h3-chat / planning LLM) to free GPU+RAM? (y/N)"
+        $stopStack = Read-Host "動画スタック (ComfyUI / h3-chat / planning LLM) も停止して GPU+RAM を解放しますか? (y/N)"
         if ($stopStack -match "^(y|yes)$") { $script:StopAllOnExit = $true }
         return @("stop", "")
     }
@@ -2222,22 +2335,12 @@ $runtimeCandidates = @(
 # llama-server first.
 $comfyOnly = $ClientMode -eq "ComfyUI"
 if (-not $DryRun -and -not $comfyOnly -and $ClientMode -eq "Prompt") {
-    Write-Host "Launch target:" -ForegroundColor Green
+    Write-Host "起動ターゲット:" -ForegroundColor Green
     Write-Host " [1] LLM ワークスペース - モデルとクライアントを選択"
     Write-Host " [2] ComfyUI - 動画/音声ワークスペース（GGUF 選択なし）"
     Write-Host " [3] Web GUI - ブラウザで起動/停止/計測"
     Write-Host ""
-    do {
-        $targetInput = Read-Host "起動するワークスペースを選択 (1-3、Enter=LLM)"
-        if ([string]::IsNullOrWhiteSpace($targetInput)) {
-            $targetSelection = 1
-            $targetValid = $true
-        }
-        else {
-            $targetSelection = 0
-            $targetValid = [int]::TryParse($targetInput, [ref]$targetSelection)
-        }
-    } while (-not $targetValid -or $targetSelection -lt 1 -or $targetSelection -gt 3)
+    $targetSelection = Read-MenuInt -Prompt "起動するワークスペースを選択 (1-3、Enter=LLM)" -Min 1 -Max 3 -Default 1
 
     if ($targetSelection -eq 3) {
         # Same early-exit pattern as ComfyUI: the Web GUI is model-independent,
@@ -2311,8 +2414,8 @@ foreach ($f in $allFiles) {
 }
 
 if ($models.Count -eq 0) {
-    Write-Host "ERROR: No .gguf models found!" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
+    Write-Host "エラー: .gguf モデルが見つかりません!" -ForegroundColor Red
+    Read-Host "終了するには Enter"
     exit 1
 }
 
@@ -2373,17 +2476,13 @@ elseif (-not $DryRun -and -not $isQuickLaunch -and $EngineMode -eq "Prompt") {
     $unslothOk = Test-Path -LiteralPath $UnslothServerPath
     $strataOk = (Test-Path -LiteralPath $StrataExe) -and (Test-Path -LiteralPath $StrataConfig) -and (Test-Path -LiteralPath $StrataPython)
     Write-Host ""
-    Write-Host "Runtime engine (Enter = $defaultEngineLabel):" -ForegroundColor Green
+    Write-Host "ランタイムエンジン (Enter = $defaultEngineLabel):" -ForegroundColor Green
     Write-Host " [1] Laguna hot-expert  — Flash-Next 最速 (実測 ~13.5 t/s @2k)  $(if ($lagunaOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
     Write-Host " [2] Unsloth HIP        — 従来パス (lazy-mode / 一般 GGUF / MTP 試験)  $(if ($unslothOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
-    Write-Host " [3] Strata 0.1.33      — Windows HIP ネイティブ (win-hip-0131 / serve 独自API)  $(if ($strataOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
-    $engineDefaultNum = if ($requiredEngine -eq "Laguna") { "1" } else { "2" }
-    do {
-        $engineInput = Read-Host "Select engine (1-3), Enter=$engineDefaultNum"
-        if ([string]::IsNullOrWhiteSpace($engineInput)) { $engineInput = $engineDefaultNum }
-        $engineValid = $engineInput -in @("1", "2", "3")
-    } while (-not $engineValid)
-    $requiredEngine = switch ($engineInput) { "1" { "Laguna" } "2" { "Unsloth" } "3" { "Strata" } }
+    Write-Host " [3] Strata 0.1.40.3    — Windows HIP ネイティブ (win-hip-0131 / serve 独自API)  $(if ($strataOk) { 'OK' } else { 'MISSING' })" -ForegroundColor Cyan
+    $engineDefaultNum = if ($requiredEngine -eq "Laguna") { 1 } else { 2 }
+    $engineSelection = Read-MenuInt -Prompt "エンジンを選択 (1-3)、Enter=$engineDefaultNum" -Min 1 -Max 3 -Default $engineDefaultNum
+    $requiredEngine = switch ($engineSelection) { 1 { "Laguna" } 2 { "Unsloth" } 3 { "Strata" } }
 }
 
 $ServerPath = Resolve-EnginePaths -Engine $requiredEngine
@@ -2392,31 +2491,22 @@ $modelNote = Get-ModelNote -Model $selected
 
 if ($PresetMode -eq "Prompt") {
     Write-Host ""
-    Write-Host "Runtime engine: $requiredEngine" -ForegroundColor Green
-    Write-Host "Runtime path  : $ServerPath" -ForegroundColor DarkGray
+    Write-Host "ランタイムエンジン: $requiredEngine" -ForegroundColor Green
+    Write-Host "エンジンパス    : $ServerPath" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "Workflow preset:" -ForegroundColor Green
+    Write-Host "ワークフロープリセット:" -ForegroundColor Green
     Write-Host " [1] Manual - 全設定を手動選択"
     Write-Host " [2] Code - Cline 向けの安定設定"
     Write-Host " [3] Code - OpenCode 向けの安定設定"
     Write-Host " [4] Agent Research - llama-agent と反復Web証拠収集"
     Write-Host " [5] Pi - pi.dev コーディングエージェント（ローカルLLM接続）"
     Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続・APIキー不要）"
+    Write-Host " [7] ARTEX - AI自律ペネトレーションテストコンソール（ローカルLLM接続）"
     Write-Host ""
 
-    do {
-        $presetInput = Read-Host "Select preset (1-6), or press Enter for Manual"
-        if ([string]::IsNullOrWhiteSpace($presetInput)) {
-            $presetSelection = 1
-            $presetValid = $true
-        }
-        else {
-            $presetSelection = 0
-            $presetValid = [int]::TryParse($presetInput, [ref]$presetSelection)
-        }
-    } while (-not $presetValid -or $presetSelection -lt 1 -or $presetSelection -gt 6)
+    $presetSelection = Read-MenuInt -Prompt "プリセットを選択 (1-7)、または Enter で Manual" -Min 1 -Max 7 -Default 1
 
-    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness")
+    $presetValues = @("Manual", "ClineCoding", "OpenCodeCoding", "LlamaAgentResearch", "PiCoding", "DeepSeekHarness", "ARTEX")
     $PresetMode = $presetValues[$presetSelection - 1]
 }
 
@@ -2431,7 +2521,7 @@ if ($isQuickLaunch) {
 
 if ($PresetMode -eq "ClineCoding") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "Cline" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2440,7 +2530,7 @@ if ($PresetMode -eq "ClineCoding") {
 }
 elseif ($PresetMode -eq "OpenCodeCoding") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "OpenCode" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2449,7 +2539,7 @@ elseif ($PresetMode -eq "OpenCodeCoding") {
 }
 elseif ($PresetMode -eq "LlamaAgentResearch") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "LlamaAgent" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2458,7 +2548,7 @@ elseif ($PresetMode -eq "LlamaAgentResearch") {
 }
 elseif ($PresetMode -eq "PiCoding") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "Pi" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 2 }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2467,7 +2557,16 @@ elseif ($PresetMode -eq "PiCoding") {
 }
 elseif ($PresetMode -eq "DeepSeekHarness") {
     if ($ClientMode -eq "Prompt") { $ClientMode = "DeepSeekHarness" }
-    if ($ContextIndex -eq 0) { $ContextIndex = 3 }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
+    if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
+    if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
+    if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
+    if ($SpecMode -eq "Prompt") { $SpecMode = "Off" }
+    if ($McpMode -eq "Prompt") { $McpMode = "None" }
+}
+elseif ($PresetMode -eq "ARTEX") {
+    if ($ClientMode -eq "Prompt") { $ClientMode = "ARTEX" }
+    if ($ContextIndex -eq 0) { $ContextIndex = 1 }
     if ($OffloadMode -eq "Prompt") { $OffloadMode = "Auto" }
     if ($MoeExpertsMode -eq "Prompt") { $MoeExpertsMode = "Auto" }
     if ($FlashAttentionMode -eq "Prompt") { $FlashAttentionMode = "On" }
@@ -2513,10 +2612,34 @@ if ($requiredEngine -eq "Strata") {
                 $cfg = Get-Content -LiteralPath $sc.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
                 $nativeIdx = [array]::IndexOf(@($cfg.args), "--native")
                 if ($nativeIdx -ge 0) { Write-Host ("  {0}  ->  {1}" -f $sc.Name, [IO.Path]::GetFileName([string]$cfg.args[$nativeIdx + 1])) -ForegroundColor DarkGray }
-            } catch { }
+            }
+            catch { }
         }
         Write-Host "Pick one of those models, or add a pack + config (see C:\Users\dai86\Strata\STRATA-HANDOFF.md)." -ForegroundColor Yellow
         exit 1
+    }
+    # Context choice for Strata: the config's --max-context is the default.  A shorter context
+    # frees VRAM for expert slots (same decode speed); 64K is experimental on 16 GB.  The override
+    # lands in a runtime COPY of the config (_strata-runtime.json) so the shipped files stay untouched.
+    Write-Host ""
+    Write-Host "Context size (Enter = the config's $([int]($strataMaxCtx / 1024))K):" -ForegroundColor Cyan
+    Write-Host " [1] 8K   [2] 16K   [3] 32K   [4] 64K (experimental) - config default: $([int]($strataMaxCtx / 1024))K" -ForegroundColor DarkGray
+    # Both shipped configs sit on the ladder (32768/65536), so Enter maps back
+    # to the config value and the $wantCtx -ne $strataMaxCtx check below keeps it.
+    $ctxDefault = if ([int]$strataMaxCtx -eq 65536) { 4 } else { 3 }
+    $ctxPick = Read-MenuInt -Prompt "コンテキストを選択 (1-4、Enter=維持)" -Min 1 -Max 4 -Default $ctxDefault
+    $wantCtx = switch ($ctxPick) { 1 { 8192 } 2 { 16384 } 3 { 32768 } 4 { 65536 } }
+    if ($wantCtx -and $wantCtx -ne $strataMaxCtx) {
+        $rtCfgPath = Join-Path $StrataRoot "_strata-runtime.json"
+        $cfgObj = Get-Content -LiteralPath $StrataConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+        $ci = [array]::IndexOf(@($cfgObj.args), "--max-context")
+        if ($ci -ge 0) {
+            $cfgObj.args[$ci + 1] = "$wantCtx"
+            [IO.File]::WriteAllText($rtCfgPath, ($cfgObj | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+            $StrataConfig = $rtCfgPath
+            $strataMaxCtx = $wantCtx
+            Write-Host "Runtime config written: $rtCfgPath (ctx $wantCtx)" -ForegroundColor DarkGray
+        }
     }
     $selectedContext = [PSCustomObject]@{
         Label = "$([int]($strataMaxCtx / 1024))K"
@@ -2538,15 +2661,15 @@ if (-not $isQuickLaunch) {
     Write-Host ""
     Write-HardwareSummary -Hardware $hardware
     Write-RuntimeAvailability -Runtimes $runtimeCandidates
-    Write-Host "Runtime engine: $requiredEngine" -ForegroundColor Green
-    Write-Host "Runtime path  : $ServerPath" -ForegroundColor DarkGray
+    Write-Host "ランタイムエンジン: $requiredEngine" -ForegroundColor Green
+    Write-Host "エンジンパス    : $ServerPath" -ForegroundColor DarkGray
 }
 
 if ($modelNote -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host ""
-    Write-Host "Model note: $($modelNote.note)" -ForegroundColor Cyan
+    Write-Host "モデルメモ: $($modelNote.note)" -ForegroundColor Cyan
     if ($modelNote.recommended_preset) {
-        Write-Host "Recommended preset: $($modelNote.recommended_preset)" -ForegroundColor Cyan
+        Write-Host "推奨プリセット: $($modelNote.recommended_preset)" -ForegroundColor Cyan
     }
     if ($modelNote.warning) {
         Write-Host "WARNING: $($modelNote.warning)" -ForegroundColor Yellow
@@ -2564,9 +2687,9 @@ if ($isQuickLaunch) {
     $launchLabel = if ($PresetMode -eq "PiCoding") { "Coding -> Pi (pi.dev)" } elseif ($PresetMode -eq "OpenCodeCoding") { "Coding -> OpenCode" } else { "Manual" }
 }
 else {
-    Write-Host "Selected: $($selected.Name)" -ForegroundColor Green
-    Write-Host "Engine: $requiredEngine" -ForegroundColor Green
-    Write-Host "Preset: $PresetMode" -ForegroundColor Green
+    Write-Host "選択中: $($selected.Name)" -ForegroundColor Green
+    Write-Host "エンジン: $requiredEngine" -ForegroundColor Green
+    Write-Host "プリセット: $PresetMode" -ForegroundColor Green
 }
 Write-Host ""
 
@@ -2596,81 +2719,61 @@ if ($visionMmprojPath) {
     $mmprojSizeGB = [math]::Round($visionMmprojPath.Length / 1GB, 2)
     if ($envVision -eq "on") {
         $visionEnabled = $true
-        Write-Host "Vision: on (LLAMADOCK_VISION=on, $($visionMmprojPath.Name) $mmprojSizeGB GB)" -ForegroundColor Green
+        Write-Host "ビジョン: 有効 (LLAMADOCK_VISION=on, $($visionMmprojPath.Name) $mmprojSizeGB GB)" -ForegroundColor Green
     }
     elseif ($envVision -eq "off") {
-        Write-Host "Vision: off (adapter found, disabled via LLAMADOCK_VISION=off)" -ForegroundColor DarkGray
+        Write-Host "ビジョン: 無効 (アダプタ検出済み、LLAMADOCK_VISION=off で無効化)" -ForegroundColor DarkGray
     }
     elseif ($requiredEngine -eq "Strata") {
-        Write-Host "Vision: off (the Strata config is text-only; --mmproj is a llama-server flag)" -ForegroundColor DarkGray
+        Write-Host "ビジョン: 無効 (Strata 設定はテキスト専用。--mmproj は llama-server のフラグ)" -ForegroundColor DarkGray
     }
     elseif (-not $DryRun -and -not $isQuickLaunch) {
         Write-Host ""
-        Write-Host "Vision adapter found: $($visionMmprojPath.Name) ($mmprojSizeGB GB)" -ForegroundColor Green
-        Write-Host " [1] Text-only (default - saves VRAM for context)"
-        Write-Host " [2] Enable image input (--mmproj, uses extra VRAM)"
-        do {
-            $visionInput = Read-Host "Enable vision? (1-2), or press Enter for 1"
-            if ([string]::IsNullOrWhiteSpace($visionInput)) { $visionInput = "1" }
-            $visionValid = $visionInput -in @("1", "2")
-        } while (-not $visionValid)
-        $visionEnabled = ($visionInput -eq "2")
+        Write-Host "ビジョンアダプタ検出: $($visionMmprojPath.Name) ($mmprojSizeGB GB)" -ForegroundColor Green
+        Write-Host " [1] テキストのみ (既定 - VRAM をコンテキストに回す)"
+        Write-Host " [2] 画像入力を有効化 (--mmproj、追加 VRAM を使用)"
+        $visionSelection = Read-MenuInt -Prompt "ビジョンを有効にしますか? (1-2)、または Enter で 1" -Min 1 -Max 2 -Default 1
+        $visionEnabled = ($visionSelection -eq 2)
     }
 }
 elseif ($envVision -eq "on") {
     # LLAMADOCK_VISION=on was requested but this model ships no adapter next
     # to it — say so instead of silently continuing text-only.
-    Write-Host "Vision: LLAMADOCK_VISION=on requested, but no mmproj*.gguf found next to '$($selected.Name)' — continuing text-only." -ForegroundColor Yellow
+    Write-Host "ビジョン: LLAMADOCK_VISION=on を指定しましたが、'$($selected.Name)' の隣に mmproj*.gguf が見つかりません — テキストのみで続行します。" -ForegroundColor Yellow
 }
 
 # Prompt context size selection
 $systemRamGB = $hardware.RamGB
 $primaryVramGB = if ($hardware.PrimaryGpu) { [double]$hardware.PrimaryGpu.VramGB } else { 0 }
 $maxContextTokensForRam = Get-MaxContextTokensForRam -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
-$recommendedDefaultTokens = if ($isDeepSeek) {
-    # 16K: Cline-grade context at a measured ~6.4 tps; 32K drops to ~4 tps, 8K is too small.
-    16384
-}
-elseif ($script:LagunaHotExpert -and $isQwen4Exp) {
-    # Engine reply 2026-09-18: 8K + hot-expert blew up (WS~61GB / FreeRAM 0.3GB)
-    # after a memory incident. Safe window for the next GPU probe is 2K–4K.
-    # Peak record was 2K (~13.5 t/s); 4K is the agent-friendly safe default.
-    4096
-}
-else {
-    # 32K flat default (2026-08-24): coder agents run auto-compaction, so a
-    # larger default only risks KV spilling out of VRAM. The old model-size
-    # ladder went up to 128K for small models, which on a 16 GB card meant
-    # KV silently living in system RAM.
-    $tokens = 32768
-    if ($maxContextTokensForRam -gt 0 -and $tokens -gt $maxContextTokensForRam) {
-        $tokens = $maxContextTokensForRam
-    }
-    $tokens
-}
+$autoContextTokens = Resolve-AutoContextTokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB -DeepSeek:$isDeepSeek -LagunaHotExpert:$script:LagunaHotExpert
 
 $contextOptions = @(
-    [PSCustomObject]@{ Label = "8K"; Tokens = 8192; Note = "lowest memory, startup test" },
-    [PSCustomObject]@{ Label = "16K"; Tokens = 16384; Note = "safe default for large models" },
-    [PSCustomObject]@{ Label = "32K"; Tokens = 32768; Note = "coding default" },
-    [PSCustomObject]@{ Label = "64K"; Tokens = 65536; Note = "long context, check RAM" },
-    [PSCustomObject]@{ Label = "128K"; Tokens = 131072; Note = "very long context, high RAM/KV" },
-    [PSCustomObject]@{ Label = "256K"; Tokens = 262144; Note = "extreme, expect high RAM/KV" },
-    [PSCustomObject]@{ Label = "Custom"; Tokens = 0; Note = "enter token count manually" }
+    [PSCustomObject]@{ Label = "Auto"; Tokens = -1; Note = "RAM ceiling +64K cap から自動選択 (溢れはゲートウェイが自動間引き)" },
+    [PSCustomObject]@{ Label = "8K"; Tokens = 8192; Note = "最小メモリ、起動テスト向け" },
+    [PSCustomObject]@{ Label = "16K"; Tokens = 16384; Note = "大型モデルの安全な既定値" },
+    [PSCustomObject]@{ Label = "32K"; Tokens = 32768; Note = "コーディングの既定値" },
+    [PSCustomObject]@{ Label = "64K"; Tokens = 65536; Note = "長文コンテキスト、RAM を確認" },
+    [PSCustomObject]@{ Label = "128K"; Tokens = 131072; Note = "超長文、RAM/KV が重い" },
+    [PSCustomObject]@{ Label = "256K"; Tokens = 262144; Note = "極端、RAM/KV は非常に重い" },
+    [PSCustomObject]@{ Label = "カスタム"; Tokens = 0; Note = "トークン数を手動入力" }
 )
 
 if (-not $isQuickLaunch -and $requiredEngine -ne "Strata") {
-    Write-Host "Context size:" -ForegroundColor Green
+    Write-Host "コンテキストサイズ:" -ForegroundColor Green
     if ($systemRamGB -gt 0) {
         Write-Host ("検出 RAM: {0}GB / 選択モデル: {1:N1}GB" -f $systemRamGB, $selectedModelSizeGB) -ForegroundColor DarkGray
-        Write-Host ("Recommended ceiling for this model/RAM: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
+        Write-Host ("このモデル/RAM の推奨上限: {0} tokens" -f $maxContextTokensForRam) -ForegroundColor DarkGray
     }
     for ($i = 0; $i -lt $contextOptions.Count; $i++) {
         $ctx = $contextOptions[$i]
-        if ($ctx.Tokens -gt 0) {
-            $defaultMark = if ($ctx.Tokens -eq $recommendedDefaultTokens) { " [recommended]" } else { "" }
+        if ($ctx.Tokens -eq -1) {
+            $autoRisk = Get-ContextRiskLabel -Tokens $autoContextTokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
+            Write-Host " [$($i+1)] $($ctx.Label) (現在の構成では $($autoContextTokens) tokens) - $($ctx.Note); $autoRisk [推奨]"
+        }
+        elseif ($ctx.Tokens -gt 0) {
             $risk = Get-ContextRiskLabel -Tokens $ctx.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB
-            Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk$defaultMark"
+            Write-Host " [$($i+1)] $($ctx.Label) ($($ctx.Tokens) tokens) - $($ctx.Note); $risk"
         }
         else {
             Write-Host " [$($i+1)] $($ctx.Label) - $($ctx.Note)"
@@ -2679,8 +2782,8 @@ if (-not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     Write-Host ""
 }
 elseif ($requiredEngine -eq "Strata" -and -not $isQuickLaunch) {
-    Write-Host "Context size:" -ForegroundColor Green
-    Write-Host (" {0} ({1} tokens) - from strata-q2_0.json (Strata mmaps its experts; the llama.cpp RAM ladder does not apply)" -f $selectedContext.Label, $selectedContext.Tokens) -ForegroundColor DarkGray
+    Write-Host "コンテキストサイズ:" -ForegroundColor Green
+    Write-Host (" {0} ({1} tokens) - $(Split-Path -Leaf $StrataConfig) 由来 (Strata は experts を mmap するため llama.cpp の RAM ラダーは適用外)" -f $selectedContext.Label, $selectedContext.Tokens) -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -2692,34 +2795,21 @@ if ($requiredEngine -ne "Strata" -and $ContextIndex -gt 0) {
     }
 }
 elseif ($requiredEngine -ne "Strata") {
-    do {
-        $defaultContextLabel = "$([int]($recommendedDefaultTokens / 1024))K"
-        $ctxInput = Read-Host "Select context size (1-$($contextOptions.Count)), or press Enter for $defaultContextLabel"
-        if ([string]::IsNullOrWhiteSpace($ctxInput)) {
-            $ctxSelection = [array]::IndexOf(@($contextOptions | Select-Object -ExpandProperty Tokens), $recommendedDefaultTokens) + 1
-            $ctxValid = $true
-        }
-        else {
-            $ctxSelection = 0
-            $ctxValid = [int]::TryParse($ctxInput, [ref]$ctxSelection)
-        }
-    } while (-not $ctxValid -or $ctxSelection -lt 1 -or $ctxSelection -gt $contextOptions.Count)
+    $ctxSelection = Read-MenuInt -Prompt "コンテキストサイズを選択 (1-$($contextOptions.Count))、または Enter で Auto" -Min 1 -Max $contextOptions.Count -Default 1
 }
 
 if ($requiredEngine -ne "Strata") {
     $selectedContext = $contextOptions[$ctxSelection - 1]
+    if ($selectedContext.Tokens -eq -1) {
+        $selectedContext = [PSCustomObject]@{
+            Label = "Auto"
+            Tokens = $autoContextTokens
+            Note = "auto (RAM ceiling + 64K cap)"
+        }
+    }
 }
 if ($requiredEngine -ne "Strata" -and $selectedContext.Tokens -eq 0) {
-    do {
-        $customContextInput = Read-Host "Enter context tokens (example: 32768, 65536, 131072)"
-        $customContextTokens = 0
-        $customContextValid = [int]::TryParse($customContextInput, [ref]$customContextTokens)
-        if ($customContextValid -and $customContextTokens -gt $maxContextTokensForRam) {
-            Write-Host "ERROR: That context is above the RAM safety ceiling for this model." -ForegroundColor Red
-            Write-Host "Ceiling: $maxContextTokensForRam tokens. Select a lower value or a smaller model." -ForegroundColor Red
-            $customContextValid = $false
-        }
-    } while (-not $customContextValid -or $customContextTokens -lt 512)
+    $customContextTokens = Read-MenuInt -Prompt "コンテキストトークン数を入力 (例: 32768, 65536, 131072)" -Min 512 -Max $maxContextTokensForRam -InvalidMessage "エラー: 512〜$maxContextTokensForRam tokens の整数を入力してください (モデルの RAM 安全上限)。小さい値か、小さいモデルを選んでください。"
 
     $selectedContext = [PSCustomObject]@{
         Label = "$customContextTokens"
@@ -2729,34 +2819,34 @@ if ($requiredEngine -ne "Strata" -and $selectedContext.Tokens -eq 0) {
 }
 if (-not $isQuickLaunch) {
     Write-Host ""
-    Write-Host "Context: $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
+    Write-Host "コンテキスト: $($selectedContext.Label) ($($selectedContext.Tokens) tokens)" -ForegroundColor Green
     if ($systemRamGB -gt 0 -and $requiredEngine -ne "Strata") {
-        Write-Host "Context risk: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
+        Write-Host "コンテキストリスク: $(Get-ContextRiskLabel -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB)" -ForegroundColor Yellow
     }
 }
 if ($requiredEngine -ne "Strata" -and ($selectedContext.Tokens -gt $maxContextTokensForRam -or -not (Test-ContextFitsRam -Tokens $selectedContext.Tokens -ModelSizeGB $selectedModelSizeGB -RamGB $systemRamGB))) {
-    Write-Host "ERROR: Selected context is likely to exceed available RAM for this model." -ForegroundColor Red
-    Write-Host "Selected: $($selectedContext.Tokens) tokens; ceiling: $maxContextTokensForRam tokens." -ForegroundColor Red
-    Write-Host "Use a lower context or a smaller/lighter model." -ForegroundColor Red
+    Write-Host "エラー: 選択したコンテキストはこのモデルでは RAM を超過する可能性があります。" -ForegroundColor Red
+    Write-Host "選択: $($selectedContext.Tokens) tokens; 上限: $maxContextTokensForRam tokens." -ForegroundColor Red
+    Write-Host "小さいコンテキストか、小さい/軽いモデルを使ってください。" -ForegroundColor Red
     exit 1
 }
 if (-not $isQuickLaunch) { Write-Host "" }
 
 # Prompt KV cache quantization selection
 $kvOptions = @(
-    [PSCustomObject]@{ Label = "Q8"; Type = "q8_0"; Note = "larger, stable default for K" },
-    [PSCustomObject]@{ Label = "Q5_1"; Type = "q5_1"; Note = "supported middle option for K, safer than Q4" },
-    [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "supported compact middle option" },
-    [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "compact, more quality risk for K" },
-    [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "uncompressed compatibility fallback" },
-    [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "uncompressed compatibility fallback, lower memory than f32" }
+    [PSCustomObject]@{ Label = "Q8"; Type = "q8_0"; Note = "大きいが安定、K の既定" },
+    [PSCustomObject]@{ Label = "Q5_1"; Type = "q5_1"; Note = "K で使える中間、Q4 より安全" },
+    [PSCustomObject]@{ Label = "Q5_0"; Type = "q5_0"; Note = "使える中間のコンパクト設定" },
+    [PSCustomObject]@{ Label = "Q4"; Type = "q4_0"; Note = "コンパクト、K は画質リスク大" },
+    [PSCustomObject]@{ Label = "f16"; Type = "f16"; Note = "非圧縮、互換フォールバック" },
+    [PSCustomObject]@{ Label = "bf16"; Type = "bf16"; Note = "非圧縮フォールバック、f32 より省メモリ" }
 )
 
 # Unsloth mainline build supports standard cache types only (no turbo KV).
 # No engine-specific probe needed.
 
 if (-not $isQuickLaunch) {
-    Write-Host "KV cache K type:" -ForegroundColor Green
+    Write-Host "KV キャッシュ K 型:" -ForegroundColor Green
     for ($i = 0; $i -lt $kvOptions.Count; $i++) {
         $kv = $kvOptions[$i]
         Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
@@ -2777,30 +2867,21 @@ if ($KCacheIndex -gt 0) {
 }
 else {
     $defaultKType = "q8_0"
-    do {
-        $defaultKLabel = $defaultKType
-        $kInput = Read-Host "Select K cache type (1-$($kvOptions.Count)), or press Enter for $defaultKLabel"
-        if ([string]::IsNullOrWhiteSpace($kInput)) {
-            $kSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultKType) + 1
-            if ($kSelection -le 0) { $kSelection = 1 }
-            $kValid = $true
-        }
-        else {
-            $kSelection = 0
-            $kValid = [int]::TryParse($kInput, [ref]$kSelection)
-        }
-    } while (-not $kValid -or $kSelection -lt 1 -or $kSelection -gt $kvOptions.Count)
+    $defaultKLabel = $defaultKType
+    $defaultKIndex = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultKType) + 1
+    if ($defaultKIndex -le 0) { $defaultKIndex = 1 }
+    $kSelection = Read-MenuInt -Prompt "K キャッシュ型を選択 (1-$($kvOptions.Count))、または Enter で $defaultKLabel" -Min 1 -Max $kvOptions.Count -Default $defaultKIndex
 }
 
 $selectedKCache = $kvOptions[$kSelection - 1]
 if (-not $isQuickLaunch) {
     Write-Host ""
-    Write-Host "KV cache K: $($selectedKCache.Label) ($($selectedKCache.Type))" -ForegroundColor Green
+    Write-Host "KV キャッシュ K: $($selectedKCache.Label) ($($selectedKCache.Type))" -ForegroundColor Green
     Write-Host ""
 }
 
 if (-not $isQuickLaunch) {
-    Write-Host "KV cache V type:" -ForegroundColor Green
+    Write-Host "KV キャッシュ V 型:" -ForegroundColor Green
     for ($i = 0; $i -lt $kvOptions.Count; $i++) {
         $kv = $kvOptions[$i]
         Write-Host " [$($i+1)] $($kv.Label) ($($kv.Type)) - $($kv.Note)"
@@ -2814,7 +2895,7 @@ if ($isDeepSeek) {
     $selectedVCache = $selectedKCache
     if (-not $isQuickLaunch) {
         Write-Host ""
-        Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type)) (symmetric - DeepSeek requires K==V)" -ForegroundColor Green
+        Write-Host "KV キャッシュ V: $($selectedVCache.Label) ($($selectedVCache.Type)) (対称 — DeepSeek は K==V を要求)" -ForegroundColor Green
         Write-Host ""
     }
 }
@@ -2832,89 +2913,63 @@ else {
     }
     else {
         $defaultVType = "q4_0"
-        do {
-            $defaultVLabel = $defaultVType
-            $vInput = Read-Host "Select V cache type (1-$($kvOptions.Count)), or press Enter for $defaultVLabel"
-            if ([string]::IsNullOrWhiteSpace($vInput)) {
-                $vSelection = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
-                $vValid = $true
-            }
-            else {
-                $vSelection = 0
-                $vValid = [int]::TryParse($vInput, [ref]$vSelection)
-            }
-        } while (-not $vValid -or $vSelection -lt 1 -or $vSelection -gt $kvOptions.Count)
+        $defaultVLabel = $defaultVType
+        $defaultVIndex = [array]::IndexOf(@($kvOptions | Select-Object -ExpandProperty Type), $defaultVType) + 1
+        if ($defaultVIndex -le 0) { $defaultVIndex = 1 }
+        $vSelection = Read-MenuInt -Prompt "V キャッシュ型を選択 (1-$($kvOptions.Count))、または Enter で $defaultVLabel" -Min 1 -Max $kvOptions.Count -Default $defaultVIndex
     }
 
     $selectedVCache = $kvOptions[$vSelection - 1]
     if (-not $isQuickLaunch) {
         Write-Host ""
-        Write-Host "KV cache V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
+        Write-Host "KV キャッシュ V: $($selectedVCache.Label) ($($selectedVCache.Type))" -ForegroundColor Green
         Write-Host ""
     }
 }
 
 if ($ClientMode -eq "Prompt") {
-    Write-Host "Workspace:" -ForegroundColor Green
+    Write-Host "ワークスペース:" -ForegroundColor Green
     Write-Host " [1] Cline - コーディングエージェント"
     Write-Host " [2] OpenCode - ターミナルコーディングエージェント"
     Write-Host " [3] Pi - pi.dev コーディングエージェント"
     Write-Host " [4] Llama Agent - ターミナルエージェントと詳細Web証拠収集"
     Write-Host " [5] ComfyUI - MiniMax H3 動画・音声生成"
     Write-Host " [6] DeepSeek Harness - エージェントハーネス（ローカルLLM接続）"
+    Write-Host " [7] ARTEX - AI自律ペネトレーションテストコンソール"
     Write-Host ""
 
-    do {
-        $clientInput = Read-Host "Select workspace (1-6), or press Enter for Cline"
-        if ([string]::IsNullOrWhiteSpace($clientInput)) {
-            $clientSelection = 1
-            $clientValid = $true
-        }
-        else {
-            $clientSelection = 0
-            $clientValid = [int]::TryParse($clientInput, [ref]$clientSelection)
-        }
-    } while (-not $clientValid -or $clientSelection -lt 1 -or $clientSelection -gt 6)
+    $clientSelection = Read-MenuInt -Prompt "ワークスペースを選択 (1-7)、または Enter で Cline" -Min 1 -Max 7 -Default 1
 
     if ($clientSelection -eq 1) { $ClientMode = "Cline" }
     elseif ($clientSelection -eq 2) { $ClientMode = "OpenCode" }
     elseif ($clientSelection -eq 3) { $ClientMode = "Pi" }
     elseif ($clientSelection -eq 4) { $ClientMode = "LlamaAgent" }
     elseif ($clientSelection -eq 5) { $ClientMode = "ComfyUI" }
-    else { $ClientMode = "DeepSeekHarness" }
+    elseif ($clientSelection -eq 6) { $ClientMode = "DeepSeekHarness" }
+    else { $ClientMode = "ARTEX" }
 }
 
 if (-not $isQuickLaunch) {
-    Write-Host "Workspace: $ClientMode" -ForegroundColor Green
+    Write-Host "ワークスペース: $ClientMode" -ForegroundColor Green
     Write-Host ""
 }
 
 $offloadOptions = @(
-    [PSCustomObject]@{ Label = "Auto"; Value = "auto"; Note = "llama.cpp decides GPU layer offload" },
-    [PSCustomObject]@{ Label = "All"; Value = "all"; Note = "try to offload all layers" },
-    [PSCustomObject]@{ Label = "CPU"; Value = "0"; Note = "CPU only" },
-    [PSCustomObject]@{ Label = "Custom"; Value = "custom"; Note = "enter a layer count" }
+    [PSCustomObject]@{ Label = "Auto"; Value = "auto"; Note = "llama.cpp が GPU レイヤー数を決定" },
+    [PSCustomObject]@{ Label = "All"; Value = "all"; Note = "全レイヤーのオフロードを試行" },
+    [PSCustomObject]@{ Label = "CPU"; Value = "0"; Note = "CPU のみ" },
+    [PSCustomObject]@{ Label = "カスタム"; Value = "custom"; Note = "レイヤー数を入力" }
 )
 
 if ($OffloadMode -eq "Prompt") {
-    Write-Host "GPU offload:" -ForegroundColor Green
+    Write-Host "GPU オフロード:" -ForegroundColor Green
     for ($i = 0; $i -lt $offloadOptions.Count; $i++) {
         $offload = $offloadOptions[$i]
         Write-Host " [$($i+1)] $($offload.Label) - $($offload.Note)"
     }
     Write-Host ""
 
-    do {
-        $offloadInput = Read-Host "Select GPU offload (1-$($offloadOptions.Count)), or press Enter for Auto"
-        if ([string]::IsNullOrWhiteSpace($offloadInput)) {
-            $offloadSelection = 1
-            $offloadValid = $true
-        }
-        else {
-            $offloadSelection = 0
-            $offloadValid = [int]::TryParse($offloadInput, [ref]$offloadSelection)
-        }
-    } while (-not $offloadValid -or $offloadSelection -lt 1 -or $offloadSelection -gt $offloadOptions.Count)
+    $offloadSelection = Read-MenuInt -Prompt "GPU オフロードを選択 (1-$($offloadOptions.Count))、または Enter で Auto" -Min 1 -Max $offloadOptions.Count -Default 1
 
     $selectedOffload = $offloadOptions[$offloadSelection - 1].Value
 }
@@ -2933,11 +2988,7 @@ else {
 
 if ($selectedOffload -eq "custom") {
     if ([string]::IsNullOrWhiteSpace($OffloadLayers)) {
-        do {
-            $offloadLayersInput = Read-Host "Enter GPU layer count"
-            $offloadLayersValue = 0
-            $offloadLayersValid = [int]::TryParse($offloadLayersInput, [ref]$offloadLayersValue)
-        } while (-not $offloadLayersValid -or $offloadLayersValue -lt 0)
+        $offloadLayersValue = Read-MenuInt -Prompt "GPU レイヤー数を入力" -Min 0 -Max 2147483647
         $selectedOffload = [string]$offloadLayersValue
     }
     else {
@@ -2948,43 +2999,33 @@ if ($selectedOffload -eq "custom") {
 $serverOffload = if ($selectedOffload -eq "auto") { "auto" } elseif ($selectedOffload -eq "all") { "all" } else { $selectedOffload }
 if ($NglLayers -gt 0) {
     $serverOffload = [string]$NglLayers
-    Write-Host "GPU layers override: -ngl $NglLayers (-NglLayers)" -ForegroundColor Yellow
+    Write-Host "GPU レイヤー上書き: -ngl $NglLayers (-NglLayers)" -ForegroundColor Yellow
 }
 if (-not $isQuickLaunch) {
-    Write-Host "GPU offload: $selectedOffload" -ForegroundColor Green
-    Write-Host "GPU offload estimate: $(Get-VramRiskLabel -ModelSizeGB $selectedModelSizeGB -VramGB $primaryVramGB -OffloadMode $selectedOffload)" -ForegroundColor Yellow
-    Write-Host "GPU layers passed to llama-server: $serverOffload" -ForegroundColor Yellow
+    Write-Host "GPU オフロード: $selectedOffload" -ForegroundColor Green
+    Write-Host "GPU オフロード見積り: $(Get-VramRiskLabel -ModelSizeGB $selectedModelSizeGB -VramGB $primaryVramGB -OffloadMode $selectedOffload)" -ForegroundColor Yellow
+    Write-Host "llama-server へ渡す GPU レイヤー: $serverOffload" -ForegroundColor Yellow
     Write-Host ""
 }
 $moeExpertOptions = @(
-    [PSCustomObject]@{ Label = "Auto"; Value = "Auto"; Note = "model default, safest" },
-    [PSCustomObject]@{ Label = "2"; Value = "2"; Note = "common fast MoE setting" },
-    [PSCustomObject]@{ Label = "3"; Value = "3"; Note = "balanced manual setting" },
-    [PSCustomObject]@{ Label = "4"; Value = "4"; Note = "heavier quality test" },
-    [PSCustomObject]@{ Label = "6"; Value = "6"; Note = "8-expert models only, heavy" },
-    [PSCustomObject]@{ Label = "8"; Value = "8"; Note = "8-expert models only, very heavy" },
-    [PSCustomObject]@{ Label = "Custom"; Value = "Custom"; Note = "enter expert count" }
+    [PSCustomObject]@{ Label = "Auto"; Value = "Auto"; Note = "モデル既定、最安全" },
+    [PSCustomObject]@{ Label = "2"; Value = "2"; Note = "よく使われる高速 MoE 設定" },
+    [PSCustomObject]@{ Label = "3"; Value = "3"; Note = "バランス型の手動設定" },
+    [PSCustomObject]@{ Label = "4"; Value = "4"; Note = "重い品質テスト" },
+    [PSCustomObject]@{ Label = "6"; Value = "6"; Note = "8-expert モデルのみ、重い" },
+    [PSCustomObject]@{ Label = "8"; Value = "8"; Note = "8-expert モデルのみ、非常に重い" },
+    [PSCustomObject]@{ Label = "カスタム"; Value = "Custom"; Note = "エキスパート数を入力" }
 )
 
 if ($MoeExpertsMode -eq "Prompt") {
-    Write-Host "MoE expert count:" -ForegroundColor Green
+    Write-Host "MoE エキスパート数:" -ForegroundColor Green
     for ($i = 0; $i -lt $moeExpertOptions.Count; $i++) {
         $moe = $moeExpertOptions[$i]
         Write-Host " [$($i+1)] $($moe.Label) - $($moe.Note)"
     }
     Write-Host ""
 
-    do {
-        $moeInput = Read-Host "Select MoE experts (1-$($moeExpertOptions.Count)), or press Enter for Auto"
-        if ([string]::IsNullOrWhiteSpace($moeInput)) {
-            $moeSelection = 1
-            $moeValid = $true
-        }
-        else {
-            $moeSelection = 0
-            $moeValid = [int]::TryParse($moeInput, [ref]$moeSelection)
-        }
-    } while (-not $moeValid -or $moeSelection -lt 1 -or $moeSelection -gt $moeExpertOptions.Count)
+    $moeSelection = Read-MenuInt -Prompt "MoE エキスパート数を選択 (1-$($moeExpertOptions.Count))、または Enter で Auto" -Min 1 -Max $moeExpertOptions.Count -Default 1
 
     $MoeExpertsMode = $moeExpertOptions[$moeSelection - 1].Value
 }
@@ -2992,11 +3033,7 @@ if ($MoeExpertsMode -eq "Prompt") {
 $selectedMoeExperts = ""
 if ($MoeExpertsMode -eq "Custom") {
     if ([string]::IsNullOrWhiteSpace($MoeExpertsCount)) {
-        do {
-            $moeCustomInput = Read-Host "Enter MoE expert count"
-            $moeCustomValue = 0
-            $moeCustomValid = [int]::TryParse($moeCustomInput, [ref]$moeCustomValue)
-        } while (-not $moeCustomValid -or $moeCustomValue -lt 1)
+        $moeCustomValue = Read-MenuInt -Prompt "MoE エキスパート数を入力" -Min 1 -Max 2147483647
         $selectedMoeExperts = [string]$moeCustomValue
     }
     else {
@@ -3014,11 +3051,11 @@ elseif ($MoeExpertsMode -ne "Auto") {
 
 if (-not $isQuickLaunch) {
     if ([string]::IsNullOrWhiteSpace($selectedMoeExperts)) {
-        Write-Host "MoE expert count: Auto" -ForegroundColor Green
+        Write-Host "MoE エキスパート数: Auto" -ForegroundColor Green
     }
     else {
-        Write-Host "MoE expert count: $selectedMoeExperts" -ForegroundColor Green
-        Write-Host "WARNING: Only use manual MoE expert count with MoE models that support this many experts." -ForegroundColor Yellow
+        Write-Host "MoE エキスパート数: $selectedMoeExperts" -ForegroundColor Green
+        Write-Host "警告: 手動の MoE エキスパート数は、この数をサポートする MoE モデルでのみ使用してください。" -ForegroundColor Yellow
     }
     Write-Host ""
 }
@@ -3026,39 +3063,29 @@ if (-not $isQuickLaunch) {
 # --- CPU MoE Layers (--n-cpu-moe) ---
 $selectedCpuMoe = ""
 $cpuMoeOptions = @(
-    [PSCustomObject]@{ Label = "Auto"; Value = "Auto"; Note = "auto-calculate based on model size vs VRAM" },
-    [PSCustomObject]@{ Label = "Off (0)"; Value = "0"; Note = "all MoE weights on GPU" },
-    [PSCustomObject]@{ Label = "Light (10)"; Value = "10"; Note = "first 10 layers MoE on CPU" },
-    [PSCustomObject]@{ Label = "Medium (20)"; Value = "20"; Note = "first 20 layers MoE on CPU" },
-    [PSCustomObject]@{ Label = "Heavy (44)"; Value = "44"; Note = "AJ's 3060 setting" },
-    [PSCustomObject]@{ Label = "All (99)"; Value = "99"; Note = "all MoE weights on CPU" },
-    [PSCustomObject]@{ Label = "Custom"; Value = "Custom"; Note = "enter layer count" }
+    [PSCustomObject]@{ Label = "Auto"; Value = "Auto"; Note = "モデルサイズと VRAM から自動計算" },
+    [PSCustomObject]@{ Label = "オフ (0)"; Value = "0"; Note = "MoE 重みを全て GPU に" },
+    [PSCustomObject]@{ Label = "軽 (10)"; Value = "10"; Note = "先頭 10 レイヤーの MoE を CPU に" },
+    [PSCustomObject]@{ Label = "中 (20)"; Value = "20"; Note = "先頭 20 レイヤーの MoE を CPU に" },
+    [PSCustomObject]@{ Label = "重 (44)"; Value = "44"; Note = "AJ の 3060 設定" },
+    [PSCustomObject]@{ Label = "全て (99)"; Value = "99"; Note = "MoE 重みを全て CPU に" },
+    [PSCustomObject]@{ Label = "カスタム"; Value = "Custom"; Note = "レイヤー数を入力" }
 )
 
 if ($isLikelyMoeModel -and -not $isQuickLaunch -and [string]::IsNullOrWhiteSpace($CpuMoeMode) -and $requiredEngine -ne "Strata") {
-    Write-Host "CPU MoE layers (--n-cpu-moe):" -ForegroundColor Green
+    Write-Host "CPU MoE レイヤー (--n-cpu-moe):" -ForegroundColor Green
     for ($i = 0; $i -lt $cpuMoeOptions.Count; $i++) {
         $opt = $cpuMoeOptions[$i]
         Write-Host " [$($i+1)] $($opt.Label) - $($opt.Note)"
     }
     Write-Host ""
 
-    do {
-        # qwen4exp (Qwen3.8-Flash-Next) measured best at 44 (4 of 48 expert
-        # layers on GPU); deeper GPU offload loses to CPU/DDR4 on this box.
-        # Kept as reference; the model itself no longer switches engines.
-        $defaultCpuMoeLabel = if ($isDeepSeek) { "All (99)" } else { "Auto" }
-        $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
-        $cpuMoeInput = Read-Host "Select CPU MoE layers (1-$($cpuMoeOptions.Count)), or press Enter for $defaultCpuMoeLabel"
-        if ([string]::IsNullOrWhiteSpace($cpuMoeInput)) {
-            $cpuMoeSelection = $defaultCpuMoeIndex
-            $cpuMoeValid = $true
-        }
-        else {
-            $cpuMoeSelection = 0
-            $cpuMoeValid = [int]::TryParse($cpuMoeInput, [ref]$cpuMoeSelection)
-        }
-    } while (-not $cpuMoeValid -or $cpuMoeSelection -lt 1 -or $cpuMoeSelection -gt $cpuMoeOptions.Count)
+    # qwen4exp (Qwen3.8-Flash-Next) measured best at 44 (4 of 48 expert
+    # layers on GPU); deeper GPU offload loses to CPU/DDR4 on this box.
+    # Kept as reference; the model itself no longer switches engines.
+    $defaultCpuMoeLabel = if ($isDeepSeek) { "全て (99)" } else { "Auto" }
+    $defaultCpuMoeIndex = if ($isDeepSeek) { 6 } else { 1 }
+    $cpuMoeSelection = Read-MenuInt -Prompt "CPU MoE レイヤーを選択 (1-$($cpuMoeOptions.Count))、または Enter で $defaultCpuMoeLabel" -Min 1 -Max $cpuMoeOptions.Count -Default $defaultCpuMoeIndex
 
     $cpuMoeMode = $cpuMoeOptions[$cpuMoeSelection - 1].Value
 }
@@ -3073,7 +3100,7 @@ if ($script:LagunaHotExpert -and $isQwen4Exp) {
     # emit --n-cpu-moe / --cpu-moe — those fight the FreeToken-style layout.
     $selectedCpuMoe = "0"
     if (-not $isQuickLaunch) {
-        Write-Host "CPU MoE layers: off — Laguna --moe-hot-expert handles expert placement" -ForegroundColor Green
+        Write-Host "CPU MoE レイヤー: オフ — Laguna --moe-hot-expert が配置を担当" -ForegroundColor Green
     }
 }
 elseif ($cpuMoeMode -eq "Auto") {
@@ -3096,7 +3123,7 @@ elseif ($cpuMoeMode -eq "Auto") {
         if ($isDeepSeek) {
             $selectedCpuMoe = "99"
             if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto (99) - DeepSeek fastest config keeps all experts on CPU" -ForegroundColor Yellow
+                Write-Host "CPU MoE レイヤー: Auto (99) — DeepSeek 最速設定は全 experts を CPU に固定" -ForegroundColor Yellow
             }
         }
         elseif ($isQwen4Exp -and -not $script:LagunaHotExpert) {
@@ -3106,30 +3133,26 @@ elseif ($cpuMoeMode -eq "Auto") {
             # Laguna hot-expert is handled above and never reaches this branch.
             $selectedCpuMoe = "4"
             if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto (4) - Unsloth Flash-Next path (PLE lazy on disk)" -ForegroundColor Yellow
+                Write-Host "CPU MoE レイヤー: Auto (4) — Unsloth Flash-Next 経路 (PLE はディスク lazy)" -ForegroundColor Yellow
             }
         }
         else {
             $ratio = ($modelSizeGB - $vramGB) / $modelSizeGB
             $selectedCpuMoe = [math]::Min(99, [math]::Max(1, [math]::Ceiling($ratio * 48)))
             if (-not $isQuickLaunch) {
-                Write-Host "CPU MoE layers: Auto ($selectedCpuMoe) - model ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
+                Write-Host "CPU MoE レイヤー: Auto ($selectedCpuMoe) — モデル ${modelSizeGB}GB > VRAM ${vramGB}GB" -ForegroundColor Yellow
             }
         }
     }
     else {
         $selectedCpuMoe = "0"
         if (-not $isQuickLaunch) {
-            Write-Host "CPU MoE layers: 0 (model ${modelSizeGB}GB fits in VRAM ${vramGB}GB)" -ForegroundColor Green
+            Write-Host "CPU MoE レイヤー: 0 (モデル ${modelSizeGB}GB は VRAM ${vramGB}GB に収まる)" -ForegroundColor Green
         }
     }
 }
 elseif ($cpuMoeMode -eq "Custom") {
-    do {
-        $customInput = Read-Host "Enter CPU MoE layer count"
-        $customValue = 0
-        $customValid = [int]::TryParse($customInput, [ref]$customValue)
-    } while (-not $customValid -or $customValue -lt 0)
+    $customValue = Read-MenuInt -Prompt "CPU MoE レイヤー数を入力" -Min 0 -Max 2147483647
     $selectedCpuMoe = [string]$customValue
 }
 else {
@@ -3137,12 +3160,12 @@ else {
 }
 
 if (-not $isQuickLaunch -and $selectedCpuMoe -ne "0") {
-    Write-Host "CPU MoE layers: $selectedCpuMoe" -ForegroundColor Green
+    Write-Host "CPU MoE レイヤー: $selectedCpuMoe" -ForegroundColor Green
 }
 
 if ([string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and -not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
     $kwargsDefaultLabel = "none"
-    $kwargsInput = Read-Host "chat-template-kwargs JSON, or press Enter for $kwargsDefaultLabel"
+    $kwargsInput = Read-Host "chat-template-kwargs JSON、または Enter で $kwargsDefaultLabel"
     if (-not [string]::IsNullOrWhiteSpace($kwargsInput)) {
         $ChatTemplateKwargs = $kwargsInput
     }
@@ -3157,12 +3180,12 @@ $selectedReasoningValue = ""
 $selectedReasoningBudget = 0
 
 $reasoningOptions = @(
-    [PSCustomObject]@{ Label = "Off    - no thinking (fastest, best for tool calls)"; Value = "off" },
-    [PSCustomObject]@{ Label = "Low    - light thinking (--reasoning-effort low)"; Value = "low" },
-    [PSCustomObject]@{ Label = "Medium - moderate thinking (--reasoning-effort medium)"; Value = "medium" },
-    [PSCustomObject]@{ Label = "High   - deep thinking (--reasoning-effort high)"; Value = "high" },
-    [PSCustomObject]@{ Label = "Budget - cap thinking tokens (--reasoning-budget N)"; Value = "budget" },
-    [PSCustomObject]@{ Label = "On     - unrestricted thinking"; Value = "on" }
+    [PSCustomObject]@{ Label = "Off    - 思考なし (最速、ツール呼び出しに最適)"; Value = "off" },
+    [PSCustomObject]@{ Label = "Low    - 軽い思考 (--reasoning-effort low)"; Value = "low" },
+    [PSCustomObject]@{ Label = "Medium - 中程度の思考 (--reasoning-effort medium)"; Value = "medium" },
+    [PSCustomObject]@{ Label = "High   - 深い思考 (--reasoning-effort high)"; Value = "high" },
+    [PSCustomObject]@{ Label = "Budget - 思考トークンを上限指定 (--reasoning-budget N)"; Value = "budget" },
+    [PSCustomObject]@{ Label = "On     - 制限なしの思考"; Value = "on" }
 )
 
 if (-not [string]::IsNullOrWhiteSpace($ReasoningMode)) {
@@ -3171,7 +3194,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReasoningMode)) {
     $selectedReasoningBudget = $ReasoningBudget
 }
 elseif (-not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
-    Write-Host "Reasoning (thinking) mode:" -ForegroundColor Green
+    Write-Host "推論 (thinking) モード:" -ForegroundColor Green
     for ($i = 0; $i -lt $reasoningOptions.Count; $i++) {
         Write-Host " [$($i+1)] $($reasoningOptions[$i].Label)"
     }
@@ -3180,30 +3203,14 @@ elseif (-not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata")
     # --thinking none and agentic tool loops only slow down when the model
     # spends tokens reasoning first. Pick any other option to override.
     $defaultReasoning = if ($script:LagunaHotExpert -and $isQwen4Exp) { "off" }
-        elseif ($ClientMode -in @("Cline", "OpenCode")) { "off" }
-        else { "low" }
+    elseif ($ClientMode -in @("Cline", "OpenCode")) { "off" }
+    else { "low" }
     $defaultReasoningIndex = [array]::IndexOf(@($reasoningOptions.Value), $defaultReasoning) + 1
-    do {
-        $reasoningInput = Read-Host "Select reasoning mode (1-$($reasoningOptions.Count)), or press Enter for $defaultReasoning"
-        if ([string]::IsNullOrWhiteSpace($reasoningInput)) {
-            $reasoningSelection = $defaultReasoningIndex
-            $reasoningValid = $true
-        }
-        else {
-            $reasoningSelection = 0
-            $reasoningValid = [int]::TryParse($reasoningInput, [ref]$reasoningSelection)
-        }
-    } while (-not $reasoningValid -or $reasoningSelection -lt 1 -or $reasoningSelection -gt $reasoningOptions.Count)
+    $reasoningSelection = Read-MenuInt -Prompt "推論モードを選択 (1-$($reasoningOptions.Count))、または Enter で $defaultReasoning" -Min 1 -Max $reasoningOptions.Count -Default $defaultReasoningIndex
 
     $selectedReasoningValue = $reasoningOptions[$reasoningSelection - 1].Value
     if ($selectedReasoningValue -eq "budget") {
-        $budgetInput = Read-Host "Thinking token budget, or press Enter for 2048"
-        if (-not [string]::IsNullOrWhiteSpace($budgetInput)) {
-            $parsedBudget = 0
-            if ([int]::TryParse($budgetInput, [ref]$parsedBudget) -and $parsedBudget -gt 0) {
-                $selectedReasoningBudget = $parsedBudget
-            }
-        }
+        $selectedReasoningBudget = Read-MenuInt -Prompt "思考トークン上限、または Enter で 2048" -Min 1 -Max 2147483647 -Default 2048
     }
 }
 
@@ -3219,7 +3226,7 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
             $effectiveReasoningMode = "on"
             if ($selectedReasoningBudget -gt 0) { $effectiveReasoningBudget = $selectedReasoningBudget } else { $effectiveReasoningBudget = 2048 }
         }
-        default  { Write-Host "WARNING: unknown reasoning mode '$selectedReasoningValue', ignoring." -ForegroundColor Yellow }
+        default  { Write-Host "警告: 不明な推論モード '$selectedReasoningValue' は無視します。" -ForegroundColor Yellow }
     }
     # Laguna engine reply (2026-09-18): --reasoning-effort works on the new
     # stage1 server build; chat-template-kwargs may be used alongside.
@@ -3240,7 +3247,7 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
         $reasoningSummary = "--reasoning $effectiveReasoningMode"
         if ($effectiveReasoningEffort) { $reasoningSummary += " --reasoning-effort $effectiveReasoningEffort" }
         if ($effectiveReasoningBudget -gt 0) { $reasoningSummary += " --reasoning-budget $effectiveReasoningBudget" }
-        Write-Host "Reasoning mode: $selectedReasoningValue ($reasoningSummary)" -ForegroundColor Green
+        Write-Host "推論モード: $selectedReasoningValue ($reasoningSummary)" -ForegroundColor Green
         Write-Host ""
     }
 }
@@ -3251,7 +3258,7 @@ if (-not [string]::IsNullOrWhiteSpace($selectedReasoningValue)) {
 # menus below. Everything is still reachable manually.
 $advancedSettingsMenu = $false
 if (-not $DryRun -and -not $isQuickLaunch -and $requiredEngine -ne "Strata") {
-    Write-Host "Advanced settings（詳細設定）:" -ForegroundColor Green
+    Write-Host "詳細設定:" -ForegroundColor Green
     Write-Host " [Enter] 最適設定のまま（推奨）"
     Write-Host " [1] 詳細設定を変更する"
     Write-Host ""
@@ -3302,7 +3309,7 @@ elseif ($isQwen4Exp -and -not $advancedSettingsMenu) {
     $effectiveSamplerPreset = if ($flashNextThinking) { "flash-next-think" } else { "flash-next-instruct" }
 }
 elseif (-not $DryRun -and $advancedSettingsMenu) {
-    Write-Host "Sampler（出力調整）preset:" -ForegroundColor Green
+    Write-Host "サンプラー (出力調整) プリセット:" -ForegroundColor Green
     for ($i = 0; $i -lt $samplerPresetOptions.Count; $i++) {
         Write-Host " [$($i+1)] $($samplerPresetOptions[$i].Label)"
     }
@@ -3312,17 +3319,7 @@ elseif (-not $DryRun -and $advancedSettingsMenu) {
     for ($i = 0; $i -lt $samplerPresetOptions.Count; $i++) {
         if ($samplerPresetOptions[$i].Value -eq $defaultSampler) { $defaultSamplerIndex = $i + 1; break }
     }
-    do {
-        $samplerInput = Read-Host "Select sampler preset (1-$($samplerPresetOptions.Count)), or press Enter for $defaultSampler"
-        if ([string]::IsNullOrWhiteSpace($samplerInput)) {
-            $samplerSelection = $defaultSamplerIndex
-            $samplerValid = $true
-        }
-        else {
-            $samplerSelection = 0
-            $samplerValid = [int]::TryParse($samplerInput, [ref]$samplerSelection)
-        }
-    } while (-not $samplerValid -or $samplerSelection -lt 1 -or $samplerSelection -gt $samplerPresetOptions.Count)
+    $samplerSelection = Read-MenuInt -Prompt "サンプラープリセットを選択 (1-$($samplerPresetOptions.Count))、または Enter で $defaultSampler" -Min 1 -Max $samplerPresetOptions.Count -Default $defaultSamplerIndex
     $effectiveSamplerPreset = $samplerPresetOptions[$samplerSelection - 1].Value
 }
 elseif (-not $DryRun) {
@@ -3350,7 +3347,7 @@ switch ($effectiveSamplerPreset) {
     "chat"        { $presetTemp = 0.8;                       $presetTopP = 0.95; $presetMinP = 0.05; $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
     "repeat-only" {                                                                                     $presetRepeat = "1.1"; $presetRepeatLastN = 512 }
     "off"         { }
-    default       { if ($effectiveSamplerPreset) { Write-Host "WARNING: unknown sampler preset '$effectiveSamplerPreset', ignoring." -ForegroundColor Yellow } }
+    default       { if ($effectiveSamplerPreset) { Write-Host "警告: 不明なサンプラープリセット '$effectiveSamplerPreset' は無視します。" -ForegroundColor Yellow } }
 }
 $effectiveTemperature = if ($Temperature -gt 0) { $Temperature } else { $presetTemp }
 $effectiveTopK = if ($TopK -gt 0) { $TopK } else { $presetTopK }
@@ -3375,11 +3372,7 @@ if ($effectiveRepeatPenalty) { $samplerSummary += "repeat=$effectiveRepeatPenalt
 $effectiveCacheReuse = $CacheReuse
 if ($effectiveCacheReuse -lt 0) { $effectiveCacheReuse = 512 }
 if (-not $DryRun -and $advancedSettingsMenu -and $CacheReuse -lt 0) {
-    $cacheReuseInput = Read-Host "Prompt-cache reuse (--cache-reuse), press Enter for 512 (0 = off)"
-    if (-not [string]::IsNullOrWhiteSpace($cacheReuseInput)) {
-        $parsedCacheReuse = 0
-        if ([int]::TryParse($cacheReuseInput, [ref]$parsedCacheReuse)) { $effectiveCacheReuse = $parsedCacheReuse }
-    }
+    $effectiveCacheReuse = Read-MenuInt -Prompt "プロンプトキャッシュ再利用 (--cache-reuse)、Enter で 512 (0 = オフ)" -Min 0 -Max 2147483647 -Default 512
 }
 
 # Process priority (--prio). high = optimal on Windows (small decode win, less
@@ -3392,11 +3385,11 @@ if (-not [string]::IsNullOrWhiteSpace($Priority)) {
     else {
         $parsedPrio = 0
         if ([int]::TryParse($Priority, [ref]$parsedPrio) -and $parsedPrio -ge -1 -and $parsedPrio -le 3) { $effectivePriorityValue = $parsedPrio }
-        else { Write-Host "WARNING: unknown priority '$Priority', using high (2)." -ForegroundColor Yellow }
+        else { Write-Host "警告: 不明な優先度 '$Priority' のため high (2) を使用します。" -ForegroundColor Yellow }
     }
 }
 if (-not $DryRun -and $advancedSettingsMenu -and [string]::IsNullOrWhiteSpace($Priority)) {
-    $priorityInput = Read-Host "Process priority (--prio), press Enter for high (2) [low/normal/medium/high/realtime]"
+    $priorityInput = Read-Host "プロセス優先度 (--prio)、Enter で high (2) [low/normal/medium/high/realtime]"
     if (-not [string]::IsNullOrWhiteSpace($priorityInput)) {
         $prioKey = $priorityInput.Trim().ToLower()
         if ($priorityMap.ContainsKey($prioKey)) { $effectivePriorityValue = $priorityMap[$prioKey] }
@@ -3413,13 +3406,7 @@ if (-not $DryRun -and $advancedSettingsMenu -and [string]::IsNullOrWhiteSpace($P
 # section below re-resolves from param/env when this stays 0.
 $effectiveUbatch = 0
 if (-not $DryRun -and $advancedSettingsMenu -and $Ubatch -le 0) {
-    $ubatchInput = Read-Host "Ubatch (--ubatch-size), press Enter for 1024"
-    if ([string]::IsNullOrWhiteSpace($ubatchInput)) { $effectiveUbatch = 1024 }
-    else {
-        $parsedUbatch = 0
-        if ([int]::TryParse($ubatchInput, [ref]$parsedUbatch) -and $parsedUbatch -gt 0) { $effectiveUbatch = $parsedUbatch }
-        else { $effectiveUbatch = 1024 }
-    }
+    $effectiveUbatch = Read-MenuInt -Prompt "Ubatch (--ubatch-size)、Enter で 1024" -Min 1 -Max 2147483647 -Default 1024
 }
 
 if ($effectiveCacheReuse -gt 0) { $samplerSummary += "cache-reuse=$effectiveCacheReuse" }
@@ -3482,7 +3469,7 @@ if (-not [string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and [string]::IsNull
         }
     }
     catch {
-        Write-Host "ERROR: chat-template-kwargs must be valid JSON" -ForegroundColor Red
+        Write-Host "エラー: chat-template-kwargs は有効な JSON である必要があります" -ForegroundColor Red
         exit 1
     }
 }
@@ -3495,7 +3482,7 @@ if (-not [string]::IsNullOrWhiteSpace($ChatTemplateKwargs) -and [string]::IsNull
 if ([string]::IsNullOrWhiteSpace($effectiveReasoningMode) -and $ClientMode -in @("Cline", "OpenCode", "Pi")) {
     $effectiveReasoningMode = "off"
     if (-not $DryRun) {
-        Write-Host "Reasoning mode: off (coding default)" -ForegroundColor Green
+        Write-Host "推論モード: オフ (コーディング既定)" -ForegroundColor Green
         Write-Host ""
     }
 }
@@ -3544,27 +3531,17 @@ if ($effectiveCacheRamMiB -lt 0) {
     }
 }
 if (-not $isQuickLaunch) {
-    Write-Host "Prompt cache RAM: $effectiveCacheRamMiB MiB" -ForegroundColor Green
+    Write-Host "プロンプトキャッシュ RAM: $effectiveCacheRamMiB MiB" -ForegroundColor Green
     Write-Host ""
 }
 
 if ($FlashAttentionMode -eq "Prompt") {
-    Write-Host "Flash Attention:" -ForegroundColor Green
+    Write-Host "Flash Attention モード:" -ForegroundColor Green
     Write-Host " [1] On - 対応時は最速"
     Write-Host " [2] Off - ヘッドサイズ非対応モデル向けの互換フォールバック"
     Write-Host ""
 
-    do {
-        $faInput = Read-Host "Select Flash Attention (1-2), or press Enter for On"
-        if ([string]::IsNullOrWhiteSpace($faInput)) {
-            $faSelection = 1
-            $faValid = $true
-        }
-        else {
-            $faSelection = 0
-            $faValid = [int]::TryParse($faInput, [ref]$faSelection)
-        }
-    } while (-not $faValid -or $faSelection -lt 1 -or $faSelection -gt 2)
+    $faSelection = Read-MenuInt -Prompt "Flash Attention を選択 (1-2)、または Enter で On" -Min 1 -Max 2 -Default 1
 
     if ($faSelection -eq 1) { $FlashAttentionMode = "On" }
     else { $FlashAttentionMode = "Off" }
@@ -3575,14 +3552,14 @@ else { $flashAttention = "on" }
 
 if (-not $isQuickLaunch) {
     Write-Host "Flash Attention: $flashAttention" -ForegroundColor Green
-    $visionSummary = if ($visionMmprojPath) { if ($visionEnabled) { "on ($($visionMmprojPath.Name))" } else { "off (adapter found)" } } else { "n/a (no mmproj next to model)" }
-    Write-Host "Vision: $visionSummary" -ForegroundColor Green
+    $visionSummary = if ($visionMmprojPath) { if ($visionEnabled) { "on ($($visionMmprojPath.Name))" } else { "off (アダプタ検出済み)" } } else { "なし (モデル隣に mmproj なし)" }
+    Write-Host "ビジョン: $visionSummary" -ForegroundColor Green
     Write-Host ""
 }
 
 if ($flashAttention -eq "off" -and $effectiveVCacheType -notin @("f16", "bf16", "f32")) {
-    Write-Host "ERROR: V cache quantization requires Flash Attention." -ForegroundColor Red
-    Write-Host "Select Flash Attention On, or use V cache f16/bf16/f32." -ForegroundColor Red
+    Write-Host "エラー: V キャッシュ量子化には Flash Attention が必要です。" -ForegroundColor Red
+    Write-Host "Flash Attention On を選ぶか、V キャッシュを f16/bf16/f32 にしてください。" -ForegroundColor Red
     exit 1
 }
 
@@ -3600,8 +3577,8 @@ $modelHasMtpDraft = [bool]$mtpDraftPath
 $modelCanMtp = $modelIsMtpBuiltIn -or $modelHasMtpDraft
 
 if ($SpecMode -eq "Prompt") {
-    Write-Host "Speculative decoding mode:" -ForegroundColor Green
-    Write-Host " [1] Off - normal decoding"
+    Write-Host "投機的デコードモード:" -ForegroundColor Green
+    Write-Host " [1] Off - 通常デコード"
     if ($modelCanMtp) {
         Write-Host " [2] MTP/NextN --spec-type draft-mtp (Unsloth: n-max 2〜5)  【MTP あり】" -ForegroundColor Cyan
         if ($mtpDraftPath) { Write-Host "     draft: $($mtpDraftPath.Name)" -ForegroundColor DarkGray }
@@ -3624,19 +3601,9 @@ if ($SpecMode -eq "Prompt") {
         5 = "MtpNgramMod"
     }
     $maxSpecChoice = if ($modelCanMtp) { 5 } else { 4 }
-    do {
-        $defaultSpecChoice = if ($modelIsMtpBuiltIn) { 2 } elseif ($isQwen4Exp) { 4 } else { 1 }
-        $defaultSpecLabel = $specChoices[[int]$defaultSpecChoice]
-        $specInput = Read-Host "Select speculative mode (1-$maxSpecChoice), or press Enter for $defaultSpecLabel"
-        if ([string]::IsNullOrWhiteSpace($specInput)) {
-            $specSelection = $defaultSpecChoice
-            $specValid = $true
-        }
-        else {
-            $specSelection = 0
-            $specValid = [int]::TryParse($specInput, [ref]$specSelection)
-        }
-    } while (-not $specValid -or $specSelection -lt 1 -or $specSelection -gt $maxSpecChoice)
+    $defaultSpecChoice = if ($modelIsMtpBuiltIn) { 2 } elseif ($isQwen4Exp) { 4 } else { 1 }
+    $defaultSpecLabel = $specChoices[[int]$defaultSpecChoice]
+    $specSelection = Read-MenuInt -Prompt "投機モードを選択 (1-$maxSpecChoice)、または Enter で $defaultSpecLabel" -Min 1 -Max $maxSpecChoice -Default $defaultSpecChoice
 
     if (-not $specChoices.Contains($specSelection)) { $specSelection = 1 }
     $SpecMode = $specChoices[[int]$specSelection]
@@ -3645,10 +3612,10 @@ if ($SpecMode -eq "Prompt") {
 }
 
 if (-not $isQuickLaunch) {
-    Write-Host "Speculative decoding mode: $SpecMode" -ForegroundColor Green
+    Write-Host "投機的デコードモード: $SpecMode" -ForegroundColor Green
     if ($SpecMode -in @("MtpNextN", "MtpNgramMod")) {
-        Write-Host "  note: MTP helps short prompts; for >5K-token contexts turn it Off" -ForegroundColor Yellow
-        Write-Host "  (long-prompt decode can drop hard). Coding with big files: use Off." -ForegroundColor Yellow
+        Write-Host "  注意: MTP は短いプロンプトに有効。5K トークン超のコンテキストでは Off 推奨" -ForegroundColor Yellow
+        Write-Host "  (長文プロンプトのデコードは大きく落ちることがある)。大ファイルのコーディングは Off。" -ForegroundColor Yellow
         if ($SpecDraftNMax -gt 0) { Write-Host "  draft n-max: $SpecDraftNMax (Unsloth start=2, Flash-Next guide=5)" -ForegroundColor DarkGray }
     }
     if ($SpecMode -in @("NgramSimple", "NgramMod", "MtpNgramMod")) {
@@ -3658,41 +3625,31 @@ if (-not $isQuickLaunch) {
 }
 
 if ($SpecMode -in @("MtpNextN", "MtpNgramMod") -and -not $modelCanMtp) {
-    Write-Host "ERROR: MTP mode needs built-in *_MTP.gguf or a sibling mtp-*.gguf draft." -ForegroundColor Red
-    Write-Host "Selected: $($selected.Name)" -ForegroundColor Red
-    if ($mtpDraftPath) { Write-Host "Draft found: $($mtpDraftPath.FullName)" -ForegroundColor Yellow }
+    Write-Host "エラー: MTP モードには組み込み *_MTP.gguf か、隣接する mtp-*.gguf draft が必要です。" -ForegroundColor Red
+    Write-Host "選択中: $($selected.Name)" -ForegroundColor Red
+    if ($mtpDraftPath) { Write-Host "draft 検出: $($mtpDraftPath.FullName)" -ForegroundColor Yellow }
     exit 1
 }
 
 # Prompt MCP helper selection
 $mcpOptions = @(
-    [PSCustomObject]@{ Label = "None"; Value = "None"; Note = "recommended for Cline stability" },
-    [PSCustomObject]@{ Label = "Light"; Value = "Light"; Note = "web search, filesystem, memory" }
+    [PSCustomObject]@{ Label = "None"; Value = "None"; Note = "Cline の安定性のため推奨" },
+    [PSCustomObject]@{ Label = "Light"; Value = "Light"; Note = "Web 検索、ファイルシステム、メモリ" }
 )
 
 if ($ClientMode -notin @("Cline", "Pi")) {
     $selectedMcp = "None"
 }
 elseif ($McpMode -eq "Prompt") {
-    Write-Host "MCP helper servers:" -ForegroundColor Green
+    Write-Host "MCP ヘルパーサーバー:" -ForegroundColor Green
     for ($i = 0; $i -lt $mcpOptions.Count; $i++) {
         $mcp = $mcpOptions[$i]
         Write-Host " [$($i+1)] $($mcp.Label) - $($mcp.Note)"
     }
     Write-Host ""
 
-    do {
-        $defaultMcpLabel = "None"
-        $mcpInput = Read-Host "Select MCP mode (1-2), or press Enter for $defaultMcpLabel"
-        if ([string]::IsNullOrWhiteSpace($mcpInput)) {
-            $mcpSelection = 1
-            $mcpValid = $true
-        }
-        else {
-            $mcpSelection = 0
-            $mcpValid = [int]::TryParse($mcpInput, [ref]$mcpSelection)
-        }
-    } while (-not $mcpValid -or $mcpSelection -lt 1 -or $mcpSelection -gt $mcpOptions.Count)
+    $defaultMcpLabel = "None"
+    $mcpSelection = Read-MenuInt -Prompt "MCP モードを選択 (1-2)、または Enter で $defaultMcpLabel" -Min 1 -Max 2 -Default 1
 
     $selectedMcp = $mcpOptions[$mcpSelection - 1].Value
 }
@@ -3702,14 +3659,14 @@ else {
 
 if ($isQuickLaunch) {
     Write-Host ""
-    Write-Host "  READY TO LAUNCH" -ForegroundColor Green
+    Write-Host "  READY TO LAUNCH (起動準備完了)" -ForegroundColor Green
     Write-Host "  $launchLabel" -ForegroundColor Cyan
     Write-Host "  $($selectedContext.Label) context | KV K:$($selectedKCache.Label) / V:$($selectedVCache.Label) | GPU:$serverOffload" -ForegroundColor DarkGray
     Write-Host "  $requiredEngine | Flash Attention:$flashAttention | Cache RAM:$effectiveCacheRamMiB MiB" -ForegroundColor DarkGray
     Write-Host ""
 }
 else {
-    Write-Host "MCP helpers: $selectedMcp" -ForegroundColor Green
+    Write-Host "MCP ヘルパー: $selectedMcp" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -4061,6 +4018,10 @@ if ($DryRun) {
         Write-Host "DRY RUN: DeepSeek Harness would open with DEEPSEEK_BASE_URL=$ClientBaseUrl/v1 DEEPSEEK_API_KEY=not-needed" -ForegroundColor Yellow
         Write-Host "DRY RUN: http://127.0.0.1:3080 (dsh web)" -ForegroundColor Yellow
     }
+    elseif ($ClientMode -eq "ARTEX") {
+        Write-Host "DRY RUN: ARTEX console would open at http://localhost:8787 (bundled portable PostgreSQL auto-started)" -ForegroundColor Yellow
+        Write-Host "DRY RUN: ARTEX LLM card points at $ClientBaseUrl/v1 (System -> LLM)" -ForegroundColor Yellow
+    }
     else {
         Write-Host "DRY RUN: Pi (pi.dev) would open with model:" -ForegroundColor Yellow
         Write-Host $modelShort
@@ -4090,17 +4051,7 @@ if (-not $DryRun) {
             Write-Host " [3] 終了"
             Write-Host ""
 
-            do {
-                $serverInput = Read-Host "Select server action (1-3), or press Enter to Switch"
-                if ([string]::IsNullOrWhiteSpace($serverInput)) {
-                    $serverSelection = 1
-                    $serverValid = $true
-                }
-                else {
-                    $serverSelection = 0
-                    $serverValid = [int]::TryParse($serverInput, [ref]$serverSelection)
-                }
-            } while (-not $serverValid -or $serverSelection -lt 1 -or $serverSelection -gt 3)
+            $serverSelection = Read-MenuInt -Prompt "サーバー操作を選択 (1-3)、または Enter で切り替え" -Min 1 -Max 3 -Default 1
 
             if ($serverSelection -eq 1) { $ExistingServerMode = "StartNew" }
             elseif ($serverSelection -eq 2) { $ExistingServerMode = "UseExisting" }
@@ -4126,6 +4077,18 @@ if (-not $DryRun) {
                 # model that was selected so the workspace stays usable.
                 $lastClientProcess = Open-ComfyUIClient
             }
+            elseif ($ClientMode -eq "DeepSeekHarness") {
+                # the DSH preset must open the DeepSeek Harness web UI (3080),
+                # not fall through to the Pi TUI (the reuse-path dispatch predates
+                # the DSH preset and fell into the Pi default)
+                $lastClientProcess = Open-DeepSeekHarnessClient
+            }
+            elseif ($ClientMode -eq "ARTEX") {
+                # ARTEX connects through its own saved LLM card, not per-launch
+                # env vars — just start the console (same path as the fresh-boot
+                # dispatch in Open-WorkspaceClient).
+                $lastClientProcess = Open-ARTEXClient
+            }
             else {
                 Open-PiClient -ModelName $existingModel
             }
@@ -4150,17 +4113,7 @@ if (-not $DryRun) {
             Write-Host " [2] 選択したモデルを強制起動"
             Write-Host ""
 
-            do {
-                $busyInput = Read-Host "Select server action (1-2), or press Enter to Quit"
-                if ([string]::IsNullOrWhiteSpace($busyInput)) {
-                    $busySelection = 1
-                    $busyValid = $true
-                }
-                else {
-                    $busySelection = 0
-                    $busyValid = [int]::TryParse($busyInput, [ref]$busySelection)
-                }
-            } while (-not $busyValid -or $busySelection -lt 1 -or $busySelection -gt 2)
+            $busySelection = Read-MenuInt -Prompt "サーバー操作を選択 (1-2)、または Enter で終了" -Min 1 -Max 2 -Default 1
 
             if ($busySelection -eq 1) { $ExistingServerMode = "Quit" }
             else { $ExistingServerMode = "StartNew" }
@@ -4236,6 +4189,11 @@ Ensure-UnslothCudaRuntime -ServerExe $ServerPath
 # ---- Strata engine: start its own serve/server.py + the shared gateway, then
 # ---- skip the llama-server supervisor flow entirely below.
 $skipLlamaServerFlow = $false
+# The final readiness check below runs for every engine, including the
+# Strata keep-alive path (which starts no new process), so the flags must
+# exist before the engine dispatch or -not $ready reads $null.
+$ready = $false
+$maxWait = 0
 if ($requiredEngine -eq "Strata") {
     $skipLlamaServerFlow = $true
     $SkipGpuProbe = $true   # the GPU offload probe speaks llama-server's API
@@ -4248,13 +4206,16 @@ if ($requiredEngine -eq "Strata") {
     try {
         $live = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/v1/models' -TimeoutSec 3
         $liveQuant = [string](@($live.data)[0].id) -replace '.*-', ''
-        if ($liveQuant -and $liveQuant -eq $strataQuant) { $needStart = $false }
-    } catch { }
+        $liveCtx = @($live.data)[0].meta.n_ctx
+        if ($liveQuant -and $liveQuant -eq $strataQuant -and $liveCtx -eq $strataMaxCtx) { $needStart = $false }
+    }
+    catch { }
     if (-not $needStart) {
         Write-Host "Strata is already serving the $strataQuant model on :8080 - keeping it." -ForegroundColor Green
         try {
             $null = Invoke-RestMethod -Uri "http://127.0.0.1:$GatewayPort/health" -TimeoutSec 3
-        } catch {
+        }
+        catch {
             $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
             $gatewayArgs = @(
                 (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
@@ -4266,6 +4227,9 @@ if ($requiredEngine -eq "Strata") {
             $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
         }
         $script:ClientBaseUrl = $GatewayBaseUrl
+        # No new process to wait on: the live Strata already answered /v1/models
+        # above, so mark ready or the tail check exits 1 every keep-alive run.
+        $ready = $true
     }
     if ($needStart) {
         $old8080 = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -4274,147 +4238,148 @@ if ($requiredEngine -eq "Strata") {
         Start-Sleep 1
     }
     if ($needStart) {
-    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $strataOut = Join-Path $PSScriptRoot "logs\strata-$stamp.stdout.log"
-    $strataErr = Join-Path $PSScriptRoot "logs\strata-$stamp.stderr.log"
-    Write-Host "Starting Strata (serve/server.py on :8080)..." -ForegroundColor Blue
-    $strataProc = Start-Process -FilePath $StrataPython `
-        -ArgumentList @("serve\server.py", "--engine", "strata", "--config", $StrataConfig, "--port", "8080") `
-        -WorkingDirectory $StrataRoot -PassThru -WindowStyle Hidden `
-        -RedirectStandardOutput $strataOut -RedirectStandardError $strataErr
-    Write-Host "Starting the LlamaDock gateway (:8090 -> :8080)..." -ForegroundColor Blue
-    $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
-    $gatewayArgs = @(
-        (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
-        "--host", "127.0.0.1",
-        "--port", "$GatewayPort",
-        "--upstream", "http://127.0.0.1:8080",
-        "--log-dir", (Join-Path $PSScriptRoot "logs")
-    )
-    $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
-    Write-Host "Waiting for Strata to be ready..." -NoNewline -ForegroundColor Yellow
-    $ready = $false
-    for ($i = 0; $i -lt 90; $i++) {
-        Start-Sleep -Seconds 2
-        if ($strataProc.HasExited) {
-            Write-Host ""
-            Write-Host "ERROR: the Strata server exited (code $($strataProc.ExitCode)). Check $strataErr" -ForegroundColor Red
-            break
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $strataOut = Join-Path $PSScriptRoot "logs\strata-$stamp.stdout.log"
+        $strataErr = Join-Path $PSScriptRoot "logs\strata-$stamp.stderr.log"
+        Write-Host "Starting Strata (serve/server.py on :8080)..." -ForegroundColor Blue
+        $strataProc = Start-Process -FilePath $StrataPython `
+            -ArgumentList @("serve\server.py", "--engine", "strata", "--config", $StrataConfig, "--port", "8080") `
+            -WorkingDirectory $StrataRoot -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput $strataOut -RedirectStandardError $strataErr
+        Write-Host "Starting the LlamaDock gateway (:8090 -> :8080)..." -ForegroundColor Blue
+        $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
+        $gatewayArgs = @(
+            (Join-Path $PSScriptRoot "tools\llamadock-proxy.mjs"),
+            "--host", "127.0.0.1",
+            "--port", "$GatewayPort",
+            "--upstream", "http://127.0.0.1:8080",
+            "--log-dir", (Join-Path $PSScriptRoot "logs")
+        )
+        $null = Start-Process -FilePath $nodeExe -ArgumentList $gatewayArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Hidden
+        Write-Host "Waiting for Strata to be ready..." -NoNewline -ForegroundColor Yellow
+        $ready = $false
+        for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            if ($strataProc.HasExited) {
+                Write-Host ""
+                Write-Host "ERROR: the Strata server exited (code $($strataProc.ExitCode)). Check $strataErr" -ForegroundColor Red
+                break
+            }
+            try {
+                $null = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 5
+                $ready = $true
+                $script:ClientBaseUrl = $GatewayBaseUrl
+                Write-Host " Done!" -ForegroundColor Green
+                Write-Host "Strata engine console output: $strataOut" -ForegroundColor DarkGray
+                break
+            }
+            catch { }
+            if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
         }
-        try {
-            $null = Invoke-RestMethod -Uri "http://127.0.0.1:8080/health" -TimeoutSec 5
-            $ready = $true
-            $script:ClientBaseUrl = $GatewayBaseUrl
-            Write-Host " Done!" -ForegroundColor Green
-            Write-Host "Strata engine console output: $strataOut" -ForegroundColor DarkGray
-            break
-        } catch { }
-        if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
-    }
-    if (-not $ready) {
-        Get-Process strata -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Save-RunResult -Model $selected -Engine "Strata" -Preset $PresetMode -Client $ClientMode -ContextTokens $selectedContext.Tokens -KCache $effectiveKCacheType -VCache $effectiveVCacheType -Offload $selectedOffload -FlashAttention $flashAttention -CacheRamMiB $effectiveCacheRamMiB -Status "fail" -Message "Strata server did not become ready"
-        exit 1
-    }
+        if (-not $ready) {
+            Get-Process strata -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Save-RunResult -Model $selected -Engine "Strata" -Preset $PresetMode -Client $ClientMode -ContextTokens $selectedContext.Tokens -KCache $effectiveKCacheType -VCache $effectiveVCacheType -Offload $selectedOffload -FlashAttention $flashAttention -CacheRamMiB $effectiveCacheRamMiB -Status "fail" -Message "Strata server did not become ready"
+            exit 1
+        }
     }
 }
 
 Write-Host "Starting llama-server under the LlamaDock supervisor..." -ForegroundColor Blue
 if (-not $skipLlamaServerFlow) {
-if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
-    $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $effectiveChatTemplateKwargs
-}
-else {
-    Remove-Item Env:\LLAMA_ARG_CHAT_TEMPLATE_KWARGS -ErrorAction SilentlyContinue
-}
-$proc = $null
-# Drop flags the live engine rejects (e.g. Laguna has no --reasoning-effort).
-# Must run after the full argv is assembled — llama-server exits on unknown
-# args before binding :8080, which used to look like "stuck waiting".
-$args = Remove-UnsupportedEngineArgs -ArgList $args -Exe $startFilePath
-$serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"
-New-Item -ItemType Directory -Path (Split-Path -Parent $serverArgumentsPath) -Force | Out-Null
-Write-Utf8NoBom -Path $serverArgumentsPath -Value ($args | ConvertTo-Json -Compress)
-$supervisorScript = Join-Path $PSScriptRoot "tools\llamadock-server-supervisor.ps1"
-if (-not (Test-Path -LiteralPath $supervisorScript)) {
-    Write-Host "ERROR: LlamaDock server supervisor was not found: $supervisorScript" -ForegroundColor Red
-    exit 1
-}
-$supervisorArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", $supervisorScript,
-    "-ServerPath", $startFilePath,
-    "-ArgumentsPath", $serverArgumentsPath,
-    "-Root", $PSScriptRoot,
-    "-GatewayPort", $GatewayPort,
-    "-UpstreamPort", 8080,
-    "-LogDir", (Join-Path $PSScriptRoot "logs")
-)
-if ($ClineMaxTokens -gt 0) {
-    $supervisorArgs += "-ClineMaxTokens", $ClineMaxTokens
-}
-# Opt-in resilience: without -AutoRestart a manually killed llama-server
-# stays down and the supervisor shuts the gateway and itself cleanly.
-if ($AutoRestart) {
-    $supervisorArgs += "-AutoRestartServer"
-}
-# Keep the supervisor in a normal console so the user can see and control
-# the server session. Ctrl+C in that console reaches the supervisor's
-# finally block, which stops llama-server and the gateway cleanly.
-$proc = Start-Process -FilePath "powershell.exe" -ArgumentList $supervisorArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Normal
-Write-Host "LlamaDock server console opened (supervisor PID $($proc.Id)). Press Ctrl+C in that window to stop llama-server." -ForegroundColor Cyan
+    if (-not [string]::IsNullOrWhiteSpace($effectiveChatTemplateKwargs)) {
+        $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $effectiveChatTemplateKwargs
+    }
+    else {
+        Remove-Item Env:\LLAMA_ARG_CHAT_TEMPLATE_KWARGS -ErrorAction SilentlyContinue
+    }
+    $proc = $null
+    # Drop flags the live engine rejects (e.g. Laguna has no --reasoning-effort).
+    # Must run after the full argv is assembled — llama-server exits on unknown
+    # args before binding :8080, which used to look like "stuck waiting".
+    $args = Remove-UnsupportedEngineArgs -ArgList $args -Exe $startFilePath
+    $serverArgumentsPath = Join-Path $PSScriptRoot "mcp-data\server-supervisor\server-arguments.json"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $serverArgumentsPath) -Force | Out-Null
+    Write-Utf8NoBom -Path $serverArgumentsPath -Value ($args | ConvertTo-Json -Compress)
+    $supervisorScript = Join-Path $PSScriptRoot "tools\llamadock-server-supervisor.ps1"
+    if (-not (Test-Path -LiteralPath $supervisorScript)) {
+        Write-Host "ERROR: LlamaDock server supervisor was not found: $supervisorScript" -ForegroundColor Red
+        exit 1
+    }
+    $supervisorArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $supervisorScript,
+        "-ServerPath", $startFilePath,
+        "-ArgumentsPath", $serverArgumentsPath,
+        "-Root", $PSScriptRoot,
+        "-GatewayPort", $GatewayPort,
+        "-UpstreamPort", 8080,
+        "-LogDir", (Join-Path $PSScriptRoot "logs")
+    )
+    if ($ClineMaxTokens -gt 0) {
+        $supervisorArgs += "-ClineMaxTokens", $ClineMaxTokens
+    }
+    # Opt-in resilience: without -AutoRestart a manually killed llama-server
+    # stays down and the supervisor shuts the gateway and itself cleanly.
+    if ($AutoRestart) {
+        $supervisorArgs += "-AutoRestartServer"
+    }
+    # Keep the supervisor in a normal console so the user can see and control
+    # the server session. Ctrl+C in that console reaches the supervisor's
+    # finally block, which stops llama-server and the gateway cleanly.
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $supervisorArgs -WorkingDirectory $PSScriptRoot -PassThru -WindowStyle Normal
+    Write-Host "LlamaDock サーバーコンソールを開きました (supervisor PID $($proc.Id))。あそこのウィンドウで Ctrl+C を押すと llama-server を停止します。" -ForegroundColor Cyan
 
-Write-Host "Waiting for server to be ready..." -NoNewline -ForegroundColor Yellow
-# A 50+ GiB MoE can need several minutes to map weights, fit VRAM, and
-# publish /v1/models. Keep the normal path quick, but do not make the user
-# think a heavy model failed while it is still loading.
-$maxWait = if ($selectedModelSizeGB -ge 50) { 180 } elseif ($selectedModelSizeGB -ge 20) { 120 } else { 60 }
-# Laguna Flash-Next is ~70GB multi-part: allow a longer load window.
-if ($script:LagunaHotExpert -and $isQwen4Exp -and $maxWait -lt 240) { $maxWait = 240 }
-$ready = $false
-for ($i = 0; $i -lt $maxWait; $i++) {
-    Start-Sleep -Seconds 2
-    # Supervisor died (argv error / crash) — stop waiting instead of spinning.
-    if ($proc -and $proc.HasExited) {
-        Write-Host ""
-        Write-Host "ERROR: supervisor exited (code $($proc.ExitCode)). Check logs\supervisor.log and the latest llama-server-*.stderr.log" -ForegroundColor Red
-        $stderr = Get-ChildItem (Join-Path $PSScriptRoot "logs") -Filter "llama-server-*.stderr.log" -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($stderr) {
-            Write-Host "Last server stderr ($($stderr.Name)):" -ForegroundColor Yellow
-            Get-Content -LiteralPath $stderr.FullName -Tail 20
-        }
-        break
-    }
-    # llama-server publishes the -a alias as the model id, so we can verify the
-    # freshly started server is actually serving the selected model.
-    $expectedReadyModel = $modelShort
-    $directReady = Test-ServerReady -ExpectedModelId $expectedReadyModel
-    $gatewayReady = Test-GatewayReady -ExpectedModelId $expectedReadyModel
-    if ($directReady -and $gatewayReady) {
-        $ready = $true
-        # Set-ClientBaseUrl re-tests the gateway and throws on a transient
-        # miss; the ready check above just passed, so retry briefly and fall
-        # back to the gateway URL instead of killing the whole launch.
-        $clientUrlSet = $false
-        for ($retry = 0; $retry -lt 5 -and -not $clientUrlSet; $retry++) {
-            try {
-                Set-ClientBaseUrl -ExpectedModelId $expectedReadyModel | Out-Null
-                $clientUrlSet = $true
+    Write-Host "Waiting for server to be ready..." -NoNewline -ForegroundColor Yellow
+    # A 50+ GiB MoE can need several minutes to map weights, fit VRAM, and
+    # publish /v1/models. Keep the normal path quick, but do not make the user
+    # think a heavy model failed while it is still loading.
+    $maxWait = if ($selectedModelSizeGB -ge 50) { 180 } elseif ($selectedModelSizeGB -ge 20) { 120 } else { 60 }
+    # Laguna Flash-Next is ~70GB multi-part: allow a longer load window.
+    if ($script:LagunaHotExpert -and $isQwen4Exp -and $maxWait -lt 240) { $maxWait = 240 }
+    $ready = $false
+    for ($i = 0; $i -lt $maxWait; $i++) {
+        Start-Sleep -Seconds 2
+        # Supervisor died (argv error / crash) — stop waiting instead of spinning.
+        if ($proc -and $proc.HasExited) {
+            Write-Host ""
+            Write-Host "ERROR: supervisor exited (code $($proc.ExitCode)). Check logs\supervisor.log and the latest llama-server-*.stderr.log" -ForegroundColor Red
+            $stderr = Get-ChildItem (Join-Path $PSScriptRoot "logs") -Filter "llama-server-*.stderr.log" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($stderr) {
+                Write-Host "Last server stderr ($($stderr.Name)):" -ForegroundColor Yellow
+                Get-Content -LiteralPath $stderr.FullName -Tail 20
             }
-            catch {
-                Start-Sleep -Seconds 2
+            break
+        }
+        # llama-server publishes the -a alias as the model id, so we can verify the
+        # freshly started server is actually serving the selected model.
+        $expectedReadyModel = $modelShort
+        $directReady = Test-ServerReady -ExpectedModelId $expectedReadyModel
+        $gatewayReady = Test-GatewayReady -ExpectedModelId $expectedReadyModel
+        if ($directReady -and $gatewayReady) {
+            $ready = $true
+            # Set-ClientBaseUrl re-tests the gateway and throws on a transient
+            # miss; the ready check above just passed, so retry briefly and fall
+            # back to the gateway URL instead of killing the whole launch.
+            $clientUrlSet = $false
+            for ($retry = 0; $retry -lt 5 -and -not $clientUrlSet; $retry++) {
+                try {
+                    Set-ClientBaseUrl -ExpectedModelId $expectedReadyModel | Out-Null
+                    $clientUrlSet = $true
+                }
+                catch {
+                    Start-Sleep -Seconds 2
+                }
             }
+            if (-not $clientUrlSet) {
+                $script:ClientBaseUrl = $GatewayBaseUrl
+            }
+            Write-Host " Done!" -ForegroundColor Green
+            break
         }
-        if (-not $clientUrlSet) {
-            $script:ClientBaseUrl = $GatewayBaseUrl
-        }
-        Write-Host " Done!" -ForegroundColor Green
-        break
+        if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
     }
-    if ($i % 5 -eq 4) { Write-Host "." -NoNewline -ForegroundColor Yellow }
-}
 }   # end of the llama-server supervisor flow (Strata started its own server above)
 
 if (-not $ready) {
@@ -4493,13 +4458,13 @@ while ($true) {
             continue
         }
         "change-model" {
-            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            Stop-ActiveServerStack
             if ($lastClientProcess -and -not $lastClientProcess.HasExited) { Stop-Process -Id $lastClientProcess.Id -Force -ErrorAction SilentlyContinue }
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
             exit $LASTEXITCODE
         }
         "stop" {
-            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            Stop-ActiveServerStack
             if ($lastClientProcess -and -not $lastClientProcess.HasExited) { Stop-Process -Id $lastClientProcess.Id -Force -ErrorAction SilentlyContinue }
             # Killing the launcher shim can orphan the dsh web node child; stop it by port.
             Stop-StaleDeepSeekHarness

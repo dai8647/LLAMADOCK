@@ -21,7 +21,11 @@ if (-not $module) {
 }
 
 Import-Module PSScriptAnalyzer -ErrorAction Stop
-$source = Get-Content -LiteralPath $Path -Raw
+# -Encoding UTF8 is mandatory: the default read on a Japanese-locale
+# Windows PowerShell 5.1 is ANSI (Shift-JIS), which mis-decodes the UTF-8
+# Japanese strings in this launcher and makes the formatter "fail" on text
+# that was never in the file.
+$source = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
 $settings = @{
     IncludeRules = @("PSPlaceOpenBrace", "PSPlaceCloseBrace", "PSUseConsistentIndentation")
     Rules = @{
