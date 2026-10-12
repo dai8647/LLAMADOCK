@@ -32,7 +32,7 @@
           "flags": [],
           "per_model": true,
           "advanced": false,
-          "help": "Single engine since 2026-08-30: Unsloth llama.cpp with bundled ROCm/HIP (b10909). Auto and Unsloth both resolve to it. Required for qwen4exp / Qwen3.8-Flash-Next."
+          "help": "Single engine since 2026-08-30: Unsloth llama.cpp with bundled ROCm/HIP (b10909). Auto and Unsloth both resolve to it. Required for qwen4exp / Qwen3.8-Flash-Next. The other engines in this repo - 'Laguna' (llama-cpp-turboquant hot-expert fork) and 'Strata' (Niko1221/Strata 0.1.33, served by its own serve/server.py on :8080) - are launched by the select-model.ps1 launcher only; this web GUI spawns llama-server directly and therefore offers Unsloth alone."
         },
         {
           "id": "preset",

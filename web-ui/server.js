@@ -32,12 +32,13 @@
 // ---------------------------------------------------------------------------
 
 import http from "node:http";
-import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createReadStream, existsSync, readdirSync, statSync } from "node:fs";
 import { readFile, writeFile, rename, mkdir, readdir, stat } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, normalize, extname, resolve, sep } from "node:path";
 
-import { resolveParams, buildArgs } from "./arg-builder.js";
+import { resolveParams, buildArgs, filterUnsupportedArgs } from "./arg-builder.js";
 import { createLaunchManager, DEFAULT_UPSTREAM_PORT } from "./launch-manager.js";
 import { addRun, loadResults, summarize } from "./results-store.js";
 import { createClientManager, CLIENT_BASE_URL } from "./client-manager.js";
@@ -87,6 +88,35 @@ function resolveEngineBin(name) {
 
 function engineHint(cand) {
   return `確認パス: ${cand.paths.join(" / ")}（env ${cand.env} で上書き可）`;
+}
+
+// --help dump of the engine binary, cached per path+mtime. Used to drop the
+// schema defaults this build would refuse (see filterUnsupportedArgs); the
+// launcher does the same through Get-EngineHelpCache in select-model.ps1.
+const engineHelpCache = new Map();
+function readEngineHelp(binPath) {
+  let stamp = "";
+  try {
+    stamp = String(statSync(binPath).mtimeMs);
+  } catch {
+    return "";
+  }
+  const key = `${binPath}#${stamp}`;
+  if (engineHelpCache.has(key)) return engineHelpCache.get(key);
+  let help = "";
+  try {
+    const proc = spawnSync(binPath, ["--help"], {
+      encoding: "utf8",
+      timeout: 30000,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    });
+    help = `${proc.stdout || ""}${proc.stderr || ""}`;
+  } catch {
+    help = "";
+  }
+  engineHelpCache.set(key, help);
+  return help;
 }
 
 // Model -> engine: always Unsloth since 2026-08-30 (single engine; the old
@@ -429,17 +459,25 @@ export function createAppServer() {
             host: "127.0.0.1",
             port,
           });
+          // Drop what this engine build rejects (unknown flags, "-t auto",
+          // "--spec-type off", ...). Without this the server dies on argv
+          // parsing before it binds the port and the launch looks hung.
+          const { args: launchArgs, dropped } = filterUnsupportedArgs(args, readEngineHelp(engineBin));
+          if (dropped.length) {
+            console.warn(`[launch] engine rejects, dropped: ${dropped.join(" ")}`);
+          }
 
           const result = await launchManager.launch({
             model,
             engine: engineName,
             engineBin,
             extraPath: resolveRocmBin(),
-            args,
+            args: launchArgs,
             env,
             port,
             resolvedParams: resolved,
           });
+          if (dropped.length) result.droppedArgs = dropped;
           sendJson(res, result.ok ? 200 : 409, result);
         } catch (error) {
           sendJson(res, 400, { ok: false, error: "launch_request_failed", message: errorMessage(error) });
