@@ -1,8 +1,6 @@
 ﻿"""Embedded chat UI page (HTML + CSS + JS) served on /. Data only."""
 
-import json
 import os
-import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -575,6 +573,11 @@ async function uploadRefFiles(files) {
     } catch (e) {
       failed.push(f.name + " (" + e.message + ")");
     }
+  }
+  if (added) {
+    // 空一覧のプレースホルダ文が残らないようにする（カードを足したら消す）
+    const hint = $("#refgrid").querySelector(".hint");
+    if (hint && hint.parentNode) hint.parentNode.removeChild(hint);
   }
   refreshRefGridMarks();
   updateRefPickCount();
