@@ -303,7 +303,8 @@ HTML = """<!doctype html>
       </div>
       <div class="advgroup">
         <span class="hint">キー画像:</span>
-        <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け）</label>
+        <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・添付画像は img2img で顔を維持）</label>
+        <label title="添付した参照画像をどれだけ残すか。低い=顔・構図・体型を保つ / 高い=プロンプト通りに描き直す。空欄=0.6"><input type="number" id="kimg-denoise" min="0" max="1" step="0.05" placeholder="0.6" style="width:70px"> 参照の効き (denoise)<span class="hint">Klein/Qwen 共通・添付画像がある時だけ効く</span></label>
         <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質）</label>
         <label><input type="radio" name="imgengine" value="qfix"> Qwen 2.1 UC 品質モード（Fix LoRA・破綻しにくい・低速）</label>
       </div>
@@ -849,6 +850,15 @@ function imgEngine() {
   const el = document.querySelector('input[name="imgengine"]:checked');
   return el ? el.value : "kimg";
 }
+// キー画像の参照の効き (denoise)。空欄 = サーバー既定 (0.6)。
+function imgRefDenoise() {
+  const el = $("#kimg-denoise");
+  if (!el) return null;
+  const v = (el.value || "").trim();
+  if (!v) return null;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 async function genImage(prevBot) {
   if (!lastImgPrompt) {
@@ -869,10 +879,19 @@ async function genImage(prevBot) {
     const r = await fetch("/api/kimg", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: lastImgPrompt, engine: eng, ...charPinSpec()})
+      body: JSON.stringify({text: lastImgPrompt, engine: eng, image: refImages[0] || null, denoise: imgRefDenoise(), ...charPinSpec()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    // 添付した参照画像が実際に効いたか（img2img）を泡に出す。
+    // 「添付したのに顔が違う」の切り分けはここを見れば一発で分かる。
+    if (j.ref_used) {
+      bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…（参照画像 img2img denoise ' + esc(String(j.ref_denoise)) + '・' + esc(String(j.ref_size)) + '）</div>';
+    } else if (j.ref_note) {
+      bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…（' + esc(String(j.ref_note)) + '）</div>';
+    } else if (refImages.length) {
+      bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…</div>';
+    }
     pollImage(j.prompt_id, bot);
   } catch (e) {
     bot.innerHTML = '<div class="meta">エラー</div><div class="err">' + esc(String(e.message || e)) + "</div>";

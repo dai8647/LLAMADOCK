@@ -51,6 +51,8 @@ const state = {
   resetFail: false,
   refImagesResponse: null,   // null = default single image
   refUploadFail: false,      // true = /api/refupload returns an error
+  kimgBodies: [],            // bodies posted to /api/kimg
+  kimgResult: null,          // override for the /api/kimg response
   tuneIgnored: [],
   sessionsResponse: null,    // null = no sessions, no active
   sessionSaves: [],          // bodies posted to /api/sessions/save
@@ -90,6 +92,10 @@ async function fakeFetch(url, opts) {
     if (state.refUploadFail) return j({ error: "ng image" }, false, 400);
     const nm = decodeURIComponent(url.slice("/api/refupload?name=".length));
     return j({ name: nm, path: "/comfy/input/refs/" + nm, dir: "input/refs" });
+  }
+  if (url === "/api/kimg") {
+    state.kimgBodies.push(JSON.parse(opts.body));
+    return j(state.kimgResult || { prompt_id: "img1", char_applied: [], ref_used: false, ref_denoise: 0.6, ref_size: "", ref_note: "" });
   }
   if (url === "/api/plan") {
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
@@ -616,6 +622,38 @@ await tick();
 check("failed upload surfaces an alert", state.alerts.some(a => a.includes("追加できなかった画像")));
 run(`refPickerSelection = []; $("#refgrid").children.length = 0;`);
 state.refUploadFail = false;
+
+console.log("[26] genImage sends the reference image + denoise and reports img2img");
+state.statusResult = { status: "pending" };
+run(`setBusy(false); refImages = ["C:/x/face.png"]; lastImgPrompt = "1girl, nude"; $("#kimg-denoise").value = "";`);
+state.kimgBodies.length = 0;
+await run(`(async () => { await genImage(); })()`);
+await tick();
+{
+  const b = state.kimgBodies[state.kimgBodies.length - 1];
+  check("kimg sends the reference image", b && b.image === "C:/x/face.png", b);
+  check("denoise empty means server default (null)", b && b.denoise === null);
+}
+run(`$("#kimg-denoise").value = "0.4"; setBusy(false);`);
+await run(`(async () => { await genImage(); })()`);
+await tick();
+check("explicit denoise is forwarded",
+  state.kimgBodies[state.kimgBodies.length - 1].denoise === 0.4);
+run(`refImages = []; $("#kimg-denoise").value = ""; setBusy(false);`);
+await run(`(async () => { await genImage(); })()`);
+await tick();
+check("no reference sends image null",
+  state.kimgBodies[state.kimgBodies.length - 1].image === null);
+state.kimgResult = { prompt_id: "img2", char_applied: [], ref_used: true, ref_denoise: 0.6, ref_size: "1024x672", ref_note: "" };
+run(`setBusy(false); refImages = ["C:/x/face.png"];`);
+el("msgs").children.length = 0;
+await run(`(async () => { await genImage(); })()`);
+await tick();
+check("img2img usage is announced in the bubble",
+  el("msgs").children.some(c => String(c.innerHTML).includes("img2img") && String(c.innerHTML).includes("1024x672")));
+state.kimgResult = null;
+state.statusResult = { status: "success", videos: [{ filename: "a.mp4", type: "output", path: "C:\\x\\a.mp4", kind: "video" }] };
+run(`setBusy(false); refImages = []; jobCancelled = true;`);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

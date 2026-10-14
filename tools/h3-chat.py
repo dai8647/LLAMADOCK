@@ -127,14 +127,30 @@ NODE_QIMG_LATENT = "7"   # EmptySD3LatentImage: size + batch
 NODE_QIMG_SEED = "10"    # KSampler: seed
 
 
+# img2img (参照画像) ノード ID。キー画像グラフは t2i なので、参照がある時だけ
+# LoadImage -> ImageScale -> VAEEncode をこの ID で注入し、KSampler の
+# latent_image を VAEEncode へ向ける（_wire_img2img 参照）。既存 ID の最大は
+# kimg=15 / qimg=12 なので衝突しない。
+NODE_IMG_REF_IMAGE = "20"
+NODE_IMG_REF_SCALE = "21"
+NODE_IMG_REF_ENCODE = "22"
+
+
 # Key-image engines selectable in the UI
 IMG_ENGINES = {
     "kimg": {
         "workflow": KIMG_WORKFLOW,
         "prompt": NODE_KIMG_PROMPT, "latent": NODE_KIMG_LATENT, "seed": NODE_KIMG_SEED,
         "default_size": (1024, 1024),
-        "label": "Klein 9B（品質主力・スマホ写真＋NSFW LoRA重ね掛け・素人風に強い）",
+        "label": "Klein 9B（品質主力・添付画像は img2img で顔を維持）",
         "batch_size": 1,
+        # img2img (参照画像) 用: LoadImage/ImageScale/VAEEncode をこの ID に注入し、
+        # KSampler.latent_image を VAEEncode へ向ける。ref_denoise は 0.6 =
+        # 顔・構図を残しつつプロンプトのシーンを乗せる既定値。
+        "vae_node": "3",
+        "ref_image": NODE_IMG_REF_IMAGE, "ref_scale": NODE_IMG_REF_SCALE,
+        "ref_encode": NODE_IMG_REF_ENCODE, "ref_denoise": 0.6,
+        "sampling_size_node": "4",
         # 体型バリエーション: bodyweight concept slider (正負両方向のスライダー)。
         # 生成ごとにこの範囲で強度をランダム化して同じ顔・体型のワンパターンを防ぐ。
         # リクエストで bodyweight を明示すれば固定できる。
@@ -146,6 +162,9 @@ IMG_ENGINES = {
         "default_size": (1344, 768),
         "label": "Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・約3分）",
         "batch_size": 1,
+        "vae_node": "3",
+        "ref_image": NODE_IMG_REF_IMAGE, "ref_scale": NODE_IMG_REF_SCALE,
+        "ref_encode": NODE_IMG_REF_ENCODE, "ref_denoise": 0.6,
     },
 }
 
@@ -211,6 +230,78 @@ def _align_h3_frames(n):
     """MiniMax H3 のフレームグリッド (17k+5) にスナップする。"""
     n = max(5, int(n))
     return 5 + 17 * max(0, round((n - 5) / 17))
+
+
+# ---- key-image img2img (reference) -------------------------------------------
+# The key-image graphs ship as pure text-to-image: an attached photo never
+# reaches the sampler, so the face is re-drawn from the planner's text alone.
+# When a reference image is present we inject LoadImage -> ImageScale ->
+# VAEEncode and rewire KSampler.latent_image to it. All three node types are
+# stock ComfyUI nodes (ImageScale is already used by the upscale workflow), and
+# the nodes are added only on the reference path, so the t2i graph is untouched
+# and nothing has to be pre-baked into the workflow JSON.
+def _fit_image_size(path, box_w, box_h, multiple=16, min_side=256):
+    """(w, h): 元画像を box 内に収めた、アスペクト比を保った 16 の倍数サイズ。
+
+    参照写真は 4000px 級のことが多く、そのまま VAEEncode すると latent が
+    爆発して VRAM が飛ぶ。縮小方向にも拡大方向にも box を上限にする。
+    サイズが読めないときは box をそのまま返す（ImageScale は crop=disabled）。
+    """
+    sw = sh = 0
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            sw, sh = im.size
+    except Exception:
+        sw = sh = 0
+    try:
+        box_w = max(min_side, int(box_w))
+        box_h = max(min_side, int(box_h))
+    except (TypeError, ValueError):
+        return 1024, 1024
+    if sw <= 0 or sh <= 0:
+        return box_w, box_h
+    scale = min(box_w / float(sw), box_h / float(sh))
+    w = max(min_side, (int(round(sw * scale)) // multiple) * multiple)
+    h = max(min_side, (int(round(sh * scale)) // multiple) * multiple)
+    return w, h
+
+
+def _wire_img2img(wf, eng, staged_name, box_w, box_h, denoise):
+    """t2i のキー画像グラフを img2img に繋ぎ替える。
+
+    staged_name は ComfyUI input/ に置かれた参照画像のファイル名。
+    engine に参照ノード定義 (ref_encode 等) が無ければ None を返して
+    呼び出し側を text-to-image のままにする。
+    """
+    if not eng.get("ref_encode"):
+        return None
+    w, h = _fit_image_size(os.path.join(_comfy_root(), "input", staged_name), box_w, box_h)
+    wf[eng["ref_image"]] = {
+        "class_type": "LoadImage",
+        "inputs": {"image": staged_name},
+        "_meta": {"title": "参照画像 (img2img)"},
+    }
+    wf[eng["ref_scale"]] = {
+        "class_type": "ImageScale",
+        "inputs": {"image": [eng["ref_image"], 0], "upscale_method": "lanczos",
+                   "width": w, "height": h, "crop": "disabled"},
+        "_meta": {"title": "参照画像の寸法合わせ"},
+    }
+    wf[eng["ref_encode"]] = {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": [eng["ref_scale"], 0], "vae": [eng["vae_node"], 0]},
+        "_meta": {"title": "参照画像の latent 化"},
+    }
+    wf[eng["seed"]]["inputs"]["latent_image"] = [eng["ref_encode"], 0]
+    wf[eng["seed"]]["inputs"]["denoise"] = max(0.0, min(1.0, float(denoise)))
+    # EmptySD3LatentImage は到達不能になるが、寸法は実画像に合わせておく
+    wf[eng["latent"]]["inputs"]["width"] = w
+    wf[eng["latent"]]["inputs"]["height"] = h
+    if eng.get("sampling_size_node"):
+        wf[eng["sampling_size_node"]]["inputs"]["width"] = w
+        wf[eng["sampling_size_node"]]["inputs"]["height"] = h
+    return w, h
 
 
 def _parse_tweak(text):
@@ -1628,6 +1719,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         engine = req.get("engine") or "kimg"
+        if engine == "qfix":
+            # 旧 UI の "Qwen 品質モード" は 2026-10-04 の 2 本化で消えている。
+            # 古いセッションが qfix を送ってきても 400 にしない。
+            engine = "qimg"
         eng = IMG_ENGINES.get(engine)
         if not eng:
             self._json(400, {"error": "unknown image engine: " + engine})
@@ -1662,14 +1757,54 @@ class ChatHandler(BaseHTTPRequestHandler):
             if isinstance(char_seed, int) and not isinstance(char_seed, bool):
                 wf[eng["seed"]]["inputs"]["seed"] = char_seed % (2**31 - 1)
                 char_applied.append("seed固定")
+        # 参照画像 (img2img): 添付写真を VAEEncode して KSampler の初期 latent に
+        # する。ここを繋がないと添付画像は一切効かず、企画 LLM が書いた文章から
+        # 顔を描き直すだけになる（ユーザー報告の「添付と顔が違う」の実体）。
+        ref_used = False
+        ref_note = ""
+        ref_size = ""
+        ref_denoise = eng.get("ref_denoise", 0.6)
+        if req.get("denoise") is not None:
+            try:
+                ref_denoise = float(req.get("denoise"))
+            except (TypeError, ValueError):
+                pass
+        ref_denoise = max(0.0, min(1.0, float(ref_denoise)))
+        ref_fn = None
+        imgs = req.get("images")
+        if isinstance(imgs, list) and imgs and isinstance(imgs[0], str):
+            ref_fn = imgs[0]
+        if not ref_fn and isinstance(req.get("image"), str) and req.get("image"):
+            ref_fn = req.get("image")
+        if ref_fn:
+            try:
+                staged = self._stage_ref_image(ref_fn)
+                fitted = _wire_img2img(wf, eng, staged, width, height, ref_denoise)
+                if fitted:
+                    width, height = fitted
+                    ref_used = True
+                    ref_size = "%dx%d" % (width, height)
+                    char_applied.append("参照img2img denoise %.2f" % ref_denoise)
+                else:
+                    ref_note = "このエンジンは参照画像 (img2img) 未対応です"
+            except Exception as e:
+                ref_note = "参照画像を使えませんでした: %s" % e
         rl = eng.get("random_lora")
         if rl:
             try:
                 bw = req.get("bodyweight")
-                strength = float(bw) if bw is not None else random.uniform(rl["low"], rl["high"])
+                if bw is None and ref_used:
+                    # 参照を活かすため体型スライダーのランダム振りは止める。
+                    # ±1.2 を毎回振ると同じ顔・体型にならない（報告の一因）。
+                    strength = 0.0
+                else:
+                    strength = float(bw) if bw is not None else random.uniform(rl["low"], rl["high"])
                 strength = max(-4.0, min(4.0, strength))
                 wf[rl["node"]]["inputs"]["strength_model"] = round(strength, 2)
-                char_applied.append(f"体型スライダー{strength:+.1f}")
+                if bw is None and ref_used:
+                    char_applied.append("体型ランダム停止(参照優先)")
+                else:
+                    char_applied.append(f"体型スライダー{strength:+.1f}")
             except Exception:
                 pass
         self.server.autostop.poke()
@@ -1683,7 +1818,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             _, raw, _ = self._comfy("POST", "/prompt", {"prompt": wf})
             pid = json.loads(raw)["prompt_id"]
             self.server.job_meta[pid] = {"mode": engine, "start": time.time(), "kind": "image"}
-            self._json(200, {"prompt_id": pid, "char_applied": char_applied})
+            self._json(200, {"prompt_id": pid, "char_applied": char_applied,
+                             "ref_used": ref_used, "ref_denoise": round(ref_denoise, 2),
+                             "ref_size": ref_size, "ref_note": ref_note})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 
