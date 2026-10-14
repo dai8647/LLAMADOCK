@@ -469,6 +469,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._audio_propose(parsed)
         elif parsed.path == "/api/cancel":
             self._cancel(parsed)
+        elif parsed.path == "/api/refupload":
+            self._refupload(parsed)
         elif parsed.path == "/api/plan-settings":
             self._plan_settings(parsed)
         elif parsed.path == "/api/plan-model":
@@ -1569,6 +1571,48 @@ class ChatHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _refupload(self, parsed):
+        """Save an image picked in the OS file dialog into ComfyUI input/refs/.
+
+        The picker grid lists ComfyUI output/ and input/ only, so files that live
+        elsewhere on disk are copied under input/refs/ first. That keeps them
+        reachable from both the picker (/api/refimg) and the R2V LoadImage path
+        (_stage_ref_image copies by absolute path).
+        """
+        qs = urllib.parse.parse_qs(parsed.query)
+        raw = str((qs.get("name") or [""])[0]).replace("\\", "/")
+        name = os.path.basename(raw)
+        if not name or name.startswith(".") or not name.lower().endswith(self.REF_IMAGE_EXTS):
+            self._json(400, {"error": "画像ファイル (png/jpg/jpeg/webp/gif) を選んでください"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            self._json(400, {"error": "ファイルが空です"})
+            return
+        if length > 64 * 1024 * 1024:
+            self._json(413, {"error": "画像が大きすぎます (64MB まで)"})
+            return
+        dest_dir = os.path.join(_comfy_root(), "input", "refs")
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            stem, ext = os.path.splitext(name)
+            dest = os.path.join(dest_dir, name)
+            n = 2
+            while os.path.exists(dest):
+                dest = os.path.join(dest_dir, "%s_%d%s" % (stem, n, ext))
+                n += 1
+            with open(dest, "wb") as f:
+                f.write(self.rfile.read(length))
+        except Exception as e:
+            self._json(500, {"error": "保存に失敗しました: %s" % e})
+            return
+        fn = os.path.basename(dest)
+        self.server.local_files[fn] = dest
+        self._json(200, {"name": fn, "path": dest, "dir": "input/refs"})
 
     # ---- Key image (kimg / qimg) -----------------------------------
 

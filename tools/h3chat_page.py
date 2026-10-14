@@ -234,10 +234,12 @@ HTML = """<!doctype html>
 </div>
 <div id="refmodal" class="modal">
   <div class="modal-box">
-    <div class="meta">参照画像を選択（ComfyUI の output/・input/ にある画像から・クリックで複数選択・最大 9 枚）</div>
+    <div class="meta">参照画像を選択（一覧をクリック、または 📂 でエクスプローラーから追加・複数選択・最大 9 枚）</div>
     <div id="refgrid"></div>
     <div class="reffoot">
       <span id="refpick-count" class="hint">0 枚選択中</span>
+      <input type="file" id="ref-file" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none">
+      <button onclick="pickRefFiles()">📂 エクスプローラーから追加</button>
       <button onclick="applyRefPick()">✅ 参照画像として使う</button>
       <button onclick="closeRefModal()">閉じる</button>
     </div>
@@ -536,6 +538,54 @@ async function autoAudio() {
   btn.disabled = false;
 }
 
+function makeRefCard(img) {
+  const c = document.createElement("div");
+  c.className = "refcard";
+  c.dataset.path = img.path;
+  c.innerHTML =
+    '<img src="/api/refimg?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
+    '<div class="refname">' + esc(img.name) + '</div>' +
+    '<div class="refdir">' + esc(img.dir) + '</div>' +
+    '<div class="refbadge" style="display:none"></div>';
+  c.onclick = () => toggleRefPick(c, img.path);
+  return c;
+}
+// エクスプローラー（ブラウザのファイル選択）から参照画像を追加する。
+// 選ばれたファイルは /api/refupload が ComfyUI input/refs/ に保存し、
+// 返ってきた絶対パスを選択リストへ足す（順序が <Picture N> になる）。
+function pickRefFiles() {
+  const inp = $("#ref-file");
+  if (inp) inp.click();
+}
+async function uploadRefFiles(files) {
+  const failed = [];
+  let added = 0;
+  for (const f of (files || [])) {
+    if (refPickerSelection.length >= 9) {
+      failed.push(f.name + "（最大 9 枚）");
+      continue;
+    }
+    try {
+      const r = await fetch("/api/refupload?name=" + encodeURIComponent(f.name), { method: "POST", body: f });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      if (!refPickerSelection.includes(j.path)) refPickerSelection.push(j.path);
+      $("#refgrid").appendChild(makeRefCard(j));
+      added++;
+    } catch (e) {
+      failed.push(f.name + " (" + e.message + ")");
+    }
+  }
+  refreshRefGridMarks();
+  updateRefPickCount();
+  if (failed.length) alert("追加できなかった画像:\\n" + failed.join("\\n"));
+}
+$("#ref-file").addEventListener("change", function () {
+  const files = Array.from(this.files || []);
+  this.value = "";
+  uploadRefFiles(files);
+});
+
 async function pickRefImage() {
   try {
     const r = await fetch("/api/refimages");
@@ -547,16 +597,7 @@ async function pickRefImage() {
     refPickerSelection = refImages.slice();
     const imgs = j.images || [];
     for (const img of imgs) {
-      const c = document.createElement("div");
-      c.className = "refcard";
-      c.dataset.path = img.path;
-      c.innerHTML =
-        '<img src="/api/refimg?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
-        '<div class="refname">' + esc(img.name) + '</div>' +
-        '<div class="refdir">' + esc(img.dir) + '</div>' +
-        '<div class="refbadge" style="display:none"></div>';
-      c.onclick = () => toggleRefPick(c, img.path);
-      grid.appendChild(c);
+      grid.appendChild(makeRefCard(img));
     }
     if (!imgs.length) {
       grid.innerHTML = '<div class="hint">参照に使える画像がありません。ComfyUI output/ に生成結果、input/ に手動配置の画像を置いてください。</div>';

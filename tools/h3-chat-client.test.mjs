@@ -24,7 +24,7 @@ function makeEl(id) {
     querySelectorAll() { return []; },
     closest() { return null; },
     classList: { add() {}, remove() {}, toggle() {} },
-    focus() {}, click() {},
+    focus() {}, click() { this.clicked = true; },
     setAttribute() {}, getAttribute() { return null; },
   };
   // 実 DOM と同じく、innerHTML 代入は子要素を全て消す
@@ -50,6 +50,7 @@ const state = {
   planReply: { reply: "ok" },
   resetFail: false,
   refImagesResponse: null,   // null = default single image
+  refUploadFail: false,      // true = /api/refupload returns an error
   tuneIgnored: [],
   sessionsResponse: null,    // null = no sessions, no active
   sessionSaves: [],          // bodies posted to /api/sessions/save
@@ -84,6 +85,11 @@ async function fakeFetch(url, opts) {
   if (url === "/api/concat") {
     state.concatBodies.push(opts.body);
     return j({ filename: "h3_joined_1.mp4", path: "C:\\x\\h3_joined_1.mp4" });
+  }
+  if (url.startsWith("/api/refupload?name=")) {
+    if (state.refUploadFail) return j({ error: "ng image" }, false, 400);
+    const nm = decodeURIComponent(url.slice("/api/refupload?name=".length));
+    return j({ name: nm, path: "/comfy/input/refs/" + nm, dir: "input/refs" });
   }
   if (url === "/api/plan") {
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
@@ -580,6 +586,36 @@ await run(`(async () => { await switchSession("s10"); })()`);
 await tick();
 check("chain reset when session has none", run(`segmentChain.length === 0 && extendFrom === null`));
 state.switchResult = null;
+
+console.log("[25] Explorer upload: pick button, add files, 9-image cap, failure alert");
+run(`refPickerSelection = []; $("#refgrid").children.length = 0; $("#ref-file").clicked = false;`);
+run(`pickRefFiles()`);
+check("pick button clicks the hidden input", run(`$("#ref-file").clicked`) === true);
+state.refUploadFail = false;
+state.fetches.length = 0;
+await run(`(async () => { await uploadRefFiles([{ name: "a.png" }, { name: "b.png" }]); })()`);
+await tick();
+check("2 uploads registered in the selection", run(`refPickerSelection.length`) === 2);
+check("selection keeps upload order",
+  run(`refPickerSelection[0].endsWith("a.png") && refPickerSelection[1].endsWith("b.png")`) === true);
+check("cards appended to the grid", el("refgrid").children.length === 2);
+check("counter label updated",
+  el("refpick-count").textContent.includes("2") && el("refpick-count").textContent.includes("枚選択中"));
+check("upload endpoint hit per file",
+  state.fetches.filter(f => f.url.startsWith("/api/refupload?name=")).length === 2);
+run(`refPickerSelection = Array.from({length: 9}, (_, i) => "p" + i + ".png");`);
+state.alerts.length = 0;
+await run(`(async () => { await uploadRefFiles([{ name: "extra.png" }]); })()`);
+await tick();
+check("10th image blocked at the 9-image cap",
+  run(`refPickerSelection.length`) === 9 && state.alerts.some(a => a.includes("最大 9 枚")));
+state.alerts.length = 0;
+state.refUploadFail = true;
+await run(`(async () => { await uploadRefFiles([{ name: "bad.png" }]); })()`);
+await tick();
+check("failed upload surfaces an alert", state.alerts.some(a => a.includes("追加できなかった画像")));
+run(`refPickerSelection = []; $("#refgrid").children.length = 0;`);
+state.refUploadFail = false;
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
