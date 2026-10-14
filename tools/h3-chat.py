@@ -1707,6 +1707,48 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     # ---- Key image (kimg / qimg) -----------------------------------
 
+    def _apply_key_image_reference(self, req, eng, wf, width, height):
+        """参照画像があればキー画像グラフを img2img に繋ぎ替える。
+
+        戻り値の dict:
+          used        参照を実際に配線したか
+          width/height 配線後の生成サイズ (used でなければ入力値)
+          size        "WxH" (used でなければ "")
+          denoise     適用した denoise (常に 0-1 にクランプ済み)
+          label       char_applied に積む 1 行 (used 時のみ)
+          note        UI に出す失敗理由 (あれば)
+        グラフを触るのは _wire_img2img だけなので、参照が無い/読めない場合は
+        ワークフローは t2i のまま返る。
+        """
+        denoise = eng.get("ref_denoise", 0.6)
+        if req.get("denoise") is not None:
+            try:
+                denoise = float(req.get("denoise"))
+            except (TypeError, ValueError):
+                pass
+        denoise = max(0.0, min(1.0, float(denoise)))
+        out = {"used": False, "width": width, "height": height,
+               "size": "", "denoise": denoise, "label": "", "note": ""}
+        imgs = req.get("images")
+        ref_fn = imgs[0] if isinstance(imgs, list) and imgs and isinstance(imgs[0], str) else None
+        if not ref_fn and isinstance(req.get("image"), str) and req.get("image"):
+            ref_fn = req.get("image")
+        if not ref_fn:
+            return out
+        try:
+            staged = self._stage_ref_image(ref_fn)
+            fitted = _wire_img2img(wf, eng, staged, width, height, denoise)
+        except Exception as e:
+            out["note"] = "参照画像を使えませんでした: %s" % e
+            return out
+        if not fitted:
+            out["note"] = "このエンジンは参照画像 (img2img) 未対応です"
+            return out
+        out.update({"used": True, "width": fitted[0], "height": fitted[1],
+                    "size": "%dx%d" % fitted,
+                    "label": "参照img2img denoise %.2f" % denoise})
+        return out
+
     def _kimg(self, parsed):
         try:
             req = self._read_json_body()
@@ -1759,36 +1801,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                 char_applied.append("seed固定")
         # 参照画像 (img2img): 添付写真を VAEEncode して KSampler の初期 latent に
         # する。ここを繋がないと添付画像は一切効かず、企画 LLM が書いた文章から
-        # 顔を描き直すだけになる（ユーザー報告の「添付と顔が違う」の実体）。
-        ref_used = False
-        ref_note = ""
-        ref_size = ""
-        ref_denoise = eng.get("ref_denoise", 0.6)
-        if req.get("denoise") is not None:
-            try:
-                ref_denoise = float(req.get("denoise"))
-            except (TypeError, ValueError):
-                pass
-        ref_denoise = max(0.0, min(1.0, float(ref_denoise)))
-        ref_fn = None
-        imgs = req.get("images")
-        if isinstance(imgs, list) and imgs and isinstance(imgs[0], str):
-            ref_fn = imgs[0]
-        if not ref_fn and isinstance(req.get("image"), str) and req.get("image"):
-            ref_fn = req.get("image")
-        if ref_fn:
-            try:
-                staged = self._stage_ref_image(ref_fn)
-                fitted = _wire_img2img(wf, eng, staged, width, height, ref_denoise)
-                if fitted:
-                    width, height = fitted
-                    ref_used = True
-                    ref_size = "%dx%d" % (width, height)
-                    char_applied.append("参照img2img denoise %.2f" % ref_denoise)
-                else:
-                    ref_note = "このエンジンは参照画像 (img2img) 未対応です"
-            except Exception as e:
-                ref_note = "参照画像を使えませんでした: %s" % e
+        # 顔を描き直すだけになる（「添付と顔が違う」の実体）。
+        ref = self._apply_key_image_reference(req, eng, wf, width, height)
+        ref_used = ref["used"]
+        ref_note = ref["note"]
+        ref_denoise = ref["denoise"]
+        ref_size = ref["size"]
+        if ref_used:
+            width, height = ref["width"], ref["height"]
+            char_applied.append(ref["label"])
         rl = eng.get("random_lora")
         if rl:
             try:

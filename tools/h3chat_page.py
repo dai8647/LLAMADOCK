@@ -305,8 +305,7 @@ HTML = """<!doctype html>
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・添付画像は img2img で顔を維持）</label>
         <label title="添付した参照画像をどれだけ残すか。低い=顔・構図・体型を保つ / 高い=プロンプト通りに描き直す。空欄=0.6"><input type="number" id="kimg-denoise" min="0" max="1" step="0.05" placeholder="0.6" style="width:70px"> 参照の効き (denoise)<span class="hint">Klein/Qwen 共通・添付画像がある時だけ効く</span></label>
-        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質）</label>
-        <label><input type="radio" name="imgengine" value="qfix"> Qwen 2.1 UC 品質モード（Fix LoRA・破綻しにくい・低速）</label>
+        <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・添付画像は img2img）</label>
       </div>
       <div class="advgroup" id="planmodelset">
         <span class="hint">企画 LLM モデル（導入済みから選択・GPU 固定ではありません）:</span>
@@ -871,7 +870,7 @@ async function genImage(prevBot) {
   }
   jobCancelled = false;
   const eng = imgEngine();
-  const engLabels = {kimg: "Klein 9B", qimg: "Qwen-Image 2.1 UC", qfix: "Qwen 2.1 UC 品質"};
+  const engLabels = {kimg: "Klein 9B", qimg: "Qwen-Image 2.1 UC"};
   const label = engLabels[eng] || "画像";
   const bot = prevBot || addMsg("bot", '<div class="meta">' + label + ' でキー画像を生成中…</div>');
   setBusy(true);
@@ -889,8 +888,6 @@ async function genImage(prevBot) {
       bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…（参照画像 img2img denoise ' + esc(String(j.ref_denoise)) + '・' + esc(String(j.ref_size)) + '）</div>';
     } else if (j.ref_note) {
       bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…（' + esc(String(j.ref_note)) + '）</div>';
-    } else if (refImages.length) {
-      bot.innerHTML = '<div class="meta">' + label + ' でキー画像を生成中…</div>';
     }
     pollImage(j.prompt_id, bot);
   } catch (e) {
