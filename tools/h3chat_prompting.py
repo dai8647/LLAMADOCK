@@ -1,6 +1,7 @@
 ﻿"""PLAN_SYSTEM + reply parsing (tag extraction, n5fw injection, tweak tags)."""
 
 import os
+import random
 import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -295,6 +296,44 @@ def _tool_prompt(text):
 
 # The model sometimes closes a tag XML-style (</TAG>) instead of the expected
 # bracket form ([/TAG]); accept both so the pair still matches cleanly.
+# ---- 新規企画の人物バリアント -------------------------------------------
+# PLAN_SYSTEM には「毎回同じ顔にするな・前回と違う組み合わせを選べ」と書いて
+# あるが、企画 LLM は新しいセッションで前回の記憶を持たないため、毎回お気に入り
+# の1人（同じ顔）に落ち着く。そこでアプリ側で企画の最初のターンにだけ人物設定
+# を抽選し、顔つきまでタグで書かせる（実機計測: 同一プロンプトの同モデル出力は
+# 顔類似度 0.83-0.88 で「同一人物」帯に入る = プロンプトの人物記述が顔を決める）。
+SUBJECT_VARIANT_AXES = {
+    "年齢感": ["20代前半", "20代後半", "30代前半", "30代後半", "40代前半", "人妻", "熟女"],
+    "髪": ["黒髪ロング・ストレート", "ショートボブ・黒髪", "茶髪の巻き髪ミディアム", "ハイライト入りポニーテール",
+          "ツインテール・黒髪", "肩までのダークブラウン・内巻き", "ベリーショート・黒髪"],
+    "顔立ち": ["丸顔・奥二重・低めの鼻筋", "面長・切れ長の一重・高い鼻筋", "卵型・ぱっちり二重・小さな口",
+             "エラ張り・アーモンド型の目・広い額", "童顔・たれ目・そばかす", "堀の浅い骨格・丸い鼻・厚い唇"],
+    "体型": ["スレンダー", "グラマー", "むっちり", "小柄巨乳", "ぽっちゃり", "長身モデル体型"],
+    "雰囲気": ["清楚", "クール", "ギャル", "地味", "甘え系", "活発"],
+}
+
+
+def new_subject_variant(rng=None):
+    """軸ごとに1つ抽選した人物バリアント（dict）。"""
+    r = rng or random
+    return {axis: r.choice(values) for axis, values in SUBJECT_VARIANT_AXES.items()}
+
+
+def subject_variant_prefix(variant):
+    """企画 LLM へ渡す 1 行前置き（新規企画の最初のターンだけ）。"""
+    if not variant:
+        return ""
+    parts = " / ".join("%s=%s" % (k, v) for k, v in variant.items() if v)
+    return (
+        "[今回の人物バリアント（新規企画ごとに変わる。ユーザーの指定があればそちらを優先）: " + parts + "] "
+        "この人物設定を [IMG_PROMPT] の被写体タグに必ず反映し、"
+        "顔つきまで英語で書くこと（face shape, eye shape, nose, jaw line, cheek 等）。"
+        "前回の企画と同じ顔・同じ人物描写の使い回しは禁止。"
+        "[IMG_PROMPT_JA] の日本語説明にも人物の年齢感・髪・顔立ちを反映して、"
+        "ユーザーがどんな人物かを確認できるようにすること。\n\n"
+    )
+
+
 IMG_FINAL_RE = re.compile(r"\[IMG_PROMPT\](.*?)(?:\[/IMG_PROMPT\]|</IMG_PROMPT>)", re.S)
 
 # When LFM answers in plain text (no tool call), it often still writes the
@@ -376,4 +415,5 @@ AUDIO_SYSTEM = (
 )
 
 
-__all__ = ['HERE', 'REPO', 'PLAN_SYSTEM', 'TOOL_CALL_RE', 'PROMPT_ARG_RE', 'TOOL_KV_RE', 'TAG_REF_RE', '_clean_plan_reply', '_best_tag_match', 'GEN_PARAM_RE', '_strip_gen_params', 'N5FW_TRIGGERS', '_needs_n5fw', '_inject_n5fw', '_unclosed_tag', '_tool_prompt', 'IMG_FINAL_RE', 'VIDEO_KEYWORDS', '_looks_like_final', 'FINAL_RE', 'FINAL_JA_RE', 'IMG_JA_RE', 'AUDIO_SET_RE', 'AUDIO_KEYS', '_parse_audio_set', 'AUDIO_SYSTEM', '_enforce_opener', '_dedup_person_tags', 'OPENER']
+__all__ = ['HERE', 'REPO', 'PLAN_SYSTEM', 'TOOL_CALL_RE', 'PROMPT_ARG_RE', 'TOOL_KV_RE', 'TAG_REF_RE', '_clean_plan_reply', '_best_tag_match', 'GEN_PARAM_RE', '_strip_gen_params', 'N5FW_TRIGGERS', '_needs_n5fw', '_inject_n5fw', '_unclosed_tag', '_tool_prompt', 'IMG_FINAL_RE', 'VIDEO_KEYWORDS', '_looks_like_final', 'FINAL_RE', 'FINAL_JA_RE', 'IMG_JA_RE', 'AUDIO_SET_RE', 'AUDIO_KEYS', '_parse_audio_set', 'AUDIO_SYSTEM', '_enforce_opener', '_dedup_person_tags', 'OPENER',
+        'SUBJECT_VARIANT_AXES', 'new_subject_variant', 'subject_variant_prefix']

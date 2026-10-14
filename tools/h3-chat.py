@@ -151,6 +151,14 @@ IMG_ENGINES = {
         "ref_image": NODE_IMG_REF_IMAGE, "ref_scale": NODE_IMG_REF_SCALE,
         "ref_encode": NODE_IMG_REF_ENCODE, "ref_denoise": 0.6,
         "sampling_size_node": "4",
+        # 顔に効く LoRA。nsfw = 画風/内容 LoRA、base = base_snapshot（同一顔へ
+        # 寄せる LoRA）、anatomy = slider。standard はワークフロー JSON の既定値。
+        "lora_nodes": {"nsfw": "8", "base": "12", "anatomy": "14"},
+        "lora_presets": {
+            "standard": {},
+            "variety": {"nsfw": 0.55, "base": 0.2, "anatomy": 0.5},
+            "raw": {"nsfw": 0.0, "base": 0.0, "anatomy": 0.0},
+        },
         # 体型バリエーション: bodyweight concept slider (正負両方向のスライダー)。
         # 生成ごとにこの範囲で強度をランダム化して同じ顔・体型のワンパターンを防ぐ。
         # リクエストで bodyweight を明示すれば固定できる。
@@ -165,6 +173,12 @@ IMG_ENGINES = {
         "vae_node": "3",
         "ref_image": NODE_IMG_REF_IMAGE, "ref_scale": NODE_IMG_REF_SCALE,
         "ref_encode": NODE_IMG_REF_ENCODE, "ref_denoise": 0.6,
+        "lora_nodes": {"turbo": "8", "genatomy": "9"},
+        "lora_presets": {
+            "standard": {},
+            "variety": {"genatomy": 0.2},
+            "raw": {"genatomy": 0.0},
+        },
     },
 }
 
@@ -302,6 +316,46 @@ def _wire_img2img(wf, eng, staged_name, box_w, box_h, denoise):
         wf[eng["sampling_size_node"]]["inputs"]["width"] = w
         wf[eng["sampling_size_node"]]["inputs"]["height"] = h
     return w, h
+
+
+LORA_PRESETS_DOC = ("standard = ワークフロー既定 / variety = 顔固定 LoRA を弱める / "
+                    "raw = 顔に効く LoRA を切る")
+
+
+def apply_key_image_loras(wf, eng, req):
+    """キー画像の LoRA 強度を preset + 個別上書きで決めて適用する。
+
+    preset は engine の lora_presets、個別上書きは req["lora"] の
+    {"nsfw": 0.4, "base": 0.0, ...}（engine の lora_nodes にある名前だけ）。
+    戻り値は (preset 名, 実際に設定した {name: strength})。
+    """
+    nodes = eng.get("lora_nodes") or {}
+    name = str(req.get("lora_preset") or "standard").lower()
+    preset = (eng.get("lora_presets") or {}).get(name)
+    if preset is None:
+        name, preset = "standard", {}
+    values = {}
+    for k, v in preset.items():
+        try:
+            values[str(k)] = max(0.0, min(4.0, float(v)))
+        except (TypeError, ValueError):
+            continue
+    overrides = req.get("lora")
+    if isinstance(overrides, dict):
+        for k, v in overrides.items():
+            if k not in nodes:
+                continue
+            try:
+                values[str(k)] = max(0.0, min(4.0, float(v)))
+            except (TypeError, ValueError):
+                continue
+    applied = {}
+    for k, v in values.items():
+        nid = nodes.get(k)
+        if nid and nid in wf and isinstance(wf[nid].get("inputs"), dict):
+            wf[nid]["inputs"]["strength_model"] = round(v, 3)
+            applied[k] = round(v, 3)
+    return name, applied
 
 
 def _parse_tweak(text):
@@ -983,6 +1037,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         text = (req.get("text") or "").strip()
         stage = req.get("stage") or "chat"   # "chat" | "image" | "video"
+        send_variant = None
         if text == "__RESET__":
             self._plan_reset()
             self._json(200, {"reset": True, "reply": "新しい企画を始めましょう。作りたい映像を教えてください。"})
@@ -1024,6 +1079,18 @@ class ChatHandler(BaseHTTPRequestHandler):
         pinned_card = get_character(req.get("char_id") or None)
         if pinned_card and not text.startswith("__"):
             text = char_identity_prefix(pinned_card) + text
+        elif not pinned_card and not image and not text.startswith("__"):
+            # 新規企画の最初のターンだけ、アプリ側で人物バリアントを抽選して
+            # 渡す。企画 LLM は「前回」を覚えていないので、同じ依頼（例:
+            # 日本人の女の子）で毎回同じ顔に落ち着くのをここで断ち切る。
+            # 送るのは 1 回だけ（履歴に前置きを積み増さない）。
+            with SESSION_LOCK:
+                if not SESSION.get("image_prompt") and not SESSION.get("variant_sent"):
+                    send_variant = SESSION.get("subject_variant") or new_subject_variant()
+                    SESSION["subject_variant"] = send_variant
+                    SESSION["variant_sent"] = True
+            if send_variant:
+                text = subject_variant_prefix(send_variant) + text
         try:
             reply, img_prompt, final_prompt, audio, thinking, final_prompt_ja, img_prompt_ja = self._plan_llm(text, endpoint, stage, image, ref_start=ref_start)
         except Exception as e:
@@ -1035,13 +1102,21 @@ class ChatHandler(BaseHTTPRequestHandler):
             # 英語原文は足さない（動画側と同じく、日本語説明 + 折りたたみ英語で
             # 表示するため。泡に生の英語プロンプトを残さない）。
             reply = "キー画像のプロンプトがまとまりました。下のボタンで画像を生成できます。"
-        self._json(200, {"reply": tweak_note + reply, "img_prompt": img_prompt, "img_prompt_ja": img_prompt_ja, "final_prompt": final_prompt, "final_prompt_ja": final_prompt_ja, "audio": audio, "thinking": thinking})
+        variant_note = ""
+        if send_variant:
+            # 何の人物設定で描いたかを 1 行で見せる（「なぜこの顔？」を防ぐ）
+            variant_note = "🎭 今回の人物設定: " + " / ".join(
+                "%s=%s" % (k, v) for k, v in send_variant.items() if v) + "\n\n"
+
+        self._json(200, {"reply": variant_note + tweak_note + reply, "img_prompt": img_prompt, "img_prompt_ja": img_prompt_ja, "final_prompt": final_prompt, "final_prompt_ja": final_prompt_ja, "audio": audio, "thinking": thinking})
 
     def _plan_reset(self):
         global PLAN_HISTORY
         with PLAN_LOCK:
             PLAN_HISTORY.clear()
         with SESSION_LOCK:
+            SESSION["subject_variant"] = None      # 次の企画は別の顔を抽選する
+            SESSION["variant_sent"] = False
             SESSION["image_prompt"] = None
             SESSION["video_prompt"] = None
             SESSION["mode_override"] = None
@@ -1810,6 +1885,12 @@ class ChatHandler(BaseHTTPRequestHandler):
         if ref_used:
             width, height = ref["width"], ref["height"]
             char_applied.append(ref["label"])
+        # 顔に効く LoRA 強度: 新規企画で同じ顔に固定されないよう preset で
+        # 弱められる（「いつも同じ顔になる」対策）。参照画像がある時は
+        # img2img が顔を担うので LoRA は画風として残す。
+        lora_preset, lora_applied = apply_key_image_loras(wf, eng, req)
+        if lora_applied:
+            char_applied.append("LoRA " + ",".join("%s=%.2f" % kv for kv in sorted(lora_applied.items())))
         rl = eng.get("random_lora")
         if rl:
             try:
@@ -1841,7 +1922,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self.server.job_meta[pid] = {"mode": engine, "start": time.time(), "kind": "image"}
             self._json(200, {"prompt_id": pid, "char_applied": char_applied,
                              "ref_used": ref_used, "ref_denoise": round(ref_denoise, 2),
-                             "ref_size": ref_size, "ref_note": ref_note})
+                             "ref_size": ref_size, "ref_note": ref_note,
+                             "lora_preset": lora_preset, "lora_applied": lora_applied})
         except Exception as e:
             self._json(502, {"error": self._proxy_error(e)})
 

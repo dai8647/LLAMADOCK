@@ -303,6 +303,11 @@ HTML = """<!doctype html>
         <span class="hint">キー画像:</span>
         <label><input type="radio" name="imgengine" value="kimg" checked> Klein 9B（品質主力・添付画像は img2img で顔を維持）</label>
         <label title="添付した参照画像をどれだけ残すか。低い=顔・構図・体型を保つ / 高い=プロンプト通りに描き直す。空欄=0.6"><input type="number" id="kimg-denoise" min="0" max="1" step="0.05" placeholder="0.6" style="width:70px"> 参照の効き (denoise)<span class="hint">Klein/Qwen 共通・添付画像がある時だけ効く</span></label>
+        <label title="顔に効く LoRA の強さ。標準=ワークフロー既定 / 多様=顔固定 LoRA を弱める（新規企画でいつも同じ顔になるのを防ぐ）/ 素=顔に効く LoRA を切る">顔の作り込み:<select id="kimg-lora-preset">
+          <option value="standard">標準（顔が固定されやすい）</option>
+          <option value="variety">多様（新規企画向け・顔固定を弱める）</option>
+          <option value="raw">素（顔に効く LoRA なし・破綻しやすい）</option>
+        </select><span class="hint">参照画像なしの時に効く</span></label>
         <label><input type="radio" name="imgengine" value="qimg"> Qwen-Image 2.1 UC（局所描写・検閲なし・高画質・添付画像は img2img）</label>
       </div>
       <div class="advgroup" id="planmodelset">
@@ -853,6 +858,11 @@ function imgEngine() {
   return el ? el.value : "kimg";
 }
 // キー画像の参照の効き (denoise)。空欄 = サーバー既定 (0.6)。
+// キー画像の「顔の作り込み」プリセット。
+function imgLoraPreset() {
+  const el = $("#kimg-lora-preset");
+  return (el && el.value) ? el.value : "standard";
+}
 function imgRefDenoise() {
   const el = $("#kimg-denoise");
   if (!el) return null;
@@ -881,7 +891,7 @@ async function genImage(prevBot) {
     const r = await fetch("/api/kimg", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text: lastImgPrompt, engine: eng, image: refImages[0] || null, denoise: imgRefDenoise(), ...charPinSpec()})
+      body: JSON.stringify({text: lastImgPrompt, engine: eng, image: refImages[0] || null, denoise: imgRefDenoise(), lora_preset: imgLoraPreset(), ...charPinSpec()})
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
