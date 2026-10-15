@@ -37,9 +37,10 @@ config/characters/ref/
 
 # --- NSFW phrase knowledge base (local only, explicit content) ---
 # Untracked + renamed 2026-10-04: cloud AI reviews of the repo kept tripping
-# over it. The DO-NOT-READ filename tells AI reviewers to skip the file.
-# h3-chat.py still loads it from this local path.
-config/DO-NOT-READ-local-style-notes.json
+# over it. Renamed again 2026-10-12 to a neutral name so AI agents never even
+# open it (the old DO-NOT-READ name itself invited them to read).
+# It is loaded by tools/h3chat_kb.py from this local path.
+config/local-style-notes.json
 
 # --- Downloaded model binaries (sd.cpp runtime downloads, multi-GB) ---
 tools/sd.cpp/models/

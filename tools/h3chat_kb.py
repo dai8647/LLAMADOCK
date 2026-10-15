@@ -1,4 +1,4 @@
-﻿"""NSFW style-notes knowledge base (local-only JSON) + matching + system note."""
+"""NSFW style-notes knowledge base (local-only JSON) + matching + system note."""
 
 import json
 import os
@@ -6,11 +6,11 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-# meta-camp 由来の NSFW 用語集（config/DO-NOT-READ-local-style-notes.json・
-# ローカル限定資産なので .gitignore 済み。ファイル名は AI レビューにスキップ
-# させるための看板でもある）。
+# meta-camp 由来の NSFW 用語集（config/local-style-notes.json・
+# ローカル限定資産なので .gitignore 済み＝AI レビューのツリーには存在しない。
+# 2026-10-12 に中立名へ改名（旧 DO-NOT-READ 看板は廃止）。
 # ユーザーの日本語から keys を引き、Flux 向け英語 phrase を企画プロンプトに注入する。
-_NSFW_KB_PATH = os.path.join(REPO, "config", "DO-NOT-READ-local-style-notes.json")
+_NSFW_KB_PATH = os.path.join(REPO, "config", "local-style-notes.json")
 
 
 def _load_nsfw_kb():

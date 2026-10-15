@@ -1,4 +1,4 @@
-﻿"""PLAN_SYSTEM + reply parsing (tag extraction, n5fw injection, tweak tags)."""
+"""PLAN_SYSTEM + reply parsing (tag extraction, n5fw injection, tweak tags)."""
 
 import os
 import random
@@ -165,8 +165,8 @@ def _strip_gen_params(text):
 # tumblrasia (画風) は問答無用で効くが、GenatomyFixer は `n5fw` が入ってないと
 # 居眠りする。NSFW 系プロンプトのときだけ IMG_PROMPT 先頭に自動 prepend して
 # 起動させる。NSFW 検出は英語キーワード一致 (大文字小文字無視)。
-# 未成年ガード (MINOR_RE) とは独立: ガードが先に効いて企画が破棄される場合は
-# そもそも _inject_n5fw まで到達しないので安全。
+# ※旧「未成年ガード (MINOR_RE)」は 2026-08-31 に廃止済み (7a78b40)。
+# 年齢表現をブロックする決定論ガードは存在せず、企画はそのまま通過する。
 N5FW_TRIGGERS = (
     "nude", "naked", "nipple", "breast", "pussy", "penis", "vulva", "vagina",
     "vaginal", "cum", "creampie", "orgasm", "climax", "masturbat", "blowjob",
